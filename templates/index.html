@@ -1,0 +1,119 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WildBoar — Вход / Регистрация</title>
+  <link rel="stylesheet" href="/static/css/app.css" />
+  <script defer src="/static/js/app.js"></script>
+</head>
+
+<body class="page page--landing">
+  <header class="topbar">
+    <div class="topbar__spacer"></div>
+
+    <div class="topbar__actions">
+      <button class="btn btn--ghost" type="button" data-modal-open="registerModal">Регистрация</button>
+      <button class="btn btn--primary" type="button" data-modal-open="loginModal">Войти</button>
+    </div>
+  </header>
+
+  <main class="landing">
+    <!-- По ТЗ: пустой белый фон. Ничего не выводим, только модалки. -->
+  </main>
+
+  <!-- LOGIN MODAL -->
+  <div class="modal" id="loginModal" aria-hidden="true">
+    <div class="modal__overlay" data-modal-close></div>
+
+    <div class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
+      <button class="modal__close" type="button" aria-label="Закрыть" data-modal-close>×</button>
+
+      <h1 class="modal__title" id="loginTitle">Вход</h1>
+
+      <form class="form" method="post" action="/login" autocomplete="on">
+        <label class="field">
+          <span class="field__label">ЭЛЕКТРОННАЯ ПОЧТА *</span>
+          <input class="field__input" type="email" name="email" required placeholder="name@example.com" />
+        </label>
+
+        <label class="field">
+          <span class="field__label">ПАРОЛЬ *</span>
+          <input class="field__input" type="password" name="password" required minlength="1" placeholder="••••••••" />
+        </label>
+
+        <button class="btn btn--primary btn--block" type="submit">Войти</button>
+
+        <button class="link link--muted" type="button" aria-disabled="true" title="Будет добавлено на следующем этапе">
+          Забыли пароль?
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- REGISTER MODAL -->
+  <div class="modal" id="registerModal" aria-hidden="true">
+    <div class="modal__overlay" data-modal-close></div>
+
+    <div class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="registerTitle">
+      <button class="modal__close" type="button" aria-label="Закрыть" data-modal-close>×</button>
+
+      <h1 class="modal__title" id="registerTitle">Регистрация в личном кабинете</h1>
+
+      <form class="form" method="post" action="/register" autocomplete="on" id="registerForm">
+        <div class="form__row">
+          <label class="field">
+            <span class="field__label">ИМЯ *</span>
+            <input class="field__input" type="text" name="first_name" required />
+          </label>
+
+          <label class="field">
+            <span class="field__label">ФАМИЛИЯ *</span>
+            <input class="field__input" type="text" name="last_name" required />
+          </label>
+        </div>
+
+        <label class="field">
+          <span class="field__label">ЭЛЕКТРОННАЯ ПОЧТА *</span>
+          <input class="field__input" type="email" name="email" required placeholder="name@example.com" />
+        </label>
+
+        <label class="field">
+          <span class="field__label">НОМЕР ТЕЛЕФОНА</span>
+          <input class="field__input" type="tel" name="phone" autocomplete="tel" inputmode="tel" placeholder="+1 555 123 4567" />
+        </label>
+
+        <label class="field">
+          <span class="field__label">ПАРОЛЬ *</span>
+          <input
+            class="field__input"
+            type="password"
+            name="password"
+            required
+            minlength="8"
+            placeholder="Минимум 8 символов"
+          />
+          <span class="field__hint">
+            Пароль должен содержать не менее 8 символов (в т.ч. цифры, прописные и строчные буквы, и минимум один спец. символ).
+          </span>
+        </label>
+
+        <!-- По ТЗ: "Пользовательские условия" — кнопка пока пустая -->
+        <button class="btn btn--outline btn--block" type="button" aria-disabled="true" title="Будет добавлено на следующем этапе">
+          Пользовательские условия
+        </button>
+
+        <label class="check">
+          <input class="check__input" type="checkbox" id="termsCheck" />
+          <span class="check__box" aria-hidden="true"></span>
+          <span class="check__label">Прочитал и принимаю условия *</span>
+        </label>
+
+        <button class="btn btn--primary btn--block" type="submit" id="registerSubmit" disabled>
+          Зарегистрироваться
+        </button>
+      </form>
+    </div>
+  </div>
+</body>
+</html>
