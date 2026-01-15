@@ -447,3 +447,49 @@ body.sidebar-collapsed .sidebar__logout-icon{
   body.sidebar-collapsed .dash{ margin-left:0; }
   body.sidebar-collapsed .sidebar{ width:290px; }
 }
+
+/* ---- Password rules under registration password field ---- */
+.password-rules{
+  margin:8px 0 0 0;
+  padding:0;
+  list-style:none;
+  font-size:12px;
+  line-height:1.35;
+  color:var(--wb-muted);
+}
+
+.password-rules .rule{
+  display:flex;
+  align-items:flex-start;
+  gap:8px;
+  margin:4px 0;
+}
+
+.password-rules .rule::before{
+  content:"•";
+  width:14px;
+  font-weight:700;
+}
+
+.password-rules .rule-ok{
+  color:#1b1b1b;
+}
+.password-rules .rule-ok::before{
+  content:"✓";
+}
+
+.password-rules .rule-bad{
+  color:var(--wb-muted);
+}
+
+/* ---- Inline server error area in modals ---- */
+.form-error{
+  margin-top:10px;
+  font-size:13px;
+  line-height:1.35;
+  color:#b00020;
+  white-space:pre-wrap;
+}
+.form-error:empty{
+  display:none;
+}

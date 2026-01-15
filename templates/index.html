@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>WildBoar — Вход / Регистрация</title>
   <link rel="stylesheet" href="/static/css/app.css" />
-  <script defer src="/static/js/app.js"></script>
+  <script defer src="/static/js/app.js?v=5_2"></script>
 </head>
 
 <body class="page page--landing">
@@ -18,9 +18,7 @@
     </div>
   </header>
 
-  <main class="landing">
-    <!-- По ТЗ: пустой белый фон. Ничего не выводим, только модалки. -->
-  </main>
+  <main class="landing"></main>
 
   <!-- LOGIN MODAL -->
   <div class="modal" id="loginModal" aria-hidden="true">
@@ -31,18 +29,21 @@
 
       <h1 class="modal__title" id="loginTitle">Вход</h1>
 
-      <form class="form" method="post" action="/login" autocomplete="on">
+      <form class="form" method="post" action="/login" autocomplete="on" id="loginForm" novalidate>
         <label class="field">
           <span class="field__label">ЭЛЕКТРОННАЯ ПОЧТА *</span>
-          <input class="field__input" type="email" name="email" required placeholder="name@example.com" />
+          <input class="field__input" type="email" name="email" placeholder="name@example.com" />
         </label>
 
         <label class="field">
           <span class="field__label">ПАРОЛЬ *</span>
-          <input class="field__input" type="password" name="password" required minlength="1" placeholder="••••••••" />
+          <input class="field__input" type="password" name="password" placeholder="••••••••" />
         </label>
 
         <button class="btn btn--primary btn--block" type="submit">Войти</button>
+
+        <!-- Ошибка логина (401 / прочие) -->
+        <div class="form-error" id="loginError" role="alert" aria-live="polite"></div>
 
         <button class="link link--muted" type="button" aria-disabled="true" title="Будет добавлено на следующем этапе">
           Забыли пароль?
@@ -60,27 +61,27 @@
 
       <h1 class="modal__title" id="registerTitle">Регистрация в личном кабинете</h1>
 
-      <form class="form" method="post" action="/register" autocomplete="on" id="registerForm">
+      <form class="form" method="post" action="/register" autocomplete="on" id="registerForm" novalidate>
         <div class="form__row">
           <label class="field">
             <span class="field__label">ИМЯ *</span>
-            <input class="field__input" type="text" name="first_name" required />
+            <input class="field__input" type="text" name="first_name" />
           </label>
 
           <label class="field">
             <span class="field__label">ФАМИЛИЯ *</span>
-            <input class="field__input" type="text" name="last_name" required />
+            <input class="field__input" type="text" name="last_name" />
           </label>
         </div>
 
         <label class="field">
           <span class="field__label">ЭЛЕКТРОННАЯ ПОЧТА *</span>
-          <input class="field__input" type="email" name="email" required placeholder="name@example.com" />
+          <input class="field__input" type="email" name="email" placeholder="name@example.com" />
         </label>
 
         <label class="field">
           <span class="field__label">НОМЕР ТЕЛЕФОНА</span>
-          <input class="field__input" type="tel" name="phone" autocomplete="tel" inputmode="tel" placeholder="+1 555 123 4567" />
+          <input class="field__input" type="tel" name="phone" placeholder="+7 (___) ___-__-__" />
         </label>
 
         <label class="field">
@@ -89,13 +90,19 @@
             class="field__input"
             type="password"
             name="password"
-            required
-            minlength="8"
-            placeholder="Минимум 8 символов"
+            id="registerPassword"
+            placeholder="Введите пароль"
           />
-          <span class="field__hint">
-            Пароль должен содержать не менее 8 символов (в т.ч. цифры, прописные и строчные буквы, и минимум один спец. символ).
-          </span>
+
+          <!-- Список условий (статично в HTML, подсветка через JS) -->
+          <ul class="password-rules" id="passwordRules">
+            <li class="rule rule-bad" data-rule="len">Длина ≥ 8</li>
+            <li class="rule rule-bad" data-rule="digit">Минимум 1 цифра</li>
+            <li class="rule rule-bad" data-rule="lower">Минимум 1 строчная буква</li>
+            <li class="rule rule-bad" data-rule="upper">Минимум 1 заглавная буква</li>
+            <li class="rule rule-bad" data-rule="special">Минимум 1 спецсимвол</li>
+            <li class="rule rule-bad" data-rule="nospace">Без пробелов/табов/переводов строки</li>
+          </ul>
         </label>
 
         <!-- По ТЗ: "Пользовательские условия" — кнопка пока пустая -->
@@ -112,8 +119,12 @@
         <button class="btn btn--primary btn--block" type="submit" id="registerSubmit" disabled>
           Зарегистрироваться
         </button>
+
+        <!-- Ошибка регистрации (400: email занят / пароль и т.п.) -->
+        <div class="form-error" id="registerError" role="alert" aria-live="polite"></div>
       </form>
     </div>
   </div>
 </body>
 </html>
+
