@@ -2,12 +2,12 @@
 -- PostgreSQL database dump
 --
 
-\restrict ghXUphxjGcWm6uPFUYH1OcitlfQLsB0ZlzCh0NI1xKMsoQepNhokNA9SXAob7kh
+\restrict y0vfMjFTPYtIn0rjlILPid3J4e68LCLdfxZeHikPo0dNzwKdxxG6bsP8Hr4agqg
 
 -- Dumped from database version 16.11
 -- Dumped by pg_dump version 16.11
 
--- Started on 2026-01-13 17:15:13
+-- Started on 2026-01-15 15:03:46
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -74,7 +74,7 @@ CREATE SEQUENCE public.users_id_seq
 ALTER SEQUENCE public.users_id_seq OWNER TO postgres;
 
 --
--- TOC entry 4854 (class 0 OID 0)
+-- TOC entry 4855 (class 0 OID 0)
 -- Dependencies: 215
 -- Name: users_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
@@ -91,7 +91,7 @@ ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_
 
 
 --
--- TOC entry 4701 (class 2606 OID 16434)
+-- TOC entry 4702 (class 2606 OID 16434)
 -- Name: sessions sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -118,7 +118,15 @@ ALTER TABLE ONLY public.users
 
 
 --
--- TOC entry 4702 (class 2606 OID 16435)
+-- TOC entry 4700 (class 1259 OID 16440)
+-- Name: idx_sessions_expires_at; Type: INDEX; Schema: public; Owner: postgres
+--
+
+CREATE INDEX idx_sessions_expires_at ON public.sessions USING btree (expires_at);
+
+
+--
+-- TOC entry 4703 (class 2606 OID 16435)
 -- Name: sessions sessions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
@@ -126,11 +134,11 @@ ALTER TABLE ONLY public.sessions
     ADD CONSTRAINT sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 
 
--- Completed on 2026-01-13 17:15:13
+-- Completed on 2026-01-15 15:03:46
 
 --
 -- PostgreSQL database dump complete
 --
 
-\unrestrict ghXUphxjGcWm6uPFUYH1OcitlfQLsB0ZlzCh0NI1xKMsoQepNhokNA9SXAob7kh
+\unrestrict y0vfMjFTPYtIn0rjlILPid3J4e68LCLdfxZeHikPo0dNzwKdxxG6bsP8Hr4agqg
 

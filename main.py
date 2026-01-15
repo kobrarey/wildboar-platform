@@ -1,6 +1,10 @@
 import os
+import re
 import uuid
 from datetime import datetime, timedelta, timezone
+
+from dotenv import load_dotenv
+load_dotenv()
 
 from fastapi import FastAPI, Request, Form, Depends
 from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse
@@ -17,10 +21,12 @@ import bcrypt
 # -----------------------
 # DB config
 # -----------------------
-DATABASE_URL = os.getenv(
-    "DATABASE_URL",
-    "postgresql://postgres:пароль@localhost:5432/WildBoar_platform"
-)
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise RuntimeError(
+        "DATABASE_URL is required. Set it in environment or in .env. "
+        "Example: postgresql://postgres:changeme@localhost:5432/WildBoar_platform"
+    )
 
 engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
@@ -86,6 +92,22 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
+def validate_password(pwd: str) -> str | None:
+    if len(pwd) < 8:
+        return "Пароль должен содержать не менее 8 символов."
+    if re.search(r"\s", pwd):
+        return "Пароль не должен содержать пробелы."
+    if not re.search(r"\d", pwd):
+        return "Пароль должен содержать минимум одну цифру."
+    if not re.search(r"[a-zа-я]", pwd):
+        return "Пароль должен содержать минимум одну строчную букву."
+    if not re.search(r"[A-ZА-Я]", pwd):
+        return "Пароль должен содержать минимум одну заглавную букву."
+    if not re.search(r"[^A-Za-zА-Яа-я0-9]", pwd):
+        return "Пароль должен содержать минимум один спецсимвол."
+    return None
+
+
 def get_db() -> Generator[Session, None, None]:
     db = SessionLocal()
     try:
@@ -95,16 +117,13 @@ def get_db() -> Generator[Session, None, None]:
 
 
 def create_session(db: Session, user_id: int) -> str:
-    session_id = uuid.uuid4().hex  # 32-символьная строка
+    # cleanup expired sessions (simple, no cron)
+    db.query(SessionModel).filter(SessionModel.expires_at < utcnow()).delete(synchronize_session=False)
+
+    session_id = uuid.uuid4().hex
     expires_at = utcnow() + timedelta(days=SESSION_TTL_DAYS)
 
-    db_sess = SessionModel(
-        id=session_id,
-        user_id=user_id,
-        created_at=utcnow(),
-        expires_at=expires_at,
-    )
-    db.add(db_sess)
+    db.add(SessionModel(id=session_id, user_id=user_id, created_at=utcnow(), expires_at=expires_at))
     db.commit()
     return session_id
 
@@ -166,8 +185,9 @@ def register(
     email_norm = (email or "").strip().lower()
     pwd = (password or "").strip()
 
-    if not pwd:
-        return PlainTextResponse("Password must not be empty", status_code=400)
+    err = validate_password(pwd)
+    if err:
+        return PlainTextResponse(err, status_code=400)
 
     existing = db.query(User).filter(User.email == email_norm).first()
     if existing:
