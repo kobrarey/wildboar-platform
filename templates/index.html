@@ -6,6 +6,9 @@
   <title>WildBoar — Вход / Регистрация</title>
   <link rel="stylesheet" href="/static/css/app.css" />
   <script defer src="/static/js/app.js?v=5_2"></script>
+  <style>
+    .is-hidden { display: none !important; }
+  </style>
 </head>
 
 <body class="page page--landing">
@@ -62,6 +65,7 @@
       <h1 class="modal__title" id="registerTitle">Регистрация в личном кабинете</h1>
 
       <form class="form" method="post" action="/register" autocomplete="on" id="registerForm" novalidate>
+        <div id="registerStep1">
         <div class="form__row">
           <label class="field">
             <span class="field__label">ИМЯ *</span>
@@ -81,7 +85,15 @@
 
         <label class="field">
           <span class="field__label">НОМЕР ТЕЛЕФОНА</span>
-          <input class="field__input" type="tel" name="phone" placeholder="+7 (___) ___-__-__" />
+          <input
+            class="field__input"
+            type="tel"
+            name="phone"
+            id="regPhone"
+            placeholder="+1 555 123 4567"
+            inputmode="tel"
+            autocomplete="tel"
+          />
         </label>
 
         <label class="field">
@@ -105,16 +117,15 @@
           </ul>
         </label>
 
-        <!-- По ТЗ: "Пользовательские условия" — кнопка пока пустая -->
-        <button class="btn btn--outline btn--block" type="button" aria-disabled="true" title="Будет добавлено на следующем этапе">
-          Пользовательские условия
-        </button>
+        <a href="/useragreement" target="_blank" rel="noopener" class="link">Пользовательские условия</a>
 
-        <label class="check">
-          <input class="check__input" type="checkbox" id="termsCheck" />
-          <span class="check__box" aria-hidden="true"></span>
-          <span class="check__label">Прочитал и принимаю условия *</span>
-        </label>
+        <div class="reg-agree">
+          <label class="check">
+            <input class="check__input" type="checkbox" id="termsCheck" />
+            <span class="check__box" aria-hidden="true"></span>
+            <span class="check__label">Прочитал и принимаю условия *</span>
+          </label>
+        </div>
 
         <button class="btn btn--primary btn--block" type="submit" id="registerSubmit" disabled>
           Зарегистрироваться
@@ -122,6 +133,23 @@
 
         <!-- Ошибка регистрации (400: email занят / пароль и т.п.) -->
         <div class="form-error" id="registerError" role="alert" aria-live="polite"></div>
+        </div>
+
+        <div id="registerStep2" class="is-hidden">
+          <h3 style="margin-top:0;">Подтвердите email</h3>
+          <p class="muted" id="registerCodeHint">Мы отправили код на вашу почту.</p>
+
+          <label class="field">
+            <span class="field__label">Код из письма</span>
+            <input class="field__input" id="registerCode" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="Введите код" />
+          </label>
+
+          <button type="button" class="btn btn--primary btn--block" id="registerConfirmBtn" disabled>
+            Подтвердить
+          </button>
+
+          <div class="form-error" id="registerConfirmError" role="alert" aria-live="polite"></div>
+        </div>
       </form>
     </div>
   </div>

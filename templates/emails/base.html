@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>{{ title or "Wild Boar" }}</title>
+  <style>
+    body { margin:0; padding:0; background:#f6f3ea; font-family: Arial, sans-serif; color:#111; }
+    .wrap { width:100%; padding:24px 12px; }
+    .card { max-width:600px; margin:0 auto; background:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 8px 24px rgba(0,0,0,.08); }
+    .header { background:#f2d400; padding:18px 22px; }
+    .brand { font-weight:800; letter-spacing:.3px; }
+    .content { padding:22px; }
+    .code { font-size:28px; font-weight:800; letter-spacing:6px; padding:14px 16px; background:#f6f3ea; border-radius:12px; display:inline-block; }
+    .muted { color:#666; font-size:13px; }
+    .footer { padding:18px 22px; background:#3b2a7a; color:#fff; font-size:12px; }
+    a { color:#fff; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="card">
+      <div class="header">
+        <div class="brand">wildboar</div>
+      </div>
+
+      <div class="content">
+        {% block content %}{% endblock %}
+      </div>
+
+      <div class="footer">
+        Это автоматическое письмо. Если вы не инициировали действие — просто игнорируйте его.<br/>
+        © Wild Boar
+      </div>
+    </div>
+  </div>
+</body>
+</html>

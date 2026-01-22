@@ -493,3 +493,5 @@ body.sidebar-collapsed .sidebar__logout-icon{
 .form-error:empty{
   display:none;
 }
+
+.reg-agree { margin-bottom: 12px; }

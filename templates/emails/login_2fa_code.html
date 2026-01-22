@@ -1,0 +1,7 @@
+{% extends "emails/base.html" %}
+{% block content %}
+  <h2>Подтверждение входа (2FA)</h2>
+  <p>Ваш код для входа:</p>
+  <div class="code">{{ code }}</div>
+  <p class="muted">Код действует {{ ttl_minutes }} минут.</p>
+{% endblock %}

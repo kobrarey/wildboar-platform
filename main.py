@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from fastapi import FastAPI, Request, Form, Depends
-from fastapi.responses import HTMLResponse, RedirectResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
@@ -16,6 +16,10 @@ from sqlalchemy.orm import sessionmaker, Session, declarative_base, Mapped, mapp
 from sqlalchemy.exc import IntegrityError
 from typing import Generator
 import bcrypt
+from pydantic import BaseModel
+
+from email_service import send_email, render_email_template
+from codes import create_code, verify_code
 
 
 # -----------------------
@@ -35,6 +39,14 @@ Base = declarative_base()
 
 
 # -----------------------
+# Pydantic models
+# -----------------------
+class RegisterConfirmIn(BaseModel):
+    email: str
+    code: str
+
+
+# -----------------------
 # ORM models (public.users, public.sessions)
 # -----------------------
 class User(Base):
@@ -50,6 +62,7 @@ class User(Base):
 
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    is_email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
 
 class SessionModel(Base):
@@ -171,6 +184,10 @@ def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 
+@app.get("/useragreement", response_class=HTMLResponse)
+def useragreement(request: Request):
+    return templates.TemplateResponse("useragreement.html", {"request": request})
+
 
 @app.post("/register")
 def register(
@@ -182,27 +199,36 @@ def register(
     password: str = Form(...),
     db: Session = Depends(get_db),
 ):
+    # нормализация
     email_norm = (email or "").strip().lower()
     pwd = (password or "").strip()
 
+    # базовые проверки
+    if not email_norm:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Email обязателен"})
+    if not pwd:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Пароль не должен быть пустым"})
+
+    # пароль (у тебя уже есть validate_password)
     err = validate_password(pwd)
     if err:
-        return PlainTextResponse(err, status_code=400)
+        return JSONResponse(status_code=400, content={"status": "error", "message": err})
 
+    # email уникален
     existing = db.query(User).filter(User.email == email_norm).first()
     if existing:
-        return PlainTextResponse("Email is already taken", status_code=400)
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Email уже занят"})
 
-    password_hash = hash_password(pwd)
-
+    # создаём пользователя (НЕ верифицирован)
     user = User(
         created_at=utcnow(),
         email=email_norm,
-        first_name=first_name.strip(),
-        last_name=last_name.strip(),
+        first_name=(first_name or "").strip(),
+        last_name=(last_name or "").strip(),
         phone=(phone.strip() if phone else None),
-        password_hash=password_hash,
+        password_hash=hash_password(pwd),
         is_active=True,
+        is_email_verified=False,
     )
 
     db.add(user)
@@ -210,20 +236,58 @@ def register(
         db.commit()
     except IntegrityError:
         db.rollback()
-        return PlainTextResponse("Email is already taken", status_code=400)
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Email уже занят"})
 
     db.refresh(user)
 
-    session_id = create_session(db, user.id)
+    # создаём код
+    try:
+        code = create_code(user.id, "registration", db=db)
 
-    resp = RedirectResponse(url="/dashboard", status_code=302)
+        html = render_email_template(
+            "emails/registration_code.html",
+            {"code": code, "ttl_minutes": 15, "title": "Wild Boar"},
+        )
+        send_email(user.email, "Код подтверждения регистрации", html)
+
+    except Exception as e:
+        # если письмо не ушло — чтобы не блокировать повторную регистрацию,
+        # удаляем пользователя (FK CASCADE удалит его коды)
+        db.delete(user)
+        db.commit()
+        return JSONResponse(status_code=500, content={"status": "error", "message": "Не удалось отправить письмо"})
+
+    return JSONResponse(content={"status": "ok", "next": "enter_code", "email": user.email})
+
+
+@app.post("/register/confirm")
+def register_confirm(payload: RegisterConfirmIn, db: Session = Depends(get_db)):
+    email_norm = (payload.email or "").strip().lower()
+    code = (payload.code or "").strip()
+
+    user = db.query(User).filter(User.email == email_norm).first()
+    if not user:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Пользователь не найден"})
+
+    try:
+        verify_code(user.id, "registration", code, db=db)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
+
+    # подтверждаем email (если уже подтвержден — тоже ок)
+    if not user.is_email_verified:
+        user.is_email_verified = True
+        db.commit()
+
+    # создаём сессию и ставим cookie
+    session_id = create_session(db, user.id)
+    resp = JSONResponse(content={"status": "ok", "redirect": "/dashboard"})
     resp.set_cookie(
         key=COOKIE_NAME,
         value=session_id,
         httponly=True,
-        secure=(request.url.scheme == "https"),
         samesite="lax",
-        max_age=SESSION_TTL_DAYS * 24 * 60 * 60,
+        secure=False,  # на https поставишь True
         path="/",
     )
     return resp
@@ -245,6 +309,9 @@ def login(
 
     if not verify_password(pwd, user.password_hash):
         return PlainTextResponse("Invalid credentials", status_code=401)
+
+    if not user.is_email_verified:
+        return JSONResponse(status_code=400, content={"status": "error", "message": "Email не подтверждён. Завершите регистрацию."})
 
     session_id = create_session(db, user.id)
 
