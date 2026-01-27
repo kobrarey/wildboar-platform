@@ -38,6 +38,13 @@ body{
   justify-content:center;
 }
 .btn--block{ width:100%; }
+
+/* extra spacing between last input and big purple button in auth modals */
+.modal__panel #loginStep1 .btn--block,
+.modal__panel #loginStep2 .btn--block,
+.modal__panel #registerStep2 .btn--block{
+  margin-top:12px;
+}
 .btn--primary{
   background:var(--wb-purple);
   color:#fff;
@@ -495,3 +502,36 @@ body.sidebar-collapsed .sidebar__logout-icon{
 }
 
 .reg-agree { margin-bottom: 12px; }
+
+.code-input-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.code-input-row input {
+  flex: 1;
+  min-width: 0;
+}
+
+.code-resend-btn {
+  white-space: nowrap;
+  padding: 10px 12px;
+  border-radius: 10px;
+  border: 1px solid rgba(0,0,0,.12);
+  background: #f6f3ea;
+  color: #111;
+  font-weight: 700;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.code-resend-btn[disabled] {
+  opacity: .55;
+  cursor: not-allowed;
+}
+
+.code-resend-hint {
+  margin-top: 6px;
+  font-size: 12px;
+}

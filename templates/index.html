@@ -33,25 +33,58 @@
       <h1 class="modal__title" id="loginTitle">Вход</h1>
 
       <form class="form" method="post" action="/login" autocomplete="on" id="loginForm" novalidate>
-        <label class="field">
-          <span class="field__label">ЭЛЕКТРОННАЯ ПОЧТА *</span>
-          <input class="field__input" type="email" name="email" placeholder="name@example.com" />
-        </label>
+        <div id="loginStep1">
+          <label class="field">
+            <span class="field__label">ЭЛЕКТРОННАЯ ПОЧТА *</span>
+            <input class="field__input" type="email" name="email" placeholder="name@example.com" />
+          </label>
 
-        <label class="field">
-          <span class="field__label">ПАРОЛЬ *</span>
-          <input class="field__input" type="password" name="password" placeholder="••••••••" />
-        </label>
+          <label class="field">
+            <span class="field__label">ПАРОЛЬ *</span>
+            <input class="field__input" type="password" name="password" placeholder="••••••••" />
+          </label>
 
-        <button class="btn btn--primary btn--block" type="submit">Войти</button>
+          <button class="btn btn--primary btn--block" type="submit">Войти</button>
 
-        <!-- Ошибка логина (401 / прочие) -->
-        <div class="form-error" id="loginError" role="alert" aria-live="polite"></div>
+          <!-- Ошибка логина (401 / прочие) -->
+          <div class="form-error" id="loginError" role="alert" aria-live="polite"></div>
 
-        <button class="link link--muted" type="button" aria-disabled="true" title="Будет добавлено на следующем этапе">
-          Забыли пароль?
-        </button>
+          <a href="/forgot" class="link">Забыли пароль?</a>
+        </div>
       </form>
+
+      <div id="loginStep2" class="is-hidden">
+        <h3 style="margin-top:0;">Введите код</h3>
+        <p class="muted" id="login2faHint">
+          Мы отправили 6-значный код на вашу почту. Код действителен 15 минут.
+        </p>
+
+        <label class="field" for="login2faCode">
+          <span class="field__label">Код из письма</span>
+          <div class="code-input-row">
+            <input
+              id="login2faCode"
+              type="text"
+              inputmode="numeric"
+              autocomplete="one-time-code"
+              placeholder="6-значный код"
+              minlength="6"
+              maxlength="6"
+              pattern="\d{6}"
+            />
+            <button type="button" class="code-resend-btn" id="login2faResendBtn">
+              Отправить код ещё раз
+            </button>
+          </div>
+          <div class="code-resend-hint muted">Можно запрашивать 1 раз в минуту</div>
+        </label>
+
+        <button type="button" class="btn btn--primary btn--block" id="login2faConfirmBtn" disabled>
+          Подтвердить
+        </button>
+
+        <div class="form-error" id="login2faError" role="alert" aria-live="polite"></div>
+      </div>
     </div>
   </div>
 
@@ -141,7 +174,22 @@
 
           <label class="field">
             <span class="field__label">Код из письма</span>
-            <input class="field__input" id="registerCode" type="text" inputmode="numeric" autocomplete="one-time-code" placeholder="Введите код" />
+            <div class="code-input-row">
+              <input
+                id="registerCode"
+                type="text"
+                inputmode="numeric"
+                autocomplete="one-time-code"
+                placeholder="6-значный код"
+                minlength="6"
+                maxlength="6"
+                pattern="\d{6}"
+              />
+              <button type="button" class="code-resend-btn" id="registerResendBtn">
+                Отправить код ещё раз
+              </button>
+            </div>
+            <div class="code-resend-hint muted">Можно запрашивать 1 раз в минуту</div>
           </label>
 
           <button type="button" class="btn btn--primary btn--block" id="registerConfirmBtn" disabled>

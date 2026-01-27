@@ -14,6 +14,7 @@ ALLOWED_PURPOSES = {"registration", "reset", "login_2fa"}
 CODE_LENGTH = int(os.getenv("SECURITY_CODE_LENGTH", "6"))
 CODE_TTL_MINUTES = int(os.getenv("SECURITY_CODE_TTL_MINUTES", "15"))
 MAX_ATTEMPTS = int(os.getenv("SECURITY_CODE_MAX_ATTEMPTS", "5"))
+RESEND_COOLDOWN_SECONDS = int(os.getenv("SECURITY_CODE_RESEND_COOLDOWN_SECONDS", "60"))
 
 DATABASE_URL = os.getenv("DATABASE_URL")
 if not DATABASE_URL:
@@ -38,8 +39,9 @@ def create_code(user_id: int, purpose: str, db: Optional[Session] = None) -> str
     if not isinstance(user_id, int) or user_id <= 0:
         raise ValueError("Invalid user_id")
 
+    now = utcnow()
     code = _gen_code(CODE_LENGTH)
-    expires_at = utcnow() + timedelta(minutes=CODE_TTL_MINUTES)
+    expires_at = now + timedelta(minutes=CODE_TTL_MINUTES)
 
     close_after = False
     if db is None:
@@ -47,6 +49,40 @@ def create_code(user_id: int, purpose: str, db: Optional[Session] = None) -> str
         close_after = True
 
     try:
+        # rate-limit: not more often than once per RESEND_COOLDOWN_SECONDS
+        last = db.execute(
+            text(
+                """
+                SELECT created_at
+                FROM public.security_codes
+                WHERE user_id = :user_id
+                  AND purpose = :purpose
+                ORDER BY created_at DESC
+                LIMIT 1
+                """
+            ),
+            {"user_id": user_id, "purpose": purpose},
+        ).mappings().first()
+
+        if last is not None:
+            last_created = last["created_at"]
+            if (now - last_created).total_seconds() < RESEND_COOLDOWN_SECONDS:
+                raise ValueError("Код можно запрашивать не чаще 1 раза в минуту")
+
+        # deactivate all previous unused codes for this user/purpose
+        db.execute(
+            text(
+                """
+                UPDATE public.security_codes
+                SET is_used = TRUE
+                WHERE user_id = :user_id
+                  AND purpose = :purpose
+                  AND is_used = FALSE
+                """
+            ),
+            {"user_id": user_id, "purpose": purpose},
+        )
+
         db.execute(
             text(
                 """
@@ -70,6 +106,10 @@ def verify_code(user_id: int, purpose: str, code: str, db: Optional[Session] = N
     """
     if purpose not in ALLOWED_PURPOSES:
         raise ValueError("Invalid purpose")
+    
+    # быстрая проверка формата кода
+    if not code or not code.isdigit() or len(code) != CODE_LENGTH:
+        raise ValueError("Неверный код")
 
     close_after = False
     if db is None:

@@ -4,6 +4,80 @@
   function qsa(sel, root = document) { return Array.from(root.querySelectorAll(sel)); }
   function setError(el, text) { if (el) el.textContent = text || ""; }
 
+  const _resendTimers = new WeakMap();
+
+  function startResendCooldown(btn, seconds = 60, baseText = "Отправить код ещё раз") {
+    if (!btn) return;
+
+    // сброс старого таймера
+    const prev = _resendTimers.get(btn);
+    if (prev?.intervalId) clearInterval(prev.intervalId);
+    if (prev?.timeoutId) clearTimeout(prev.timeoutId);
+
+    let left = seconds;
+    btn.disabled = true;
+    btn.textContent = `Повторно через ${left}с`;
+
+    const endAt = Date.now() + seconds * 1000;
+
+    function finish() {
+      btn.disabled = false;
+      btn.textContent = baseText;
+      _resendTimers.delete(btn);
+    }
+
+    const intervalId = setInterval(() => {
+      const diffMs = endAt - Date.now();
+      left = Math.max(0, Math.round(diffMs / 1000));
+      if (left <= 0) {
+        clearInterval(intervalId);
+        finish();
+        return;
+      }
+      btn.textContent = `Повторно через ${left}с`;
+    }, 1000);
+
+    // страховочный таймер, если интервал притормозят в фоне
+    const timeoutId = setTimeout(() => {
+      clearInterval(intervalId);
+      finish();
+    }, seconds * 1000 + 500); // небольшой запас
+
+    _resendTimers.set(btn, { intervalId, timeoutId });
+  }
+
+  async function postResend(endpoint, email, errEl, btn) {
+    if (!email) {
+      setError(errEl, "Не найден email.");
+      return;
+    }
+
+    // по ТЗ: после клика дизейблим на 60 сек сразу
+    startResendCooldown(btn, 60, "Отправить код ещё раз");
+
+    try {
+      const resp = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email }),
+        credentials: "same-origin",
+      });
+
+      if (resp.ok) return;
+
+      // если 400 — показать текст и тоже оставить cooldown (он уже включён)
+      const txt = await resp.text().catch(() => "");
+      setError(errEl, txt || `Ошибка (HTTP ${resp.status}).`);
+
+      // UX-совпадение: при 400 тоже гарантируем 60 сек (мы уже запустили)
+      return;
+
+    } catch {
+      setError(errEl, "Сетевая ошибка. Повторите попытку.");
+      // cooldown оставляем, чтобы не спамили
+    }
+  }
+
   // ---------- modal helpers ----------
   function openModal(modalEl) {
     if (!modalEl) return;
@@ -77,6 +151,7 @@
     const confirmBtn = document.getElementById("registerConfirmBtn");
     const confirmErr = document.getElementById("registerConfirmError");
     const codeHint = document.getElementById("registerCodeHint");
+    const resendBtn = document.getElementById("registerResendBtn");
 
     let pendingEmail = ""; // email, который ждёт подтверждения
 
@@ -203,21 +278,27 @@
       }
     });
 
-    // step2: enable confirm button only for 6-8 digits (под код)
+    // step2: enable confirm button only for 6 digits (под код)
     function refreshConfirm() {
       const v = (codeInput?.value || "").trim();
-      const ok = /^\d{6,8}$/.test(v);
+      const ok = /^\d{6}$/.test(v);
       if (confirmBtn) confirmBtn.disabled = !ok;
       setError(confirmErr, "");
     }
 
     codeInput?.addEventListener("input", refreshConfirm);
 
+    resendBtn?.addEventListener("click", () => {
+      setError(confirmErr, "");
+      const em = pendingEmail || (email?.value || "").trim();
+      postResend("/register/resend-code", em, confirmErr, resendBtn);
+    });
+
     confirmBtn?.addEventListener("click", async () => {
       setError(confirmErr, "");
       const code = (codeInput?.value || "").trim();
-      if (!/^\d{6,8}$/.test(code)) {
-        setError(confirmErr, "Введите код (6–8 цифр).");
+      if (!/^\d{6}$/.test(code)) {
+        setError(confirmErr, "Введите 6-значный код.");
         return;
       }
       const em = pendingEmail || (email?.value || "").trim();
@@ -277,15 +358,76 @@
     const form = document.getElementById("loginForm");
     if (!form) return;
 
+    // Step 1 elements (inside form)
+    const step1 = document.getElementById("loginStep1");
     const errorEl = document.getElementById("loginError");
-    form.addEventListener("input", () => setError(errorEl, ""));
 
+    // Inputs inside Step 1
+    const emailInput = qs('input[name="email"]', form);
+    const passInput  = qs('input[name="password"]', form);
+
+    // Step 2 elements (2FA)
+    const step2 = document.getElementById("loginStep2");
+    const hintEl = document.getElementById("login2faHint");
+    const codeInput = document.getElementById("login2faCode");
+    const confirmBtn = document.getElementById("login2faConfirmBtn");
+    const confirmErr = document.getElementById("login2faError");
+    const resendBtn = document.getElementById("login2faResendBtn");
+
+    let pendingEmail = "";
+
+    function showStep1() {
+      if (step1) step1.classList.remove("is-hidden");
+      if (step2) step2.classList.add("is-hidden");
+      pendingEmail = "";
+      setError(errorEl, "");
+      setError(confirmErr, "");
+      if (codeInput) codeInput.value = "";
+      if (confirmBtn) confirmBtn.disabled = true;
+    }
+
+    function showStep2(email) {
+      pendingEmail = (email || "").trim();
+      if (step1) step1.classList.add("is-hidden");
+      if (step2) step2.classList.remove("is-hidden");
+      setError(confirmErr, "");
+      if (hintEl) hintEl.textContent = "Мы отправили 6-значный код на вашу почту. Код действителен 15 минут.";
+      if (codeInput) codeInput.focus();
+      refreshConfirm();
+    }
+
+    function refreshConfirm() {
+      const v = (codeInput?.value || "").trim();
+      const ok = /^\d{6}$/.test(v);
+      if (confirmBtn) confirmBtn.disabled = !ok;
+    }
+
+    function payloadToMessage(payload, fallback) {
+      if (!payload) return fallback;
+      if (typeof payload === "string") return payload || fallback;
+      return payload.message || payload.detail || fallback;
+    }
+
+    // очистка ошибок на ввод
+    form.addEventListener("input", () => setError(errorEl, ""));
+    codeInput?.addEventListener("input", () => {
+      setError(confirmErr, "");
+      refreshConfirm();
+    });
+
+    resendBtn?.addEventListener("click", () => {
+      setError(confirmErr, "");
+      const em = pendingEmail || (emailInput?.value || "").trim();
+      postResend("/login/2fa/resend", em, confirmErr, resendBtn);
+    });
+
+    // Step 1 submit: /login
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
       setError(errorEl, "");
 
-      const email = (qs('input[name="email"]', form)?.value || "").trim();
-      const pass  = (qs('input[name="password"]', form)?.value || "").trim();
+      const email = (emailInput?.value || "").trim();
+      const pass  = (passInput?.value || "").trim();
       if (!email || !pass) {
         setError(errorEl, "Введите email и пароль.");
         return;
@@ -298,7 +440,7 @@
           credentials: "same-origin",
         });
 
-        // Успех может быть redirect, или JSON с redirect
+        // Если вдруг бэк вернул redirect (на будущее)
         if (resp.redirected) {
           window.location.href = resp.url;
           return;
@@ -309,26 +451,277 @@
           ? await resp.json().catch(() => null)
           : await resp.text().catch(() => "");
 
-        if (resp.ok) {
-          const redirect = payload?.redirect || "/dashboard";
-          window.location.href = redirect;
+        if (!resp.ok) {
+          // 400/401: показать текст/сообщение в модалке
+          setError(errorEl, payloadToMessage(payload, `Ошибка входа (HTTP ${resp.status}).`));
           return;
         }
 
-        // 400: "Email не подтверждён..."
-        // 401: invalid credentials
-        const msg =
-          (typeof payload === "string" && payload) ||
-          payload?.message ||
-          payload?.detail ||
-          `Ошибка входа (HTTP ${resp.status}).`;
+        // OK: возможны варианты
+        // 1) {status:"ok", redirect:"/dashboard"}
+        if (payload?.status === "ok" && payload?.redirect) {
+          window.location.href = payload.redirect;
+          return;
+        }
 
-        setError(errorEl, msg);
+        // 2) {status:"2fa_required"}
+        if (payload?.status === "2fa_required") {
+          showStep2(email);
+          return;
+        }
 
+        // fallback
+        setError(errorEl, "Некорректный ответ сервера.");
       } catch {
         setError(errorEl, "Сетевая ошибка. Повторите попытку.");
       }
     });
+
+    // Step 2 confirm: /login/2fa
+    confirmBtn?.addEventListener("click", async () => {
+      setError(confirmErr, "");
+
+      const email = pendingEmail || (emailInput?.value || "").trim();
+      const code = (codeInput?.value || "").trim();
+
+      if (!email) { setError(confirmErr, "Не найден email для подтверждения."); return; }
+      if (!/^\d{6}$/.test(code)) { setError(confirmErr, "Введите 6-значный код."); return; }
+
+      try {
+        const resp = await fetch("/login/2fa", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, code }),
+          credentials: "same-origin",
+        });
+
+        const ct = (resp.headers.get("content-type") || "").toLowerCase();
+        const payload = ct.includes("application/json")
+          ? await resp.json().catch(() => null)
+          : await resp.text().catch(() => "");
+
+        if (!resp.ok) {
+          // 400: текст
+          setError(confirmErr, payloadToMessage(payload, `Ошибка (HTTP ${resp.status}).`));
+          return;
+        }
+
+        if (payload?.status === "ok" && payload?.redirect) {
+          window.location.href = payload.redirect;
+          return;
+        }
+
+        setError(confirmErr, "Некорректный ответ сервера.");
+      } catch {
+        setError(confirmErr, "Сетевая ошибка. Повторите попытку.");
+      }
+    });
+
+    // reset to step1 when modal is opened
+    const loginModal = document.getElementById("loginModal");
+    if (loginModal) {
+      const obs = new MutationObserver(() => {
+        if (loginModal.classList.contains("is-open")) showStep1();
+      });
+      obs.observe(loginModal, { attributes: true, attributeFilter: ["class"] });
+    }
+
+    showStep1();
+  }
+
+  // ---------- forgot password ----------
+  function initForgotPage() {
+    const emailEl = document.getElementById("forgotEmail");
+    const sendBtn = document.getElementById("forgotSendBtn");
+    const infoEl  = document.getElementById("forgotInfo");
+    const codeEl  = document.getElementById("forgotCode");
+    const verifyBtn = document.getElementById("forgotVerifyBtn");
+    const errEl = document.getElementById("forgotError");
+    const resendBtn = document.getElementById("forgotResendBtn");
+
+    if (!emailEl || !sendBtn || !codeEl || !verifyBtn) return;
+
+    function refreshVerify() {
+      const email = (emailEl.value || "").trim();
+      const code = (codeEl.value || "").trim();
+      const ok = email.length > 0 && /^\d{6}$/.test(code);
+      verifyBtn.disabled = !ok;
+      setError(errEl, "");
+    }
+
+    emailEl.addEventListener("input", refreshVerify);
+    codeEl.addEventListener("input", refreshVerify);
+
+    sendBtn.addEventListener("click", async () => {
+      setError(errEl, "");
+      if (infoEl) infoEl.textContent = "";
+
+      const email = (emailEl.value || "").trim();
+      if (!email) {
+        setError(errEl, "Введите email.");
+        return;
+      }
+
+      try {
+        const resp = await fetch("/forgot/send-code", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email }),
+          credentials: "same-origin",
+        });
+
+        // По контракту: всегда 200 {"status":"ok"} (даже если email не существует)
+        if (resp.ok) {
+          if (infoEl) infoEl.textContent = "Если такой email существует, код отправлен на почту.";
+          return;
+        }
+
+        // если всё же вернули ошибку — покажем текст
+        const txt = await resp.text().catch(() => "");
+        setError(errEl, txt || `Ошибка (HTTP ${resp.status}).`);
+      } catch {
+        setError(errEl, "Сетевая ошибка. Повторите попытку.");
+      }
+    });
+
+    resendBtn?.addEventListener("click", async () => {
+      setError(errEl, "");
+      if (infoEl) infoEl.textContent = "";
+      const email = (emailEl.value || "").trim();
+
+      await postResend("/forgot/send-code", email, errEl, resendBtn);
+
+      // на успех покажем нейтральное сообщение (как по контракту)
+      if (infoEl && !errEl.textContent) {
+        infoEl.textContent = "Если такой email существует, код отправлен на почту.";
+      }
+    });
+
+    verifyBtn.addEventListener("click", async () => {
+      setError(errEl, "");
+      if (infoEl) infoEl.textContent = "";
+
+      const email = (emailEl.value || "").trim();
+      const code = (codeEl.value || "").trim();
+
+      if (!email) { setError(errEl, "Введите email."); return; }
+      if (!/^\d{6}$/.test(code)) { setError(errEl, "Введите 6-значный код."); return; }
+
+      try {
+        const resp = await fetch("/forgot/verify", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ email, code }),
+          credentials: "same-origin",
+        });
+
+        if (resp.ok) {
+          const data = await resp.json().catch(() => null);
+          const redirect = data?.redirect;
+          if (data?.status === "ok" && redirect) {
+            window.location.href = redirect;
+            return;
+          }
+          setError(errEl, "Некорректный ответ сервера.");
+          return;
+        }
+
+        // ошибки: HTTP 400 текстом
+        if (resp.status === 400) {
+          setError(errEl, await resp.text());
+          return;
+        }
+
+        const txt = await resp.text().catch(() => "");
+        setError(errEl, txt || `Ошибка (HTTP ${resp.status}).`);
+      } catch {
+        setError(errEl, "Сетевая ошибка. Повторите попытку.");
+      }
+    });
+
+    refreshVerify();
+  }
+
+  // ---------- forgot new password ----------
+  function initForgotNewPasswordPage() {
+    const tokenEl = document.getElementById("forgotToken");
+    const passEl = document.getElementById("newPassword");
+    const pass2El = document.getElementById("newPasswordConfirm");
+    const rulesList = document.getElementById("newPasswordRules");
+    const btn = document.getElementById("forgotNewPassBtn");
+    const errEl = document.getElementById("forgotNewPassError");
+
+    if (!passEl || !pass2El || !btn || !errEl) return;
+
+    function getToken() {
+      const hidden = (tokenEl?.value || "").trim();
+      if (hidden) return hidden;
+      const urlToken = new URLSearchParams(window.location.search).get("token");
+      return (urlToken || "").trim();
+    }
+
+    function validate() {
+      const token = getToken();
+      const p1 = (passEl.value || "");
+      const p2 = (pass2El.value || "");
+
+      const state = getPasswordRules(p1);
+      updateRulesUI(rulesList, state);
+
+      const ok =
+        token.length > 0 &&
+        allRulesOk(state) &&
+        p2.length > 0 &&
+        p1 === p2;
+
+      return { ok, token, p1, p2 };
+    }
+
+    function refresh() {
+      const v = validate();
+      btn.disabled = !v.ok;
+      setError(errEl, "");
+    }
+
+    passEl.addEventListener("input", refresh);
+    pass2El.addEventListener("input", refresh);
+
+    btn.addEventListener("click", async () => {
+      setError(errEl, "");
+
+      const v = validate();
+      if (!v.token) { setError(errEl, "Некорректная ссылка (token отсутствует)."); return; }
+      if (!allRulesOk(getPasswordRules(v.p1))) { setError(errEl, "Пароль не соответствует требованиям."); return; }
+      if (v.p1 !== v.p2) { setError(errEl, "Пароли не совпадают."); return; }
+
+      try {
+        const resp = await fetch("/forgot/new-password", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ token: v.token, password: v.p1, password_confirm: v.p2 }),
+          credentials: "same-origin",
+        });
+
+        if (resp.ok) {
+          const data = await resp.json().catch(() => null);
+          const redirect = data?.redirect || "/";
+          window.location.href = redirect;
+          return;
+        }
+
+        if (resp.status === 400) {
+          setError(errEl, await resp.text());
+          return;
+        }
+
+        const txt = await resp.text().catch(() => "");
+        setError(errEl, txt || `Ошибка (HTTP ${resp.status}).`);
+      } catch {
+        setError(errEl, "Сетевая ошибка. Повторите попытку.");
+      }
+    });
+
+    refresh();
   }
 
   // ---------- modal open/close (ВОЗВРАЩАЕМ, это и было потеряно) ----------
@@ -406,6 +799,8 @@
   // ---------- init ----------
   initRegistration();
   initLogin();
+  initForgotPage();
+  initForgotNewPasswordPage();
 
   // отключаем любые обработчики маски телефона (если были)
   const ph = document.getElementById("regPhone");
