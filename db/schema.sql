@@ -2,12 +2,12 @@
 -- PostgreSQL database dump
 --
 
-\restrict e7zjW6DvZC5APcWB6QGhHV4caJ8CyMMnKnQTjLZuyjJQUrZMiGsQGS5xoYPBFTB
+\restrict pnm1ppoL2PkmG693SYGRvuyEhuOaU6IknyNcGYtdCkbumxgJlhHDPpo4aeZT1Bg
 
 -- Dumped from database version 16.11
 -- Dumped by pg_dump version 16.11
 
--- Started on 2026-01-27 17:29:43
+-- Started on 2026-01-29 19:04:45
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -70,7 +70,7 @@ CREATE SEQUENCE public.security_codes_id_seq
 
 
 --
--- TOC entry 4882 (class 0 OID 0)
+-- TOC entry 4898 (class 0 OID 0)
 -- Dependencies: 218
 -- Name: security_codes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -89,6 +89,43 @@ CREATE TABLE public.sessions (
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     expires_at timestamp with time zone NOT NULL
 );
+
+
+--
+-- TOC entry 222 (class 1259 OID 16498)
+-- Name: user_wallets; Type: TABLE; Schema: public; Owner: -
+--
+
+CREATE TABLE public.user_wallets (
+    id bigint NOT NULL,
+    user_id bigint NOT NULL,
+    blockchain character varying(32) DEFAULT 'BSC'::character varying NOT NULL,
+    address character varying(64) NOT NULL,
+    encrypted_private_key text NOT NULL,
+    created_at timestamp with time zone DEFAULT now() NOT NULL
+);
+
+
+--
+-- TOC entry 221 (class 1259 OID 16497)
+-- Name: user_wallets_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+--
+
+CREATE SEQUENCE public.user_wallets_id_seq
+    START WITH 1
+    INCREMENT BY 1
+    NO MINVALUE
+    NO MAXVALUE
+    CACHE 1;
+
+
+--
+-- TOC entry 4899 (class 0 OID 0)
+-- Dependencies: 221
+-- Name: user_wallets_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+--
+
+ALTER SEQUENCE public.user_wallets_id_seq OWNED BY public.user_wallets.id;
 
 
 --
@@ -124,7 +161,7 @@ CREATE SEQUENCE public.users_id_seq
 
 
 --
--- TOC entry 4883 (class 0 OID 0)
+-- TOC entry 4900 (class 0 OID 0)
 -- Dependencies: 215
 -- Name: users_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -133,7 +170,7 @@ ALTER SEQUENCE public.users_id_seq OWNED BY public.users.id;
 
 
 --
--- TOC entry 4707 (class 2604 OID 16458)
+-- TOC entry 4712 (class 2604 OID 16458)
 -- Name: security_codes id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -141,7 +178,15 @@ ALTER TABLE ONLY public.security_codes ALTER COLUMN id SET DEFAULT nextval('publ
 
 
 --
--- TOC entry 4701 (class 2604 OID 16418)
+-- TOC entry 4718 (class 2604 OID 16501)
+-- Name: user_wallets id; Type: DEFAULT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_wallets ALTER COLUMN id SET DEFAULT nextval('public.user_wallets_id_seq'::regclass);
+
+
+--
+-- TOC entry 4706 (class 2604 OID 16418)
 -- Name: users id; Type: DEFAULT; Schema: public; Owner: -
 --
 
@@ -149,7 +194,7 @@ ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_
 
 
 --
--- TOC entry 4724 (class 2606 OID 16476)
+-- TOC entry 4732 (class 2606 OID 16476)
 -- Name: password_reset_sessions password_reset_sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -158,7 +203,7 @@ ALTER TABLE ONLY public.password_reset_sessions
 
 
 --
--- TOC entry 4722 (class 2606 OID 16464)
+-- TOC entry 4730 (class 2606 OID 16464)
 -- Name: security_codes security_codes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -167,7 +212,7 @@ ALTER TABLE ONLY public.security_codes
 
 
 --
--- TOC entry 4720 (class 2606 OID 16434)
+-- TOC entry 4728 (class 2606 OID 16434)
 -- Name: sessions sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -176,7 +221,16 @@ ALTER TABLE ONLY public.sessions
 
 
 --
--- TOC entry 4715 (class 2606 OID 16426)
+-- TOC entry 4735 (class 2606 OID 16507)
+-- Name: user_wallets user_wallets_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_wallets
+    ADD CONSTRAINT user_wallets_pkey PRIMARY KEY (id);
+
+
+--
+-- TOC entry 4723 (class 2606 OID 16426)
 -- Name: users users_email_key; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -185,7 +239,7 @@ ALTER TABLE ONLY public.users
 
 
 --
--- TOC entry 4717 (class 2606 OID 16424)
+-- TOC entry 4725 (class 2606 OID 16424)
 -- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -194,7 +248,7 @@ ALTER TABLE ONLY public.users
 
 
 --
--- TOC entry 4718 (class 1259 OID 16440)
+-- TOC entry 4726 (class 1259 OID 16440)
 -- Name: idx_sessions_expires_at; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -202,7 +256,31 @@ CREATE INDEX idx_sessions_expires_at ON public.sessions USING btree (expires_at)
 
 
 --
--- TOC entry 4727 (class 2606 OID 16477)
+-- TOC entry 4733 (class 1259 OID 16514)
+-- Name: user_wallets_blockchain_address_uq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX user_wallets_blockchain_address_uq ON public.user_wallets USING btree (blockchain, address);
+
+
+--
+-- TOC entry 4736 (class 1259 OID 16513)
+-- Name: user_wallets_user_blockchain_uq; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE UNIQUE INDEX user_wallets_user_blockchain_uq ON public.user_wallets USING btree (user_id, blockchain);
+
+
+--
+-- TOC entry 4737 (class 1259 OID 16515)
+-- Name: user_wallets_user_id_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX user_wallets_user_id_idx ON public.user_wallets USING btree (user_id);
+
+
+--
+-- TOC entry 4740 (class 2606 OID 16477)
 -- Name: password_reset_sessions password_reset_sessions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -211,7 +289,7 @@ ALTER TABLE ONLY public.password_reset_sessions
 
 
 --
--- TOC entry 4726 (class 2606 OID 16465)
+-- TOC entry 4739 (class 2606 OID 16465)
 -- Name: security_codes security_codes_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -220,7 +298,7 @@ ALTER TABLE ONLY public.security_codes
 
 
 --
--- TOC entry 4725 (class 2606 OID 16435)
+-- TOC entry 4738 (class 2606 OID 16435)
 -- Name: sessions sessions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -228,11 +306,20 @@ ALTER TABLE ONLY public.sessions
     ADD CONSTRAINT sessions_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
 
 
--- Completed on 2026-01-27 17:29:43
+--
+-- TOC entry 4741 (class 2606 OID 16508)
+-- Name: user_wallets user_wallets_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.user_wallets
+    ADD CONSTRAINT user_wallets_user_id_fkey FOREIGN KEY (user_id) REFERENCES public.users(id) ON DELETE CASCADE;
+
+
+-- Completed on 2026-01-29 19:04:45
 
 --
 -- PostgreSQL database dump complete
 --
 
-\unrestrict e7zjW6DvZC5APcWB6QGhHV4caJ8CyMMnKnQTjLZuyjJQUrZMiGsQGS5xoYPBFTB
+\unrestrict pnm1ppoL2PkmG693SYGRvuyEhuOaU6IknyNcGYtdCkbumxgJlhHDPpo4aeZT1Bg
 

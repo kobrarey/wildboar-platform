@@ -11,7 +11,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Plai
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from sqlalchemy import create_engine, String, BigInteger, Boolean, DateTime, ForeignKey
+from sqlalchemy import create_engine, String, Text, BigInteger, Boolean, DateTime, ForeignKey, func
 from sqlalchemy.orm import sessionmaker, Session, declarative_base, Mapped, mapped_column
 from sqlalchemy.exc import IntegrityError
 from typing import Generator
@@ -82,6 +82,26 @@ class SessionModel(Base):
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+
+class UserWallet(Base):
+    __tablename__ = "user_wallets"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    blockchain: Mapped[str] = mapped_column(String(32), nullable=False, default="BSC")
+    address: Mapped[str] = mapped_column(String(64), nullable=False)
+    encrypted_private_key: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
 
 
 class PasswordResetSession(Base):
@@ -304,6 +324,13 @@ def register_confirm(payload: RegisterConfirmIn, db: Session = Depends(get_db)):
     if not user.is_email_verified:
         user.is_email_verified = True
         db.commit()
+
+        # создаём кошелёк BSC (1 на пользователя)
+        try:
+            from wallets import create_bsc_wallet_for_user
+            create_bsc_wallet_for_user(db, user)
+        except Exception:
+            return JSONResponse(status_code=500, content={"status": "error", "message": "Не удалось создать кошелёк"})
 
     # создаём сессию и ставим cookie
     session_id = create_session(db, user.id)
