@@ -175,15 +175,20 @@ def get_db() -> Generator[Session, None, None]:
         db.close()
 
 
-def create_session(db: Session, user_id: int) -> str:
-    # cleanup expired sessions (simple, no cron)
+def create_session(db: Session, user_id: int, commit: bool = True) -> str:
+    # cleanup expired sessions
     db.query(SessionModel).filter(SessionModel.expires_at < utcnow()).delete(synchronize_session=False)
 
     session_id = uuid.uuid4().hex
     expires_at = utcnow() + timedelta(days=SESSION_TTL_DAYS)
 
     db.add(SessionModel(id=session_id, user_id=user_id, created_at=utcnow(), expires_at=expires_at))
-    db.commit()
+
+    if commit:
+        db.commit()
+    else:
+        db.flush()
+
     return session_id
 
 
@@ -320,27 +325,29 @@ def register_confirm(payload: RegisterConfirmIn, db: Session = Depends(get_db)):
     except ValueError as e:
         return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
 
-    # подтверждаем email (если уже подтвержден — тоже ок)
-    if not user.is_email_verified:
-        user.is_email_verified = True
+    # подтверждаем email + создаём кошелёк + создаём сессию (атомарно)
+    try:
+        if not user.is_email_verified:
+            user.is_email_verified = True
+
+        from wallets import create_bsc_wallet_for_user
+        create_bsc_wallet_for_user(db, user, commit=False)
+
+        session_id = create_session(db, user.id, commit=False)
+
         db.commit()
+    except Exception:
+        db.rollback()
+        return JSONResponse(status_code=500, content={"status": "error", "message": "Не удалось завершить регистрацию"})
 
-        # создаём кошелёк BSC (1 на пользователя)
-        try:
-            from wallets import create_bsc_wallet_for_user
-            create_bsc_wallet_for_user(db, user)
-        except Exception:
-            return JSONResponse(status_code=500, content={"status": "error", "message": "Не удалось создать кошелёк"})
-
-    # создаём сессию и ставим cookie
-    session_id = create_session(db, user.id)
+    # cookie после успешного commit
     resp = JSONResponse(content={"status": "ok", "redirect": "/dashboard"})
     resp.set_cookie(
         key=COOKIE_NAME,
         value=session_id,
         httponly=True,
         samesite="lax",
-        secure=False,  # на https поставишь True
+        secure=False,
         path="/",
     )
     return resp

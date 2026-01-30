@@ -41,14 +41,13 @@ def decrypt_private_key(enc: str) -> str:
     data = fernet.decrypt(enc.encode("utf-8"))
     return data.decode("utf-8")
 
-def create_bsc_wallet_for_user(db: "Session", user: "User") -> "UserWallet":
+def create_bsc_wallet_for_user(db: "Session", user: "User", commit: bool = True) -> "UserWallet":
     """
     Guarantees exactly one BSC wallet per user.
-    If exists - returns it; otherwise creates a new random EOA,
-    encrypts its private key with WALLET_ENC_KEY and stores it.
+    If exists - returns it; otherwise creates wallet.
+    If commit=False -> only db.add() + db.flush(), commit must be done by caller.
     """
-    # local import to avoid circular imports
-    from main import UserWallet
+    from main import UserWallet  # чтобы не было circular
 
     existing = (
         db.query(UserWallet)
@@ -58,9 +57,9 @@ def create_bsc_wallet_for_user(db: "Session", user: "User") -> "UserWallet":
     if existing:
         return existing
 
-    acct = Account.create()           # random EOA
-    priv_hex = acct.key.hex()         # '0x' + 64 hex (итого 66 символов)
-    address = Web3.to_checksum_address(acct.address)  # 42 символа адреса
+    acct = Account.create()
+    priv_hex = acct.key.hex()
+    address = Web3.to_checksum_address(acct.address)
 
     enc_priv = encrypt_private_key(priv_hex)
 
@@ -70,21 +69,25 @@ def create_bsc_wallet_for_user(db: "Session", user: "User") -> "UserWallet":
         address=address,
         encrypted_private_key=enc_priv,
     )
-
     db.add(wallet)
-    try:
-        db.commit()
-    except IntegrityError:
-        # race condition / unique constraint
-        db.rollback()
-        existing = (
-            db.query(UserWallet)
-            .filter(UserWallet.user_id == user.id, UserWallet.blockchain == "BSC")
-            .first()
-        )
-        if existing:
-            return existing
-        raise
 
-    db.refresh(wallet)
+    if commit:
+        try:
+            db.commit()
+        except IntegrityError:
+            db.rollback()
+            # на случай гонки за уникальность
+            existing = (
+                db.query(UserWallet)
+                .filter(UserWallet.user_id == user.id, UserWallet.blockchain == "BSC")
+                .first()
+            )
+            if existing:
+                return existing
+            raise
+        db.refresh(wallet)
+    else:
+        # чтобы id/created_at подтянулись в рамках транзакции (не обязательно, но полезно)
+        db.flush()
+
     return wallet
