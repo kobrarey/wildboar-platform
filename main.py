@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from email_service import send_email, render_email_template
 from codes import create_code, verify_code
+from i18n import t
 
 
 # -----------------------
@@ -156,19 +157,19 @@ def verify_password(password: str, password_hash: str) -> bool:
         return False
 
 
-def validate_password(pwd: str) -> str | None:
+def validate_password(pwd: str, lang: str | None = None) -> str | None:
     if len(pwd) < 8:
-        return "Пароль должен содержать не менее 8 символов."
+        return t(lang, "password_min_length")
     if re.search(r"\s", pwd):
-        return "Пароль не должен содержать пробелы."
+        return t(lang, "password_no_spaces")
     if not re.search(r"\d", pwd):
-        return "Пароль должен содержать минимум одну цифру."
+        return t(lang, "password_digit")
     if not re.search(r"[a-zа-я]", pwd):
-        return "Пароль должен содержать минимум одну строчную букву."
+        return t(lang, "password_lower")
     if not re.search(r"[A-ZА-Я]", pwd):
-        return "Пароль должен содержать минимум одну заглавную букву."
+        return t(lang, "password_upper")
     if not re.search(r"[^A-Za-zА-Яа-я0-9]", pwd):
-        return "Пароль должен содержать минимум один спецсимвол."
+        return t(lang, "password_special")
     return None
 
 
@@ -281,22 +282,19 @@ def register(
 
     # базовые проверки
     if not email_norm:
-        msg = "Email is required" if is_en else "Email обязателен"
-        return JSONResponse(status_code=400, content={"status": "error", "message": msg})
+        return JSONResponse(status_code=400, content={"status": "error", "message": t(lang, "email_required")})
     if not pwd:
-        msg = "Password must not be empty" if is_en else "Пароль не должен быть пустым"
-        return JSONResponse(status_code=400, content={"status": "error", "message": msg})
+        return JSONResponse(status_code=400, content={"status": "error", "message": t(lang, "password_empty")})
 
     # пароль (у тебя уже есть validate_password)
-    err = validate_password(pwd)
+    err = validate_password(pwd, lang)
     if err:
         return JSONResponse(status_code=400, content={"status": "error", "message": err})
 
     # email уникален
     existing = db.query(User).filter(User.email == email_norm).first()
     if existing:
-        msg = "Email is already taken" if is_en else "Email уже занят"
-        return JSONResponse(status_code=400, content={"status": "error", "message": msg})
+        return JSONResponse(status_code=400, content={"status": "error", "message": t(lang, "email_taken")})
 
     # создаём пользователя (НЕ верифицирован)
     user = User(
@@ -315,8 +313,7 @@ def register(
         db.commit()
     except IntegrityError:
         db.rollback()
-        msg = "Email is already taken" if is_en else "Email уже занят"
-        return JSONResponse(status_code=400, content={"status": "error", "message": msg})
+        return JSONResponse(status_code=400, content={"status": "error", "message": t(lang, "email_taken")})
 
     db.refresh(user)
 
@@ -336,24 +333,25 @@ def register(
         # удаляем пользователя (FK CASCADE удалит его коды)
         db.delete(user)
         db.commit()
-        return JSONResponse(status_code=500, content={"status": "error", "message": "Не удалось отправить письмо"})
+        return JSONResponse(status_code=500, content={"status": "error", "message": t(lang, "send_email_failed")})
 
     return JSONResponse(content={"status": "ok", "next": "enter_code", "email": user.email})
 
 
 @app.post("/register/confirm")
-def register_confirm(payload: RegisterConfirmIn, db: Session = Depends(get_db)):
+def register_confirm(request: Request, payload: RegisterConfirmIn, db: Session = Depends(get_db)):
+    lang = get_lang_from_request(request)
     email_norm = (payload.email or "").strip().lower()
     code = (payload.code or "").strip()
 
     user = db.query(User).filter(User.email == email_norm).first()
     if not user:
-        return JSONResponse(status_code=400, content={"status": "error", "message": "Пользователь не найден"})
+        return JSONResponse(status_code=400, content={"status": "error", "message": t(lang, "user_not_found")})
 
     try:
         verify_code(user.id, "registration", code, db=db)
     except ValueError as e:
-        return JSONResponse(status_code=400, content={"status": "error", "message": str(e)})
+        return JSONResponse(status_code=400, content={"status": "error", "message": t(lang, str(e))})
 
     # подтверждаем email + создаём кошелёк + создаём сессию (атомарно)
     try:
@@ -368,7 +366,7 @@ def register_confirm(payload: RegisterConfirmIn, db: Session = Depends(get_db)):
         db.commit()
     except Exception:
         db.rollback()
-        return JSONResponse(status_code=500, content={"status": "error", "message": "Не удалось завершить регистрацию"})
+        return JSONResponse(status_code=500, content={"status": "error", "message": t(lang, "registration_failed")})
 
     # cookie после успешного commit
     resp = JSONResponse(content={"status": "ok", "redirect": "/dashboard"})
@@ -392,8 +390,7 @@ async def register_resend_code(request: Request, db: Session = Depends(get_db)):
     is_en = (lang or "").strip().lower() == "en"
 
     if not email:
-        msg = "Email is required" if is_en else "Email обязателен"
-        return PlainTextResponse(msg, status_code=400)
+        return PlainTextResponse(t(lang, "email_required"), status_code=400)
 
     user = db.query(User).filter(User.email == email).first()
     # не светим состояние пользователя
@@ -410,9 +407,9 @@ async def register_resend_code(request: Request, db: Session = Depends(get_db)):
         send_email(user.email, subject, html)
     except ValueError as e:
         # cooldown и прочие валидационные ошибки — текстом
-        return PlainTextResponse(str(e), status_code=400)
+        return PlainTextResponse(t(lang, str(e)), status_code=400)
     except Exception:
-        return PlainTextResponse("Не удалось отправить письмо", status_code=500)
+        return PlainTextResponse(t(lang, "send_email_failed"), status_code=500)
 
     return JSONResponse({"status": "ok"}, status_code=200)
 
@@ -465,11 +462,10 @@ def login(
 
     user = db.query(User).filter(User.email == email_norm).first()
     if not user or not user.is_active or not verify_password(pwd, user.password_hash):
-        msg = "Incorrect email or password" if is_en else "Неверный email или пароль"
-        return PlainTextResponse(msg, status_code=401)
+        return PlainTextResponse(t(lang, "incorrect_email_or_password"), status_code=401)
 
     if not user.is_email_verified:
-        return PlainTextResponse("Email не подтверждён. Завершите регистрацию.", status_code=400)
+        return PlainTextResponse(t(lang, "email_not_verified"), status_code=400)
 
     # 2FA включена (сейчас по умолчанию у всех True)
     if user.two_factor_enabled:
@@ -483,8 +479,7 @@ def login(
             subject = "Login code" if email_lang == "en" else "Код для входа"
             send_email(user.email, subject, html)
         except Exception:
-            err_msg = "Failed to send email" if is_en else "Не удалось отправить письмо"
-            return PlainTextResponse(err_msg, status_code=500)
+            return PlainTextResponse(t(lang, "send_email_failed"), status_code=500)
 
         return JSONResponse(content={"status": "2fa_required"})
 
@@ -512,8 +507,7 @@ async def login_2fa_resend(request: Request, db: Session = Depends(get_db)):
     is_en = (lang or "").strip().lower() == "en"
 
     if not email:
-        msg = "Email is required" if is_en else "Email обязателен"
-        return PlainTextResponse(msg, status_code=400)
+        return PlainTextResponse(t(lang, "email_required"), status_code=400)
 
     user = db.query(User).filter(User.email == email).first()
     # не светим состояние пользователя
@@ -529,30 +523,30 @@ async def login_2fa_resend(request: Request, db: Session = Depends(get_db)):
         subject = "Login code" if is_en else "Код для входа"
         send_email(user.email, subject, html)
     except ValueError as e:
-        return PlainTextResponse(str(e), status_code=400)
+        return PlainTextResponse(t(lang, str(e)), status_code=400)
     except Exception:
-        err_msg = "Failed to send email" if is_en else "Не удалось отправить письмо"
-        return PlainTextResponse(err_msg, status_code=500)
+        return PlainTextResponse(t(lang, "send_email_failed"), status_code=500)
 
     return JSONResponse({"status": "ok"}, status_code=200)
 
 
 @app.post("/login/2fa")
-def login_2fa(payload: Login2FAIn, request: Request, db: Session = Depends(get_db)):
+def login_2fa(request: Request, payload: Login2FAIn, db: Session = Depends(get_db)):
+    lang = get_lang_from_request(request)
     email_norm = (payload.email or "").strip().lower()
     code = (payload.code or "").strip()
 
     user = db.query(User).filter(User.email == email_norm).first()
     if not user or not user.is_active:
-        return PlainTextResponse("Неверный код", status_code=400)
+        return PlainTextResponse(t(lang, "invalid_code"), status_code=400)
 
     if not user.is_email_verified:
-        return PlainTextResponse("Email не подтверждён. Завершите регистрацию.", status_code=400)
+        return PlainTextResponse(t(lang, "email_not_verified"), status_code=400)
 
     try:
         verify_code(user.id, "login_2fa", code, db=db)
     except ValueError as e:
-        return PlainTextResponse(str(e), status_code=400)
+        return PlainTextResponse(t(lang, str(e)), status_code=400)
 
     session_id = create_session(db, user.id)
     resp = JSONResponse(content={"status": "ok", "redirect": "/dashboard"})
@@ -579,17 +573,16 @@ def send_password_change_code(
     except NotAuthenticated:
         return JSONResponse({"status": "error", "message": "Unauthorized"}, status_code=401)
 
+    lang = get_lang_from_request(request)
     new_pwd = (payload.new_password or "").strip()
-    err = validate_password(new_pwd)
+    err = validate_password(new_pwd, lang)
     if err:
         return JSONResponse({"status": "error", "message": err}, status_code=400)
 
     try:
         code = create_code(user.id, "password_change", db=db)
     except ValueError as e:
-        return JSONResponse({"status": "error", "message": str(e)}, status_code=400)
-
-    lang = get_lang_from_request(request)
+        return JSONResponse({"status": "error", "message": t(lang, str(e))}, status_code=400)
     ttl = int(os.getenv("SECURITY_CODE_TTL_MINUTES", "15"))
 
     html = render_email_template(
@@ -602,7 +595,7 @@ def send_password_change_code(
     try:
         send_email(user.email, subject, html)
     except Exception:
-        return JSONResponse({"status": "error", "message": "Не удалось отправить письмо"}, status_code=500)
+        return JSONResponse({"status": "error", "message": t(lang, "send_email_failed")}, status_code=500)
 
     return {"status": "ok"}
 
@@ -618,8 +611,9 @@ def change_password_confirm(
     except NotAuthenticated:
         return JSONResponse({"status": "error", "message": "Unauthorized"}, status_code=401)
 
+    lang = get_lang_from_request(request)
     new_pwd = (payload.new_password or "").strip()
-    err = validate_password(new_pwd)
+    err = validate_password(new_pwd, lang)
     if err:
         return JSONResponse({"status": "error", "message": err}, status_code=400)
 
@@ -627,7 +621,7 @@ def change_password_confirm(
     try:
         verify_code(user.id, "password_change", code, db=db)
     except ValueError as e:
-        return JSONResponse({"status": "error", "message": str(e)}, status_code=400)
+        return JSONResponse({"status": "error", "message": t(lang, str(e))}, status_code=400)
 
     # меняем пароль
     user.password_hash = hash_password(new_pwd)
@@ -687,9 +681,8 @@ async def forgot_send_code(request: Request, db: Session = Depends(get_db)):
     # всегда отвечаем 200, чтобы не светить наличие пользователя
     user = db.query(User).filter(User.email == email).one_or_none()
     if not user or not user.is_active:
-        return JSONResponse({"status": "ok", "message": "Если такой email существует, код отправлен"}, status_code=200)
+        return JSONResponse({"status": "ok", "message": t(lang, "code_sent_if_exists")}, status_code=200)
 
-    lang = get_lang_from_request(request)
     try:
         code = create_code(user.id, "reset", db=db)
         html = render_email_template(
@@ -700,8 +693,7 @@ async def forgot_send_code(request: Request, db: Session = Depends(get_db)):
         send_email(user.email, subject, html)
     except Exception:
         # тут можно вернуть 200 (не палить), но по UX лучше сообщить ошибку
-        err_msg = "Failed to send email" if is_en else "Не удалось отправить письмо"
-        return PlainTextResponse(err_msg, status_code=400)
+        return PlainTextResponse(t(lang, "send_email_failed"), status_code=400)
 
     return JSONResponse({"status": "ok"}, status_code=200)
 
@@ -712,19 +704,17 @@ async def forgot_verify_code(request: Request, db: Session = Depends(get_db)):
     email = (data.get("email") or "").strip().lower()
     code = (data.get("code") or "").strip()
     lang = get_lang_from_request(request)
-    is_en = (lang or "").strip().lower() == "en"
-    bad_code_msg = "Invalid code" if is_en else "Неверный код"
 
     user = db.query(User).filter(User.email == email).one_or_none()
     if not user or not user.is_active:
-        return PlainTextResponse(bad_code_msg, status_code=400)
+        return PlainTextResponse(t(lang, "invalid_code"), status_code=400)
 
     try:
         ok = verify_code(user.id, "reset", code, db=db)
         if not ok:
-            return PlainTextResponse(bad_code_msg, status_code=400)
+            return PlainTextResponse(t(lang, "invalid_code"), status_code=400)
     except ValueError as e:
-        return PlainTextResponse(str(e), status_code=400)
+        return PlainTextResponse(t(lang, str(e)), status_code=400)
 
     token = uuid.uuid4().hex
     now = utcnow()
@@ -750,10 +740,9 @@ def forgot_new_password(request: Request, token: str = Query(default=""), db: Se
 
     rs = db.query(PasswordResetSession).filter(PasswordResetSession.id == token).one_or_none()
     if not rs or rs.is_used or rs.expires_at <= now:
-        error_msg = "Link expired. Please request a new code." if lang == "en" else "Ссылка устарела, запросите новый код"
         return templates.TemplateResponse(
             "forgot_new_password.html",
-            {"request": request, "token": None, "error": error_msg, "lang": lang},
+            {"request": request, "token": None, "error": t(lang, "link_expired"), "lang": lang},
         )
 
     return templates.TemplateResponse(
@@ -769,26 +758,22 @@ async def forgot_set_new_password(request: Request, db: Session = Depends(get_db
     password = (data.get("password") or "")
     password_confirm = (data.get("password_confirm") or "")
     lang = get_lang_from_request(request)
-    is_en = (lang or "").strip().lower() == "en"
 
     if password != password_confirm:
-        msg = "Passwords do not match" if is_en else "Пароли не совпадают"
-        return PlainTextResponse(msg, status_code=400)
+        return PlainTextResponse(t(lang, "passwords_do_not_match"), status_code=400)
 
-    err = validate_password(password)
+    err = validate_password(password, lang)
     if err:
         return PlainTextResponse(err, status_code=400)
 
     now = utcnow()
     rs = db.query(PasswordResetSession).filter(PasswordResetSession.id == token).one_or_none()
     if not rs or rs.is_used or rs.expires_at <= now:
-        msg = "Link expired. Please request a new code." if is_en else "Ссылка устарела, запросите новый код"
-        return PlainTextResponse(msg, status_code=400)
+        return PlainTextResponse(t(lang, "link_expired"), status_code=400)
 
     user = db.query(User).filter(User.id == rs.user_id).one_or_none()
     if not user:
-        msg = "User not found" if is_en else "Пользователь не найден"
-        return PlainTextResponse(msg, status_code=400)
+        return PlainTextResponse(t(lang, "user_not_found"), status_code=400)
 
     user.password_hash = hash_password(password)
     rs.is_used = True

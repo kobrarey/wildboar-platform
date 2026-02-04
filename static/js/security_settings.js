@@ -3,14 +3,22 @@
       if (!el) return;
       el.textContent = text || "";
     }
-  
+
     function show(el) { el && el.classList.remove("hidden"); }
     function hide(el) { el && el.classList.add("hidden"); }
-  
+
     function is6digits(v) {
       return /^\d{6}$/.test((v || "").trim());
     }
-  
+
+    const lang = (document.documentElement.getAttribute("lang") || "ru").toLowerCase();
+    const isEn = lang === "en";
+    const MSG = {
+      network_error: isEn ? "Network error. Please try again." : "Сетевая ошибка. Повторите попытку.",
+      error_http: (s) => (isEn ? `Error (HTTP ${s}).` : `Ошибка (HTTP ${s}).`),
+      password_changed: isEn ? "Password changed" : "Пароль изменён",
+    };
+
     document.addEventListener("DOMContentLoaded", () => {
       const p1 = document.getElementById("newPassword");
       const p2 = document.getElementById("confirmPassword");
@@ -65,18 +73,17 @@
   
           if (!resp.ok) {
             const t = await resp.text().catch(() => "");
-            setMsg(msg, t || `Ошибка (HTTP ${resp.status}).`);
+            setMsg(msg, t || MSG.error_http(resp.status));
             return;
           }
-  
-          // success => show code input
+
           show(codeBlock);
           setMsg(msg, "OK");
           refresh();
           if (codeInput) codeInput.focus();
-  
+
         } catch {
-          setMsg(msg, "Сетевая ошибка. Повторите попытку.");
+          setMsg(msg, MSG.network_error);
         }
       });
   
@@ -99,17 +106,13 @@
   
           if (!resp.ok) {
             const t = await resp.text().catch(() => "");
-            setMsg(msg, t || `Ошибка (HTTP ${resp.status}).`);
+            setMsg(msg, t || MSG.error_http(resp.status));
             return;
           }
-  
-          // success
-          // бэк возвращает {status:"ok"} (и может вернуть redirect — если появится, легко добавить)
-          setMsg(msg, document.documentElement.lang === "en" ? "Password changed" : "Пароль изменён");
-  
-          // по желанию: window.location.href = "/";
+
+          setMsg(msg, MSG.password_changed);
         } catch {
-          setMsg(msg, "Сетевая ошибка. Повторите попытку.");
+          setMsg(msg, MSG.network_error);
         }
       });
   

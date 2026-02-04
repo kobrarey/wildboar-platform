@@ -67,7 +67,7 @@ def create_code(user_id: int, purpose: str, db: Optional[Session] = None) -> str
         if last is not None:
             last_created = last["created_at"]
             if (now - last_created).total_seconds() < RESEND_COOLDOWN_SECONDS:
-                raise ValueError("Код можно запрашивать не чаще 1 раза в минуту")
+                raise ValueError("code_cooldown")
 
         # deactivate all previous unused codes for this user/purpose
         db.execute(
@@ -109,7 +109,7 @@ def verify_code(user_id: int, purpose: str, code: str, db: Optional[Session] = N
     
     # быстрая проверка формата кода
     if not code or not code.isdigit() or len(code) != CODE_LENGTH:
-        raise ValueError("Неверный код")
+        raise ValueError("invalid_code")
 
     close_after = False
     if db is None:
@@ -157,14 +157,14 @@ def verify_code(user_id: int, purpose: str, code: str, db: Optional[Session] = N
                 )
                 db.commit()
 
-            raise ValueError("Invalid code")
+            raise ValueError("invalid_code")
 
         # 3) validation
         if row["is_used"]:
-            raise ValueError("Code already used")
+            raise ValueError("code_used")
 
         if row["expires_at"] < utcnow():
-            raise ValueError("Code expired")
+            raise ValueError("code_expired")
 
         if row["attempts"] >= MAX_ATTEMPTS:
             # optionally burn it
@@ -173,7 +173,7 @@ def verify_code(user_id: int, purpose: str, code: str, db: Optional[Session] = N
                 {"id": row["id"]},
             )
             db.commit()
-            raise ValueError("Too many attempts")
+            raise ValueError("too_many_attempts")
 
         # 4) success: attempts++ and is_used=true
         db.execute(

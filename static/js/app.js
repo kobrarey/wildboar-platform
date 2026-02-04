@@ -4,10 +4,39 @@
   function qsa(sel, root = document) { return Array.from(root.querySelectorAll(sel)); }
   function setError(el, text) { if (el) el.textContent = text || ""; }
 
+  const LANG = (document.documentElement.getAttribute("lang") || "ru").toLowerCase();
+  const isEn = LANG === "en";
+  const MSG = {
+    network_error: isEn ? "Network error. Please try again." : "Сетевая ошибка. Повторите попытку.",
+    email_not_found: isEn ? "Email not found." : "Не найден email.",
+    resend_again: isEn ? "Send code again" : "Отправить код ещё раз",
+    cooldown_seconds: (s) => (isEn ? `Retry in ${s}s` : `Повторно через ${s}с`),
+    error_http: (s) => (isEn ? `Error (HTTP ${s}).` : `Ошибка (HTTP ${s}).`),
+    code_sent_hint: isEn ? "We sent the code to your email." : "Мы отправили код на вашу почту.",
+    code_sent_to: (email) => (isEn ? `We sent the code to: ${email}` : `Мы отправили код на почту: ${email}`),
+    fill_required: isEn ? "Please fill in all required fields." : "Заполните обязательные поля.",
+    accept_terms: isEn ? "Please accept the terms." : "Подтвердите принятие условий.",
+    password_rules_prefix: isEn ? "Password requirements not met: " : "Не выполнены условия пароля: ",
+    registration_error: isEn ? "Registration error." : "Ошибка регистрации.",
+    enter_6digit: isEn ? "Enter 6-digit code." : "Введите 6-значный код.",
+    email_not_found_confirm: isEn ? "Email for confirmation not found." : "Не найден email для подтверждения.",
+    invalid_code: isEn ? "Invalid code." : "Неверный код.",
+    enter_email_password: isEn ? "Enter email and password." : "Введите email и пароль.",
+    invalid_server_response: isEn ? "Invalid server response." : "Некорректный ответ сервера.",
+    login_error_http: (s) => (isEn ? `Login error (HTTP ${s}).` : `Ошибка входа (HTTP ${s}).`),
+    rule_len: isEn ? "Length ≥ 8" : "Длина ≥ 8",
+    rule_digit: isEn ? "At least 1 digit" : "Минимум 1 цифра",
+    rule_lower: isEn ? "At least 1 lowercase" : "Минимум 1 строчная буква",
+    rule_upper: isEn ? "At least 1 uppercase" : "Минимум 1 заглавная буква",
+    rule_special: isEn ? "At least 1 special char" : "Минимум 1 спецсимвол",
+    rule_nospace: isEn ? "No spaces/tabs/newlines" : "Без пробелов/табов/переводов строки",
+  };
+
   const _resendTimers = new WeakMap();
 
-  function startResendCooldown(btn, seconds = 60, baseText = "Отправить код ещё раз") {
+  function startResendCooldown(btn, seconds = 60, baseText) {
     if (!btn) return;
+    const label = baseText != null ? baseText : MSG.resend_again;
 
     // сброс старого таймера
     const prev = _resendTimers.get(btn);
@@ -16,13 +45,13 @@
 
     let left = seconds;
     btn.disabled = true;
-    btn.textContent = `Повторно через ${left}с`;
+    btn.textContent = MSG.cooldown_seconds(left);
 
     const endAt = Date.now() + seconds * 1000;
 
     function finish() {
       btn.disabled = false;
-      btn.textContent = baseText;
+      btn.textContent = label;
       _resendTimers.delete(btn);
     }
 
@@ -34,7 +63,7 @@
         finish();
         return;
       }
-      btn.textContent = `Повторно через ${left}с`;
+      btn.textContent = MSG.cooldown_seconds(left);
     }, 1000);
 
     // страховочный таймер, если интервал притормозят в фоне
@@ -48,12 +77,11 @@
 
   async function postResend(endpoint, email, errEl, btn) {
     if (!email) {
-      setError(errEl, "Не найден email.");
+      setError(errEl, MSG.email_not_found);
       return;
     }
 
-    // по ТЗ: после клика дизейблим на 60 сек сразу
-    startResendCooldown(btn, 60, "Отправить код ещё раз");
+    startResendCooldown(btn, 60);
 
     try {
       const resp = await fetch(endpoint, {
@@ -65,16 +93,12 @@
 
       if (resp.ok) return;
 
-      // если 400 — показать текст и тоже оставить cooldown (он уже включён)
       const txt = await resp.text().catch(() => "");
-      setError(errEl, txt || `Ошибка (HTTP ${resp.status}).`);
-
-      // UX-совпадение: при 400 тоже гарантируем 60 сек (мы уже запустили)
+      setError(errEl, txt || MSG.error_http(resp.status));
       return;
 
     } catch {
-      setError(errEl, "Сетевая ошибка. Повторите попытку.");
-      // cooldown оставляем, чтобы не спамили
+      setError(errEl, MSG.network_error);
     }
   }
 
@@ -95,12 +119,12 @@
 
   // ---------- password rules ----------
   const RULE_META = {
-    len: "Длина ≥ 8",
-    digit: "Минимум 1 цифра",
-    lower: "Минимум 1 строчная буква",
-    upper: "Минимум 1 заглавная буква",
-    special: "Минимум 1 спецсимвол",
-    nospace: "Без пробелов/табов/переводов строки",
+    len: MSG.rule_len,
+    digit: MSG.rule_digit,
+    lower: MSG.rule_lower,
+    upper: MSG.rule_upper,
+    special: MSG.rule_special,
+    nospace: MSG.rule_nospace,
   };
 
   function getPasswordRules(pw) {
@@ -184,7 +208,7 @@
       if (confirmBtn) confirmBtn.disabled = true;
       setError(confirmErr, "");
       setError(errorEl, "");
-      if (codeHint) codeHint.textContent = "Мы отправили код на вашу почту.";
+      if (codeHint) codeHint.textContent = MSG.code_sent_hint;
       refreshButton();
     }
 
@@ -192,7 +216,7 @@
       pendingEmail = (emailValue || "").trim();
       if (step1) step1.classList.add("is-hidden");
       if (step2) step2.classList.remove("is-hidden");
-      if (codeHint && pendingEmail) codeHint.textContent = `Мы отправили код на почту: ${pendingEmail}`;
+      if (codeHint && pendingEmail) codeHint.textContent = MSG.code_sent_to(pendingEmail);
       if (codeInput) codeInput.focus();
       setError(confirmErr, "");
     }
@@ -218,10 +242,10 @@
 
       if (!v.ok) {
         const parts = [];
-        if (!requiredOk()) parts.push("Заполните обязательные поля.");
-        if (!terms?.checked) parts.push("Подтвердите принятие условий.");
+        if (!requiredOk()) parts.push(MSG.fill_required);
+        if (!terms?.checked) parts.push(MSG.accept_terms);
         if (v.missingRules.length) {
-          parts.push("Не выполнены условия пароля: " + v.missingRules.map(k => RULE_META[k]).join(", "));
+          parts.push(MSG.password_rules_prefix + v.missingRules.map(k => RULE_META[k]).join(", "));
         }
         setError(errorEl, parts.join(" "));
         return;
@@ -249,7 +273,7 @@
             (typeof payload === "string" && payload) ||
             payload?.message ||
             payload?.detail ||
-            "Ошибка регистрации.";
+            MSG.registration_error;
           setError(errorEl, msg);
           return;
         }
@@ -274,11 +298,11 @@
         showStep2(em);
 
       } catch {
-        setError(errorEl, "Сетевая ошибка. Повторите попытку.");
+        setError(errorEl, MSG.network_error);
       }
     });
 
-    // step2: enable confirm button only for 6 digits (под код)
+    // step2: enable confirm button only for 6 digits
     function refreshConfirm() {
       const v = (codeInput?.value || "").trim();
       const ok = /^\d{6}$/.test(v);
@@ -298,12 +322,12 @@
       setError(confirmErr, "");
       const code = (codeInput?.value || "").trim();
       if (!/^\d{6}$/.test(code)) {
-        setError(confirmErr, "Введите 6-значный код.");
+        setError(confirmErr, MSG.enter_6digit);
         return;
       }
       const em = pendingEmail || (email?.value || "").trim();
       if (!em) {
-        setError(confirmErr, "Не найден email для подтверждения.");
+        setError(confirmErr, MSG.email_not_found_confirm);
         return;
       }
 
@@ -325,17 +349,16 @@
             (typeof payload === "string" && payload) ||
             payload?.message ||
             payload?.detail ||
-            "Неверный код.";
+            MSG.invalid_code;
           setError(confirmErr, msg);
           return;
         }
 
-        // success: {"status":"ok","redirect":"/dashboard"} + cookie
         const redirect = payload?.redirect || "/dashboard";
         window.location.href = redirect;
 
       } catch {
-        setError(confirmErr, "Сетевая ошибка. Повторите попытку.");
+        setError(confirmErr, MSG.network_error);
       }
     });
 
@@ -429,7 +452,7 @@
       const email = (emailInput?.value || "").trim();
       const pass  = (passInput?.value || "").trim();
       if (!email || !pass) {
-        setError(errorEl, "Введите email и пароль.");
+        setError(errorEl, MSG.enter_email_password);
         return;
       }
 
@@ -452,8 +475,7 @@
           : await resp.text().catch(() => "");
 
         if (!resp.ok) {
-          // 400/401: показать текст/сообщение в модалке
-          setError(errorEl, payloadToMessage(payload, `Ошибка входа (HTTP ${resp.status}).`));
+          setError(errorEl, payloadToMessage(payload, MSG.login_error_http(resp.status)));
           return;
         }
 
@@ -470,10 +492,9 @@
           return;
         }
 
-        // fallback
-        setError(errorEl, "Некорректный ответ сервера.");
+        setError(errorEl, MSG.invalid_server_response);
       } catch {
-        setError(errorEl, "Сетевая ошибка. Повторите попытку.");
+        setError(errorEl, MSG.network_error);
       }
     });
 
@@ -484,8 +505,8 @@
       const email = pendingEmail || (emailInput?.value || "").trim();
       const code = (codeInput?.value || "").trim();
 
-      if (!email) { setError(confirmErr, "Не найден email для подтверждения."); return; }
-      if (!/^\d{6}$/.test(code)) { setError(confirmErr, "Введите 6-значный код."); return; }
+      if (!email) { setError(confirmErr, MSG.email_not_found_confirm); return; }
+      if (!/^\d{6}$/.test(code)) { setError(confirmErr, MSG.enter_6digit); return; }
 
       try {
         const resp = await fetch("/login/2fa", {
@@ -501,8 +522,7 @@
           : await resp.text().catch(() => "");
 
         if (!resp.ok) {
-          // 400: текст
-          setError(confirmErr, payloadToMessage(payload, `Ошибка (HTTP ${resp.status}).`));
+          setError(confirmErr, payloadToMessage(payload, MSG.error_http(resp.status)));
           return;
         }
 
@@ -511,9 +531,9 @@
           return;
         }
 
-        setError(confirmErr, "Некорректный ответ сервера.");
+        setError(confirmErr, MSG.invalid_server_response);
       } catch {
-        setError(confirmErr, "Сетевая ошибка. Повторите попытку.");
+        setError(confirmErr, MSG.network_error);
       }
     });
 
