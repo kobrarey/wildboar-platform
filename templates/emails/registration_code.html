@@ -1,7 +1,12 @@
 {% extends "emails/base.html" %}
 {% block content %}
-  <h2>Подтверждение email</h2>
-  <p>Ваш код подтверждения:</p>
+  {% if lang == 'en' %}
+    <h2>Email confirmation</h2>
+    <p>Your confirmation code:</p>
+  {% else %}
+    <h2>Подтверждение email</h2>
+    <p>Ваш код подтверждения:</p>
+  {% endif %}
   <div class="code">{{ code }}</div>
-  <p class="muted">Код действует {{ ttl_minutes }} минут.</p>
+  <p class="muted">{% if lang == 'en' %}The code is valid for {{ ttl_minutes }} minutes.{% else %}Код действует {{ ttl_minutes }} минут.{% endif %}</p>
 {% endblock %}

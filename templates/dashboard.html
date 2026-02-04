@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="ru">
+<html lang="{{ 'en' if lang == 'en' else 'ru' }}">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>WildBoar — Личный кабинет</title>
+  <title>WildBoar — {{ 'Personal account' if lang == 'en' else 'Личный кабинет' }}</title>
   <link rel="stylesheet" href="/static/css/app.css" />
   <script defer src="/static/js/app.js?v=5_2"></script>
 </head>
@@ -16,14 +16,14 @@
         <div class="brand__text">wildboar</div>
       </div>
 
-      <button class="icon-btn sidebar__toggle" type="button" aria-label="Меню" data-sidebar-toggle>
+      <button class="icon-btn sidebar__toggle" type="button" aria-label="{{ 'Menu' if lang == 'en' else 'Меню' }}" data-sidebar-toggle>
         <span class="icon-btn__bar"></span>
         <span class="icon-btn__bar"></span>
         <span class="icon-btn__bar"></span>
       </button>
     </div>
 
-    <div class="sidebar__title">Личный кабинет</div>
+    <div class="sidebar__title">{{ 'Personal account' if lang == 'en' else 'Личный кабинет' }}</div>
 
     <nav class="sidebar__nav">
       <a class="sidebar__link sidebar__link--active nav-item" href="/dashboard">
@@ -34,8 +34,15 @@
           <path d="M12 2v4"></path>
         </svg>
         <span class="nav-dot" aria-hidden="true"></span>
-        <span class="nav-label">Мой портфель</span>
+        <span class="nav-label">{{ 'My portfolio' if lang == 'en' else 'Мой портфель' }}</span>
       </a>  
+      <button type="button" class="sidebar__link nav-item sidebar-item" data-href="/settings/security">
+        <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        </svg>
+        <span class="nav-dot" aria-hidden="true"></span>
+        <span class="nav-label">{% if lang == 'en' %}Security settings{% else %}Настройки безопасности{% endif %}</span>
+      </button>
     </nav>
 
     <div class="sidebar__footer">
@@ -45,28 +52,52 @@
           <path d="M9 12h8"></path>
           <path d="M15 8l4 4-4 4"></path>
         </svg>
-        <span class="sidebar__logout-text">Выйти из аккаунта</span>
+        <span class="sidebar__logout-text">{{ 'Log out' if lang == 'en' else 'Выйти из аккаунта' }}</span>
       </a>
     </div>
   </aside>
 
   <div class="dash">
     <header class="dash__top">
-      <a class="btn btn--primary btn--small" href="/">Вернуться на сайт</a>
+      <a class="btn btn--primary btn--small" href="/">{{ 'Back to website' if lang == 'en' else 'Вернуться на сайт' }}</a>
 
-      <div class="dash__user">
-        <div class="dash__user-name">{{ user.first_name }} {{ user.last_name }}</div>
-        <div class="dash__user-email">{{ user.email }}</div>
+      <div class="dash__top-right">
+      <div class="user-header">
+        <span class="account-type-badge">
+          {% if account_type == 'vip' %}
+            VIP
+          {% elif account_type == 'employee' %}
+            {% if lang == 'en' %}Staff{% else %}Сотрудник{% endif %}
+          {% elif account_type == 'manager' %}
+            {% if lang == 'en' %}Manager{% else %}Руководитель{% endif %}
+          {% else %}
+            {% if lang == 'en' %}Basic{% else %}Базовый{% endif %}
+          {% endif %}
+        </span>
+
+        <div class="user-meta">
+          <span class="user-name">{{ user.first_name }} {{ user.last_name }}</span>
+          <span class="user-email">{{ user.email }}</span>
+        </div>
+      </div>
+
+      <div class="lang-switcher">
+        <button data-lang-toggle class="icon-button" type="button">🌐</button>
+        <div class="lang-dropdown hidden">
+          <button type="button" data-lang="ru">Русский</button>
+          <button type="button" data-lang="en">English</button>
+        </div>
+      </div>
       </div>
     </header>
 
     <main class="dash__content">
-      <h1 class="dash__h1">Мой портфель</h1>
+      <h1 class="dash__h1">{{ 'My portfolio' if lang == 'en' else 'Мой портфель' }}</h1>
 
       <!-- Заглушка по ТЗ: можно оставить пустым блоком -->
       <div class="card">
         <div class="card__body">
-          <div class="muted">Раздел “Мой портфель” — в разработке.</div>
+          <div class="muted">{{ 'My portfolio section is under development.' if lang == 'en' else 'Раздел “Мой портфель” — в разработке.' }}</div>
         </div>
       </div>
     </main>

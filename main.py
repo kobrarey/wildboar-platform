@@ -51,6 +51,15 @@ class Login2FAIn(BaseModel):
     code: str
 
 
+class PasswordChangeRequest(BaseModel):
+    new_password: str
+
+
+class PasswordChangeConfirm(BaseModel):
+    new_password: str
+    code: str
+
+
 # -----------------------
 # ORM models (public.users, public.sessions)
 # -----------------------
@@ -69,6 +78,7 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     is_email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     two_factor_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    account_type: Mapped[str] = mapped_column(String(16), nullable=False, default="basic")
 
 
 class SessionModel(Base):
@@ -122,6 +132,9 @@ class PasswordResetSession(Base):
 
 SESSION_TTL_DAYS = 30
 COOKIE_NAME = "session_id"
+SUPPORTED_LANGS = {"ru", "en"}
+DEFAULT_LANG = "ru"
+LANG_COOKIE_NAME = "lang"
 
 
 class NotAuthenticated(Exception):
@@ -213,6 +226,13 @@ def get_current_user(request: Request, db: Session = Depends(get_db)) -> User:
     return user
 
 
+def get_lang_from_request(request: Request) -> str:
+    lang = request.cookies.get(LANG_COOKIE_NAME, DEFAULT_LANG)
+    if lang not in SUPPORTED_LANGS:
+        lang = DEFAULT_LANG
+    return lang
+
+
 # -----------------------
 # FastAPI app + templates/static
 # -----------------------
@@ -232,12 +252,14 @@ def not_authenticated_handler(request: Request, exc: NotAuthenticated):
 # -----------------------
 @app.get("/")
 def home(request: Request):
-    return templates.TemplateResponse("index.html", {"request": request})
+    lang = get_lang_from_request(request)
+    return templates.TemplateResponse("index.html", {"request": request, "lang": lang})
 
 
 @app.get("/useragreement", response_class=HTMLResponse)
 def useragreement(request: Request):
-    return templates.TemplateResponse("useragreement.html", {"request": request})
+    lang = get_lang_from_request(request)
+    return templates.TemplateResponse("useragreement.html", {"request": request, "lang": lang})
 
 
 @app.post("/register")
@@ -250,15 +272,20 @@ def register(
     password: str = Form(...),
     db: Session = Depends(get_db),
 ):
+    lang = get_lang_from_request(request)
+    is_en = (lang or "").strip().lower() == "en"
+
     # нормализация
     email_norm = (email or "").strip().lower()
     pwd = (password or "").strip()
 
     # базовые проверки
     if not email_norm:
-        return JSONResponse(status_code=400, content={"status": "error", "message": "Email обязателен"})
+        msg = "Email is required" if is_en else "Email обязателен"
+        return JSONResponse(status_code=400, content={"status": "error", "message": msg})
     if not pwd:
-        return JSONResponse(status_code=400, content={"status": "error", "message": "Пароль не должен быть пустым"})
+        msg = "Password must not be empty" if is_en else "Пароль не должен быть пустым"
+        return JSONResponse(status_code=400, content={"status": "error", "message": msg})
 
     # пароль (у тебя уже есть validate_password)
     err = validate_password(pwd)
@@ -268,7 +295,8 @@ def register(
     # email уникален
     existing = db.query(User).filter(User.email == email_norm).first()
     if existing:
-        return JSONResponse(status_code=400, content={"status": "error", "message": "Email уже занят"})
+        msg = "Email is already taken" if is_en else "Email уже занят"
+        return JSONResponse(status_code=400, content={"status": "error", "message": msg})
 
     # создаём пользователя (НЕ верифицирован)
     user = User(
@@ -287,7 +315,8 @@ def register(
         db.commit()
     except IntegrityError:
         db.rollback()
-        return JSONResponse(status_code=400, content={"status": "error", "message": "Email уже занят"})
+        msg = "Email is already taken" if is_en else "Email уже занят"
+        return JSONResponse(status_code=400, content={"status": "error", "message": msg})
 
     db.refresh(user)
 
@@ -297,9 +326,10 @@ def register(
 
         html = render_email_template(
             "emails/registration_code.html",
-            {"code": code, "ttl_minutes": 15, "title": "Wild Boar"},
+            {"code": code, "ttl_minutes": 15, "title": "Wild Boar", "lang": lang},
         )
-        send_email(user.email, "Код подтверждения регистрации", html)
+        subject = "Registration confirmation code" if lang == "en" else "Код подтверждения регистрации"
+        send_email(user.email, subject, html)
 
     except Exception as e:
         # если письмо не ушло — чтобы не блокировать повторную регистрацию,
@@ -358,8 +388,12 @@ async def register_resend_code(request: Request, db: Session = Depends(get_db)):
     data = await _payload(request)
     email = (data.get("email") or "").strip().lower()
 
+    lang = get_lang_from_request(request)
+    is_en = (lang or "").strip().lower() == "en"
+
     if not email:
-        return PlainTextResponse("Email обязателен", status_code=400)
+        msg = "Email is required" if is_en else "Email обязателен"
+        return PlainTextResponse(msg, status_code=400)
 
     user = db.query(User).filter(User.email == email).first()
     # не светим состояние пользователя
@@ -370,9 +404,10 @@ async def register_resend_code(request: Request, db: Session = Depends(get_db)):
         code = create_code(user.id, "registration", db=db)
         html = render_email_template(
             "emails/registration_code.html",
-            {"code": code, "ttl_minutes": 15, "title": "Wild Boar"},
+            {"code": code, "ttl_minutes": 15, "title": "Wild Boar", "lang": lang},
         )
-        send_email(user.email, "Код подтверждения регистрации", html)
+        subject = "Registration confirmation code" if lang == "en" else "Код подтверждения регистрации"
+        send_email(user.email, subject, html)
     except ValueError as e:
         # cooldown и прочие валидационные ошибки — текстом
         return PlainTextResponse(str(e), status_code=400)
@@ -382,34 +417,74 @@ async def register_resend_code(request: Request, db: Session = Depends(get_db)):
     return JSONResponse({"status": "ok"}, status_code=200)
 
 
+@app.post("/set-language")
+async def set_language(request: Request):
+    data = await request.json()
+    lang = (data.get("lang") or "").lower()
+    if lang not in SUPPORTED_LANGS:
+        return JSONResponse({"status": "error", "message": "Unsupported language"}, status_code=400)
+
+    resp = JSONResponse({"status": "ok"})
+    resp.set_cookie(
+        key=LANG_COOKIE_NAME,
+        value=lang,
+        max_age=60 * 60 * 24 * 365,
+        httponly=False,
+        samesite="lax",
+        secure=(request.url.scheme == "https"),
+        path="/",
+    )
+    return resp
+
+
+@app.get("/settings/security")
+def security_settings_page(request: Request, db: Session = Depends(get_db)):
+    try:
+        user = get_current_user(request, db)
+    except NotAuthenticated:
+        return RedirectResponse("/", status_code=303)
+
+    lang = get_lang_from_request(request)
+    return templates.TemplateResponse(
+        "security_settings.html",
+        {"request": request, "lang": lang, "user": user, "account_type": user.account_type},
+    )
+
+
 @app.post("/login")
 def login(
     request: Request,
     email: str = Form(...),
     password: str = Form(...),
+    lang: str = Form("ru"),
     db: Session = Depends(get_db),
 ):
     email_norm = (email or "").strip().lower()
     pwd = password or ""
+    is_en = (lang or "").strip().lower() == "en"
 
     user = db.query(User).filter(User.email == email_norm).first()
     if not user or not user.is_active or not verify_password(pwd, user.password_hash):
-        return PlainTextResponse("Неверный email или пароль", status_code=401)
+        msg = "Incorrect email or password" if is_en else "Неверный email или пароль"
+        return PlainTextResponse(msg, status_code=401)
 
     if not user.is_email_verified:
         return PlainTextResponse("Email не подтверждён. Завершите регистрацию.", status_code=400)
 
     # 2FA включена (сейчас по умолчанию у всех True)
     if user.two_factor_enabled:
+        email_lang = (lang or "").strip().lower()
         try:
             code = create_code(user.id, "login_2fa", db=db)
             html = render_email_template(
                 "emails/login_2fa_code.html",
-                {"code": code, "ttl_minutes": 15, "title": "Wild Boar"},
+                {"code": code, "ttl_minutes": 15, "title": "Wild Boar", "lang": email_lang},
             )
-            send_email(user.email, "Код для входа", html)
+            subject = "Login code" if email_lang == "en" else "Код для входа"
+            send_email(user.email, subject, html)
         except Exception:
-            return PlainTextResponse("Не удалось отправить письмо", status_code=500)
+            err_msg = "Failed to send email" if is_en else "Не удалось отправить письмо"
+            return PlainTextResponse(err_msg, status_code=500)
 
         return JSONResponse(content={"status": "2fa_required"})
 
@@ -433,8 +508,12 @@ async def login_2fa_resend(request: Request, db: Session = Depends(get_db)):
     data = await _payload(request)
     email = (data.get("email") or "").strip().lower()
 
+    lang = get_lang_from_request(request)
+    is_en = (lang or "").strip().lower() == "en"
+
     if not email:
-        return PlainTextResponse("Email обязателен", status_code=400)
+        msg = "Email is required" if is_en else "Email обязателен"
+        return PlainTextResponse(msg, status_code=400)
 
     user = db.query(User).filter(User.email == email).first()
     # не светим состояние пользователя
@@ -445,13 +524,15 @@ async def login_2fa_resend(request: Request, db: Session = Depends(get_db)):
         code = create_code(user.id, "login_2fa", db=db)
         html = render_email_template(
             "emails/login_2fa_code.html",
-            {"code": code, "ttl_minutes": 15, "title": "Wild Boar"},
+            {"code": code, "ttl_minutes": 15, "title": "Wild Boar", "lang": lang},
         )
-        send_email(user.email, "Код для входа", html)
+        subject = "Login code" if is_en else "Код для входа"
+        send_email(user.email, subject, html)
     except ValueError as e:
         return PlainTextResponse(str(e), status_code=400)
     except Exception:
-        return PlainTextResponse("Не удалось отправить письмо", status_code=500)
+        err_msg = "Failed to send email" if is_en else "Не удалось отправить письмо"
+        return PlainTextResponse(err_msg, status_code=500)
 
     return JSONResponse({"status": "ok"}, status_code=200)
 
@@ -487,9 +568,93 @@ def login_2fa(payload: Login2FAIn, request: Request, db: Session = Depends(get_d
     return resp
 
 
+@app.post("/settings/security/send-code")
+def send_password_change_code(
+    payload: PasswordChangeRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    try:
+        user = get_current_user(request, db)
+    except NotAuthenticated:
+        return JSONResponse({"status": "error", "message": "Unauthorized"}, status_code=401)
+
+    new_pwd = (payload.new_password or "").strip()
+    err = validate_password(new_pwd)
+    if err:
+        return JSONResponse({"status": "error", "message": err}, status_code=400)
+
+    try:
+        code = create_code(user.id, "password_change", db=db)
+    except ValueError as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=400)
+
+    lang = get_lang_from_request(request)
+    ttl = int(os.getenv("SECURITY_CODE_TTL_MINUTES", "15"))
+
+    html = render_email_template(
+        "emails/password_change_code.html",
+        {"code": code, "ttl_minutes": ttl, "title": "Wild Boar", "lang": lang, "user": user},
+    )
+
+    subject = "WildBoar — password change confirmation" if lang == "en" else "WildBoar — подтверждение смены пароля"
+
+    try:
+        send_email(user.email, subject, html)
+    except Exception:
+        return JSONResponse({"status": "error", "message": "Не удалось отправить письмо"}, status_code=500)
+
+    return {"status": "ok"}
+
+
+@app.post("/settings/security/change-password")
+def change_password_confirm(
+    payload: PasswordChangeConfirm,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    try:
+        user = get_current_user(request, db)
+    except NotAuthenticated:
+        return JSONResponse({"status": "error", "message": "Unauthorized"}, status_code=401)
+
+    new_pwd = (payload.new_password or "").strip()
+    err = validate_password(new_pwd)
+    if err:
+        return JSONResponse({"status": "error", "message": err}, status_code=400)
+
+    code = (payload.code or "").strip()
+    try:
+        verify_code(user.id, "password_change", code, db=db)
+    except ValueError as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=400)
+
+    # меняем пароль
+    user.password_hash = hash_password(new_pwd)
+
+    # инвалидируем остальные сессии пользователя (оставляем текущую)
+    current_sid = request.cookies.get(COOKIE_NAME)
+    q = db.query(SessionModel).filter(SessionModel.user_id == user.id)
+    if current_sid:
+        q = q.filter(SessionModel.id != current_sid)
+    q.delete(synchronize_session=False)
+
+    db.commit()
+    return {"status": "ok"}
+
+
 @app.get("/dashboard")
 def dashboard(request: Request, user: User = Depends(get_current_user)):
-    return templates.TemplateResponse("dashboard.html", {"request": request, "user": user})
+    lang = get_lang_from_request(request)
+    return templates.TemplateResponse(
+        "dashboard.html",
+        {
+            "request": request,
+            "lang": lang,
+            "user": user,
+            "account_type": user.account_type,
+        },
+    )
 
 
 
@@ -507,7 +672,8 @@ def logout(request: Request, db: Session = Depends(get_db)):
 
 @app.get("/forgot", response_class=HTMLResponse)
 def forgot_password(request: Request):
-    return templates.TemplateResponse("forgot.html", {"request": request})
+    lang = get_lang_from_request(request)
+    return templates.TemplateResponse("forgot.html", {"request": request, "lang": lang})
 
 
 @app.post("/forgot/send-code")
@@ -515,21 +681,27 @@ async def forgot_send_code(request: Request, db: Session = Depends(get_db)):
     data = await _payload(request)
     email = (data.get("email") or "").strip().lower()
 
+    lang = get_lang_from_request(request)
+    is_en = (lang or "").strip().lower() == "en"
+
     # всегда отвечаем 200, чтобы не светить наличие пользователя
     user = db.query(User).filter(User.email == email).one_or_none()
     if not user or not user.is_active:
         return JSONResponse({"status": "ok", "message": "Если такой email существует, код отправлен"}, status_code=200)
 
+    lang = get_lang_from_request(request)
     try:
         code = create_code(user.id, "reset", db=db)
         html = render_email_template(
             "emails/reset_password_code.html",
-            {"code": code, "ttl_minutes": int(os.getenv("SECURITY_CODE_TTL_MINUTES", "15")), "title": "Wild Boar"},
+            {"code": code, "ttl_minutes": int(os.getenv("SECURITY_CODE_TTL_MINUTES", "15")), "title": "Wild Boar", "lang": lang},
         )
-        send_email(user.email, "Код для сброса пароля", html)
+        subject = "Password reset code" if lang == "en" else "Код для сброса пароля"
+        send_email(user.email, subject, html)
     except Exception:
         # тут можно вернуть 200 (не палить), но по UX лучше сообщить ошибку
-        return PlainTextResponse("Не удалось отправить письмо", status_code=400)
+        err_msg = "Failed to send email" if is_en else "Не удалось отправить письмо"
+        return PlainTextResponse(err_msg, status_code=400)
 
     return JSONResponse({"status": "ok"}, status_code=200)
 
@@ -539,15 +711,18 @@ async def forgot_verify_code(request: Request, db: Session = Depends(get_db)):
     data = await _payload(request)
     email = (data.get("email") or "").strip().lower()
     code = (data.get("code") or "").strip()
+    lang = get_lang_from_request(request)
+    is_en = (lang or "").strip().lower() == "en"
+    bad_code_msg = "Invalid code" if is_en else "Неверный код"
 
     user = db.query(User).filter(User.email == email).one_or_none()
     if not user or not user.is_active:
-        return PlainTextResponse("Неверный код", status_code=400)
+        return PlainTextResponse(bad_code_msg, status_code=400)
 
     try:
         ok = verify_code(user.id, "reset", code, db=db)
         if not ok:
-            return PlainTextResponse("Неверный код", status_code=400)
+            return PlainTextResponse(bad_code_msg, status_code=400)
     except ValueError as e:
         return PlainTextResponse(str(e), status_code=400)
 
@@ -569,18 +744,22 @@ async def forgot_verify_code(request: Request, db: Session = Depends(get_db)):
 
 @app.get("/forgot/new-password", response_class=HTMLResponse)
 def forgot_new_password(request: Request, token: str = Query(default=""), db: Session = Depends(get_db)):
+    lang = get_lang_from_request(request)
     token = (token or "").strip()
     now = utcnow()
 
     rs = db.query(PasswordResetSession).filter(PasswordResetSession.id == token).one_or_none()
     if not rs or rs.is_used or rs.expires_at <= now:
-        # либо отдельный шаблон ошибки, либо тот же с error
+        error_msg = "Link expired. Please request a new code." if lang == "en" else "Ссылка устарела, запросите новый код"
         return templates.TemplateResponse(
             "forgot_new_password.html",
-            {"request": request, "token": None, "error": "Ссылка устарела, запросите новый код"},
+            {"request": request, "token": None, "error": error_msg, "lang": lang},
         )
 
-    return templates.TemplateResponse("forgot_new_password.html", {"request": request, "token": token, "error": None})
+    return templates.TemplateResponse(
+        "forgot_new_password.html",
+        {"request": request, "token": token, "error": None, "lang": lang},
+    )
 
 
 @app.post("/forgot/new-password")
@@ -589,9 +768,12 @@ async def forgot_set_new_password(request: Request, db: Session = Depends(get_db
     token = (data.get("token") or "").strip()
     password = (data.get("password") or "")
     password_confirm = (data.get("password_confirm") or "")
+    lang = get_lang_from_request(request)
+    is_en = (lang or "").strip().lower() == "en"
 
     if password != password_confirm:
-        return PlainTextResponse("Пароли не совпадают", status_code=400)
+        msg = "Passwords do not match" if is_en else "Пароли не совпадают"
+        return PlainTextResponse(msg, status_code=400)
 
     err = validate_password(password)
     if err:
@@ -600,11 +782,13 @@ async def forgot_set_new_password(request: Request, db: Session = Depends(get_db
     now = utcnow()
     rs = db.query(PasswordResetSession).filter(PasswordResetSession.id == token).one_or_none()
     if not rs or rs.is_used or rs.expires_at <= now:
-        return PlainTextResponse("Ссылка устарела, запросите новый код", status_code=400)
+        msg = "Link expired. Please request a new code." if is_en else "Ссылка устарела, запросите новый код"
+        return PlainTextResponse(msg, status_code=400)
 
     user = db.query(User).filter(User.id == rs.user_id).one_or_none()
     if not user:
-        return PlainTextResponse("Пользователь не найден", status_code=400)
+        msg = "User not found" if is_en else "Пользователь не найден"
+        return PlainTextResponse(msg, status_code=400)
 
     user.password_hash = hash_password(password)
     rs.is_used = True

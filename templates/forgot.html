@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="ru">
+<html lang="{{ 'en' if lang == 'en' else 'ru' }}">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>Восстановление пароля — Wild Boar</title>
+  <title>{% if lang == 'en' %}Password recovery{% else %}Восстановление пароля{% endif %} — Wild Boar</title>
 
   <link rel="stylesheet" href="/static/css/app.css" />
 
@@ -34,44 +34,44 @@
   <header class="auth-top">
     <div class="auth-top__inner">
       <div class="auth-brand">wildboar</div>
-      <a class="auth-back" href="/">На главную</a>
+      <a class="auth-back" href="/">{% if lang == 'en' %}To main page{% else %}На главную{% endif %}</a>
     </div>
   </header>
 
   <main class="auth-wrap">
     <section class="auth-card">
-      <h1>Восстановление пароля</h1>
+      <h1>{% if lang == 'en' %}Password recovery{% else %}Восстановление пароля{% endif %}</h1>
 
       <label for="forgotEmail">Email</label>
       <input id="forgotEmail" type="email" autocomplete="email" placeholder="name@example.com" />
 
       <div class="auth-row">
-        <button class="btn-primary" type="button" id="forgotSendBtn">Получить код</button>
+        <button class="btn-primary" type="button" id="forgotSendBtn">{% if lang == 'en' %}Get code{% else %}Получить код{% endif %}</button>
       </div>
 
       <div class="ok-text" id="forgotInfo"></div>
 
       <div class="code-row">
-        <label for="forgotCode">Код из письма</label>
+        <label for="forgotCode">{% if lang == 'en' %}Code from email{% else %}Код из письма{% endif %}</label>
         <div class="code-input-row">
           <input
             id="forgotCode"
             type="text"
             inputmode="numeric"
             autocomplete="one-time-code"
-            placeholder="6-значный код"
+            placeholder="{{ '6-digit code' if lang == 'en' else '6-значный код' }}"
             minlength="6"
             maxlength="6"
             pattern="\d{6}"
           />
           <button type="button" class="code-resend-btn" id="forgotResendBtn">
-            Отправить код ещё раз
+            {% if lang == 'en' %}Send code again{% else %}Отправить код ещё раз{% endif %}
           </button>
         </div>
-        <div class="code-resend-hint muted">Можно запрашивать 1 раз в минуту</div>
+        <div class="code-resend-hint muted">{% if lang == 'en' %}You can request once per minute{% else %}Можно запрашивать 1 раз в минуту{% endif %}</div>
 
         <div class="auth-row">
-          <button class="btn-secondary" type="button" id="forgotVerifyBtn" disabled>Подтвердить</button>
+          <button class="btn-secondary" type="button" id="forgotVerifyBtn" disabled>{% if lang == 'en' %}Confirm{% else %}Подтвердить{% endif %}</button>
         </div>
 
         <div class="form-error" id="forgotError" role="alert" aria-live="polite"></div>

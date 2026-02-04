@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="{{ 'en' if lang == 'en' else 'ru' }}">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -54,6 +54,8 @@
     .ua-card h1 {
       margin: 0 0 12px;
       font-size: 26px;
+      text-align: center;
+      font-weight: 800;
     }
     .ua-text {
       white-space: pre-wrap;
@@ -69,14 +71,539 @@
   <header class="ua-top">
     <div class="ua-top__inner">
       <div class="ua-brand">wildboar</div>
-      <a class="ua-back" href="/">На главную</a>
+      <a class="ua-back" href="/">
+        {% if lang == 'en' %}
+          Back to website
+        {% else %}
+          На главную
+        {% endif %}
+      </a>
     </div>
   </header>
 
   <main class="ua-wrap">
     <article class="ua-card">
-      <h1>Пользовательское соглашение</h1>
+{% if lang == 'en' %}
+      <h1>User Agreement</h1>
+      <div class="ua-text">
+(TERMS OF USE OF THE WEBSITE — see “Website URL(s)” in Annex A)
 
+This User Agreement (the “Terms”) is an agreement between Wild boar Limited Liabillity Company № 400 366 661 and the party or parties (the “User”, “you”, or “your”) accessing and/or using the Services.
+
+The terms for providing services, as well as all other agreements, confirmations, and authorizations of the User in connection with registration or servicing of an account in Wild boar and use of the Services, including, without limitation, the Privacy Policy, which are available on our Website (together, the “Terms”) constitute the terms under which Wild boar provides the Services to the User.
+
+The Terms set forth the respective rights and obligations of both parties in connection with the Services, and both parties undertake to comply with them. The User agrees that this User Agreement governs the relationship between Wild boar and the User.
+
+PLEASE READ THE TERMS CAREFULLY, AS THEY GOVERN YOUR RELATIONSHIP WITH WILD BOAR. IF YOU DO NOT AGREE WITH ANY PART OF THE TERMS, YOU MUST NOT ACCESS ANY SERVICES OR PRODUCTS OFFERED BY WILD BOAR, OR ANY SERVICES OR PRODUCTS THAT MAY BE OBTAINED THROUGH WILD BOAR. THIS AGREEMENT CONTAINS A MANDATORY ARBITRATION CLAUSE AND A CLASS ACTION WAIVER THAT AFFECT YOUR RIGHTS TO RESOLVE DISPUTES. PLEASE READ THIS CAREFULLY.
+
+By registering on our Website and/or creating an account and/or accessing and/or using our Services, you confirm that:
+(I) you have read and understood your obligations and rights under the Terms and agree and acknowledge that the Terms of this User Agreement, the Investment Declarations, and the Privacy Policy constitute the full terms of your relationship with Wild boar;
+(II) you agree that you bear full responsibility for making all decisions regarding transactions executed for your account;
+(III) you are aware of the risks associated with trading digital assets and derivatives of digital assets;
+(IV) you assume all risks associated with using your account and trading digital assets and derivatives of digital assets;
+(V) Wild boar bears no responsibility for risks or adverse outcomes; and
+(VI) you represent that you have considered the above factors and, given your current and expected financial resources, you are ready and able to assume substantial financial risks associated with trading units of unit investment funds.
+
+You must determine, уточнить (clarify), and analyze all necessary information about trading units of unit investment funds, as well as the terms of this Agreement. Responsibility for this lies with you.
+
+1. DEFINITIONS AND TERMS
+
+“Account” means an account opened by Wild boar for the User, which provides access to the Services.
+
+“Agreement” includes these Terms for providing services and all other agreements and authorizations entered into by the User in connection with registration or servicing of an account in Wild boar and use of the Services.
+
+“Content” means any information, documents, or images on the Website, as well as on related websites and mobile applications, data, and any information, documents, or images on Wild boar accounts on any third-party social media platforms, including, without limitation, Twitter, Instagram, Telegram, Facebook, Discord, Github, Medium, YouTube, and Reddit.
+
+“Digital Asset Exchange” means digital asset exchanges and platforms for trading digital assets operated by third parties and available via the Trading Terminal.
+
+“Digital Assets” means encrypted currencies or digital assets or digital tokens or digital currencies or cryptocurrencies that are based on distributed ledger technology and may be sold or transferred digitally. For the avoidance of doubt, Bitcoin and Ether are Digital Assets.
+
+“Intellectual Property Rights” include, without limitation, any registered or unregistered patents, database rights, data protection rights, trademarks, trade secrets, trade names, corporate names, service marks, tags and descriptors, domain names, design, structure, layouts, graphical images, typography, color palettes, and copyright works, including, without limitation, software applications, underlying source code, stationery, signage, promotional items, advertising and marketing materials, press releases, photographs, forms, and electronic media.
+
+“KYC/AML & CTF Policy” means the policies and procedures applied by Wild boar to identify and prevent money laundering, terrorist financing, and corruption.
+
+“Prohibited Activity” means activity listed in Section 5.3 of these Terms.
+
+“Prohibited Jurisdiction” means:
+(i) the People’s Republic of China, Afghanistan, Belarus, Canada, the Central African Republic, Congo, the Democratic Republic of Congo, the Republic of Côte d’Ivoire, Crimea, Ukraine, El Salvador, Swaziland, Gambia, Iran, Iraq, Liberia, Libya, Malawi, Mali, Moldova, Myanmar, Niger, North Korea, the Palestinian Territory, Saint Vincent and the Grenadines, South Sudan, Sudan, Syria, the United States of America, Venezuela, Yemen, Zambia, Zimbabwe;
+(ii) any jurisdiction where it would be illegal under local law and/or regulatory requirements to access or use the Website; or
+(iii) where providing or making the Website available is prohibited or contrary to local law or regulation, or may subject Wild boar to any local registration, regulatory, or licensing requirements.
+
+“Services” means all services provided by Wild boar as described in Section 6 of this document.
+
+“User”, “you”, or “your” means the party (or parties) who have agreed to access and use the Services.
+
+“Website” means the website(s) listed in Annex A, any subdomains, related domains, and all downloadable materials and emails.
+
+“Wild boar” means Wild boar Limited Liabillity Company № 400 366 661.
+
+“Non-custodial wallet” means an electronic, decentralized wallet that is not owned by any organization. At the moment of creating the wallet, the user receives access keys, and they are held only by the user.
+
+“Unit” means a participation interest in an investment fund.
+
+“Smart contract” means a computer algorithm intended to form, manage, and provide information about ownership.
+
+“Transaction” means an operation of recording data on the blockchain during which crypto assets or other information are transferred between wallets.
+
+“Centralized intermediary” means an organization or platform that performs exchange, storage, and management functions for crypto assets and tokens on behalf of users.
+
+“Blockchain transaction confirmation” means that the transaction has been successfully verified, recorded on the blockchain, and has become an irreversible part of that digital database.
+
+“Net unit value of the Fund” means a measure of the value of one unit in an investment fund after deducting all expenses and liabilities from the total value of the fund’s assets.
+
+“User balance” means the aggregate value of all units owned by the user, expressed in USDT.
+
+“Technical malfunction” means an undesirable deviation in the operation of any technical system or device from normal or expected functioning.
+
+“NAV (СЧА)” means the net asset value: a measure of the value of an investment fund after deducting all expenses and liabilities from the total value of the fund’s assets.
+
+2. AGREEMENT
+
+Wild boar reserves the right, in its sole discretion, to amend, supplement, or replace these Terms at any time, with or without notice to the User. Any such changes take effect immediately upon public posting. Your continued use of our Services after any such changes means your acceptance of the amended Terms. If you do not agree with any changes, you must stop using the Services.
+
+3. DISCLAIMER
+
+Information presented on the Website(s) (see Annex A) is for informational purposes only. All views and forecasts, assessments, or statements contained on the Website represent Wild boar’s own assessments and interpretations based on information available to it at that time, including information obtained from official public sources whose reliability and credibility there is no reason to doubt. No special research aimed at identifying incompleteness or inaccuracy of such information has been conducted.
+
+No information and no opinion, including but not limited to analytical materials, calculations, quotes, interest rates, and Wild boar company news presented on the Website, constitutes a recommendation to buy or sell Digital Assets, units of unit investment funds, derivative financial products, or other financial instruments; does not constitute an offer or invitation to make an offer or otherwise invest capital; is not tax, legal, accounting, financial, or investment advice, consultation, or clarification; and must not be interpreted as such in any jurisdiction under the laws of such jurisdictions.
+
+Wild boar draws attention to the fact that investments in the crypto-asset market involve risk, including risk of loss of capital. Asset value may increase or decrease. Past performance does not determine future returns. All calculations may change materially due to changes in market conditions, which in turn may negatively affect profitability (financial result) and lead to an investor’s financial expectations not being realized.
+
+Wild boar, its subsidiaries, and affiliates do not provide guarantees or promises of future performance (returns) in the crypto-asset market; do not assume any responsibility for the reliability of information contained on any of Wild boar’s websites; and do not assume responsibility for the consequences of decisions made by an investor, including any losses (direct or indirect, foreseen or unforeseen) in connection with the use of information posted on any of Wild boar’s websites.
+
+Investors must make investment decisions independently based on their own financial goals and resources. Wild boar strongly recommends that investors consult independent tax, accounting, financial, and/or legal advisors who consider the specific circumstances of each situation.
+
+Wild boar maintains a strict internal policy aimed at preventing any actual or potential conflicts of interest between Wild boar and investors, and preventing infringement of investors’ interests. Information provided on the websites is not exhaustive and may be changed by Wild boar at any time without prior notice.
+
+Your access to or use of the Services is at your own risk, and you bear sole responsibility for any losses, damages, or expenses arising from use of or access to the Services. The Services are not marketing, promotion, or an offer of any product or investment to you or any third party.
+
+Under no circumstances shall Wild boar be liable for any losses or other damages, including without limitation special, incidental, indirect, or other damages. Without limiting the foregoing, Wild boar does not represent or warrant that the Services are accurate, complete, reliable, current, or error-free, or free of viruses or other harmful components.
+
+By accessing and/or using our Services, you agree that Wild boar bears no liability—contingent or otherwise—to you or any third parties for correctness, quality, accuracy, security, completeness, reliability, performance, timeliness, pricing, or continuous availability of the Services; for delays or omissions in the Services’ operation; for any connection or communications failure providing or maintaining your access; for any interruption or disruption of access; or for any erroneous communication between Wild boar and you, regardless of cause.
+
+These provisions are an integral part of the information on Wild boar’s website and must be interpreted and applied only as a whole, including these provisions.
+
+4. METHODS OF COMMUNICATION
+
+a) You understand, acknowledge, and agree that the method of communication between Wild boar and you is email or the Website. We will use the email address or username registered in your account as a means of communication. You agree to update your email address, check your email, and promptly notify us of any changes.
+
+b) You understand, acknowledge, and agree that delivery of any message to the email address registered in your account is considered valid and will be deemed confirmed by you unless we receive written notice to the contrary within three (3) business days from the date of sending.
+
+If any email message is returned as undeliverable, Wild boar reserves the right to block access to your account until you provide and confirm a new valid email address.
+
+c) You understand, acknowledge, and agree that Wild boar is not responsible to you for information obtained through unofficial Wild boar channels. If you have any questions or concerns about the authenticity of information sent on behalf of Wild boar, please contact us immediately.
+
+5. USER REPRESENTATIONS AND WARRANTIES; ELIGIBILITY
+
+By accessing and/or using the Services, you represent and warrant that:
+
+a) you are at least 18 years old or have reached the age of majority for entering into a contract under applicable law, and you are an individual, legal entity, or other organization with full legal capacity and authority to enter into these Terms;
+
+b) if you enter into these Terms on behalf of a legal entity of which you are an employee or agent, you have all necessary rights and authority to bind that legal entity, and (i) you are legally permitted to use the Services in your jurisdiction, and (ii) you are legally permitted to own cryptocurrencies in your jurisdiction;
+
+c) you are responsible for ensuring compliance with the laws of your jurisdiction and acknowledge that Wild boar is not responsible for your compliance with such laws;
+
+d) your use of the Services does not violate the laws of your jurisdiction;
+
+e) you understand the inherent risks associated with Digital Assets and trading Digital Assets, derivatives of Digital Assets, units of unit investment funds, and other financial instruments;
+
+f) you have a working understanding of the use of Digital Assets, smart-contract-based tokens, and blockchain-based software systems;
+
+g) you have sufficient investment knowledge and experience and the ability to assume the risks arising from trading Digital Assets, derivatives of Digital Assets, units of unit investment funds, and other financial instruments;
+
+h) you have knowledge and experience in highly volatile markets;
+
+j) you understand and have sufficient knowledge of how trading works and the risks associated with it;
+
+k) you trade with funds you can afford to lose and you are prepared for high risk;
+
+l) you will not engage in any activity that (i) involves proceeds from any unlawful or illegal activity (including money laundering or terrorist financing); or (iii) violates or may violate any applicable law;
+
+n) you will not use or misuse the Services in any manner that may impair the functionality of the Services or other systems used to provide the Services, or impair any other user’s ability to use the Services or the Trading Platform;
+
+o) you will not transmit or introduce to the Website any files that may damage the computing devices or software of any other person; content that may be offensive; or materials or data in violation of any law;
+
+p) you own and have full control over the non-custodial wallet address or the wallet managed by a centralized intermediary used for withdrawals upon redemption of units of unit investment funds;
+
+q) you are the lawful owner (or authorized agent of the lawful owner) of the funds you deposit into your account and such funds are derived from a lawful source;
+
+r) you will not use any methods or services to mask your Internet Protocol address or internet traffic, current location, or actual internet connection, including without limitation VPNs, proxies, or the Tor browser.
+
+6. SERVICES
+6.1. Services
+
+Subject to your compliance with the Terms, your Wild boar account provides access to the following Service: purchase/sale of Units, unless otherwise specified:
+a) purchase of Units;
+b) sale (redemption) of Units;
+c) any other services provided by Wild boar from time to time.
+
+6.1.1. The maximum possible monthly fee withheld from the amount of invested funds in favor of the Fund may not exceed 7%.
+
+6.2. Rights and obligations of the Management Company
+
+6.2.1. From the date of completion of the Fund formation, the Management Company carries out trust management of the Fund by performing any legal and factual actions with respect to the Fund property, including disposing of such property. The Management Company enters into transactions with the Fund property in its own name.
+
+6.2.2. The Management Company:
+a) without a special power of attorney exercises all rights certified by the assets comprising the Fund, including voting rights for governance tokens or coins;
+b) brings claims and acts as a defendant in court in connection with trust management of the Fund;
+c) acting as trustee of the Fund, may enter into derivative financial instrument contracts;
+d) may perform a split of investment units on its terms;
+e) may decide to terminate the Fund;
+f) may repay, at the expense of the Fund property, indebtedness arising from the Management Company’s use of its own stablecoins to pay compensation to holders of investment units or to conduct an exchange of investment units;
+g) after completion of Fund formation, may decide to exchange all investment units for investment units of another open unit investment fund;
+h) may decide to exchange investment units of another open unit investment fund after its formation for investment units.
+
+6.2.3. The Management Company must:
+a) act reasonably and in good faith in the interest of holders of investment units when managing the Fund;
+b) disclose information about the date of compiling the list of holders of investment units for exercising their rights no later than three (3) business days before that date;
+c) disclose reports.
+
+6.2.4. The Management Company may not:
+a) use the Fund property to secure its own obligations unrelated to trust management of the Fund or to secure obligations of third parties;
+b) charge interest for using the Management Company’s USDT provided to pay compensation to holders of investment units or to conduct an exchange of investment units in case of insufficiency of USDT comprising the Fund;
+c) enter into (or instruct entry into) certain transactions, including:
+
+gratuitous disposal of Fund property;
+
+acquisition of property subject to pledge or other security whereby pledged/secured property is included in the Fund;
+
+loan or credit agreements repayable from Fund property, except where funds are obtained to redeem or exchange investment units when Fund cash is insufficient, subject to: aggregate indebtedness repayable from Fund property not exceeding 20% of the Fund’s NAV, and the borrowing term for each loan/credit (including extensions) not exceeding six (6) months;
+
+disposal of Fund property into property under the Management Company’s trust management under other agreements, or into assets of a joint-stock investment fund where the Management Company acts as the sole executive body;
+
+acquisition into the Fund of property belonging to the Management Company, its participants, predominant parent companies of its participants, its subsidiaries and affiliates, or disposal of Fund property to such persons.
+
+6.2.5. The restrictions on crypto-asset transactions established by certain paragraphs of the investment declaration do not apply if:
+a) such transactions are executed on organized trading based on purchase/sale orders at the best stated prices, provided orders are addressed to all trading participants and information identifying submitting participants is not disclosed to other participants during trading;
+b) transactions are executed with assets included in the Fund whose units may be exchanged for units of another unit investment fund into which such securities are acquired;
+c) transactions are executed with assets included in another unit investment fund whose units may be exchanged for units of the Fund.
+
+6.2.6. For transactions made in violation of the requirements of the investment declaration, the Management Company bears obligations personally and is liable only with its own property. Debts arising from such obligations may not be repaid from the Fund property.
+
+6.3. Rights of holders of investment units
+
+6.3.1. Rights of holders of investment units are certified by investment units.
+
+6.3.2. An investment unit is an entry in the Management Company’s database certifying:
+a) the holder’s share in ownership of the Fund property; and the right to require proper trust management of the Fund;
+b) the right to require redemption of an investment unit and payment of compensation in USDT proportionate to the holder’s share in common ownership of the Fund property on any business day;
+c) the right to receive compensation in USDT upon termination of the Fund with all holders (termination of the Fund) in an amount proportionate to the share of Fund property distributed among holders.
+
+6.3.3. Each investment unit certifies an equal share in common ownership of the Fund property and equal rights.
+
+An investment unit is not an issue security. Rights certified by an investment unit are recorded in uncertificated form. An investment unit has no nominal value.
+
+6.3.4. The number of investment units issued by the Management Company is unlimited.
+
+6.3.5. When issuing a fractional number of investment units to a person, the number of units is determined with accuracy up to two (2) decimal places.
+
+6.3.6. Accounting for rights to investment units is maintained in the Management Company’s database.
+
+6.4. Issuance of investment units
+
+6.4.1. The Management Company issues investment units during formation of the Fund and after completion of Fund formation.
+
+6.4.2. Issuance is performed by making an entry in the acquirer’s personal account in the Management Company’s database.
+
+6.4.3. Issuance is based on an application for acquisition containing mandatory information (per Annex No. 1 to the investment declaration) or by signing a smart contract. Each acquisition application provides for issuance of units upon each receipt of USDT as payment.
+
+6.4.5. Only USDT is accepted as payment for investment units.
+
+6.4.6. Investment units are issued provided that USDT transferred as payment has been included in the Fund.
+
+6.4.7. Applications for acquisition are irrevocable.
+
+6.4.8. Applications are accepted from the start of Fund formation every business day. Acceptance may occur on non-business days according to the schedule of the application acceptance points of the Management Company and agents (issuance/redemption/exchange agents). Acceptance ceases from the date grounds for Fund termination arise.
+
+6.4.9. Submission procedure: applications in the form of Annex No. 1 are submitted via the Management Company’s “Personal Account” online service. Applications by signing a smart contract are submitted via Wild boar’s online service. Authenticity of the signature must be verified via blockchain. Applications sent by email, fax, or courier are not accepted.
+
+6.4.9.1. Access to the Personal Account is individual and provided in the procedure established by the Management Company. Use requires successful registration by an individual or legal entity.
+
+6.4.10. Applications are submitted to:
+— the Management Company;
+— an agent.
+
+6.4.11. Acceptance is refused in cases including:
+a) violation of submission procedure and deadlines;
+b) absence of a duly executed application required to open a personal account in the Management Company’s database (if not opened);
+c) acquisition by a person included in sanctions lists;
+d) the Management Company’s decision to suspend issuance;
+e) non-compliance with acquisition rules;
+f) suspension of acceptance due to a decision to exchange all units for units of another unit investment fund;
+g) occurrence of grounds for Fund termination;
+h) other cases.
+
+6.4.12. An entry surcharge (increase over calculated unit value) when acquiring through the Management Company or agents is:
+— 1.5% of calculated unit value if acquisition occurs on a date other than the first week of the calendar month;
+— no surcharge if acquisition occurs in the first week of the calendar month.
+
+6.4.13. The minimum initial contribution during Fund formation is determined by the investment declaration. The maximum contribution is not limited.
+
+6.4.14. The issuance period is no more than three (3) days from:
+a) receipt to the Management Company’s account of USDT contributed for inclusion in the Fund, if the application was accepted before receipt; or
+b) acceptance of the application, if the USDT were received before acceptance.
+
+6.4.15. The number of units issued during Fund formation is determined by dividing the amount of USDT contributed to the Fund by the amount of USDT for which one unit is issued under these Rules.
+
+6.4.16. Issuance after completion of Fund formation must occur on the day USDT payment is included in the Fund or the next business day.
+
+6.4.17. Issuance after completion of Fund formation occurs provided payment USDT is not less than the minimum specified in the investment declaration. The maximum amount of each subsequent contribution is not limited.
+
+6.4.18. Procedure for transferring USDT as payment:
+6.4.18.1. During Fund formation: USDT is contributed by transferring USDT to an account opened by the Management Company to account for USDT comprising Fund property in the serviced network.
+6.4.18.2. After completion of Fund formation: USDT is credited to an account whose details are specified in a disclosure message by the Management Company.
+
+6.4.19. After completion of Fund formation, the Management Company returns USDT to the person who transferred it as payment if inclusion of such USDT in the Fund contradicts these Rules, including if the amount is below the minimum established by these Rules.
+
+6.4.20. After completion of Fund formation, return of USDT in cases provided by the investment declaration is performed within five (5) business days from when the Management Company knew or should have known that USDT cannot be included, except for a specific case provided by the investment declaration.
+
+During Fund formation:
+— if USDT is received before an acquisition application is submitted, and no application is accepted within 30 days of receipt, USDT is returned within seven (7) days after that period to the account from which USDT was transferred;
+— if payment is made after an application is submitted but the payment order lacks buyer details or the registered email, and within three (3) days from receipt the payer does not submit a clarifying statement, units are not issued and USDT is returned within seven (7) days after that period;
+— if the amount received is insufficient to issue units and within three (3) days additional USDT is not received to reach sufficiency, units are not issued and USDT is returned within seven (7) days after that period.
+
+6.4.21. After completion of Fund formation, return of USDT is performed to the account specified in the acquisition application. If return to that account is impossible, return is not performed within 30 business days from the date of provision of the relevant funds.
+
+7. ACCOUNT
+7.1. Identity verification
+
+When you use/access the Services or register an account, we will request your name, email address, and other information and documents to identify you under the KYC/AML & CTF Policy. You must provide accurate, complete, and current information at all times. Failure is a breach that may result in immediate termination of your Account.
+
+You also agree to provide additional information upon registration and on an ongoing basis upon request for identity verification and prevention of money laundering, terrorist financing, fraud, or other financial crimes, including, without limitation: a copy of your government-issued photo ID; a photo of you holding such ID; video verification; proof of address (e.g., utility bill); proof of source of funds; proof of source of origin of funds.
+
+You authorize us to keep records of such information and make inquiries directly or through third parties as necessary to verify your identity or protect you and others from fraud or other financial crimes, and to take measures we reasonably deem necessary based on the results. When we make such inquiries, you acknowledge and agree that your personal information may be disclosed to regulators or law-enforcement agencies.
+
+7.2. Account security
+
+You are solely responsible for maintaining confidentiality and security of your access credentials and the devices you use, and for ensuring no third party accesses your Account or any device used in connection with the Services. We are not responsible for losses arising from your failure to protect your Account.
+
+7.3. Prohibited activity
+
+In connection with your access to and/or use of the Account or Services, you must not:
+a) use the Services for resale or commercial purposes, including transactions on behalf of other persons/entities;
+b) violate or assist any party in violating any law, statute, regulation, decree, or rule of any self-regulatory or similar organization;
+c) engage in money laundering, terrorist financing, or fraudulent activity;
+d) violate our Intellectual Property Rights or third-party IP rights;
+e) take actions imposing an unreasonable/disproportionate load on infrastructure or interfering with, intercepting, or expropriating systems/data;
+g) use deep links, web crawlers, bots, spiders, or other automated means (or equivalent manual processes) to access/copy/monitor any part of the properties or bypass site navigation;
+h) probe, scan, or test vulnerabilities or breach security/authentication measures;
+i) provide false/inaccurate/incomplete/misleading information;
+j) distribute unsolicited or unauthorized advertising/promotional materials, press releases, public announcements/disclosures, junk mail, spam, or chain letters;
+k) use web-crawling or similar techniques to access Services or extract data;
+l) reverse engineer or disassemble any aspect of the Website/Services to access source code, underlying ideas, concepts, or algorithms;
+m) attempt unauthorized access to the Website, other accounts, systems, or networks (including by password mining);
+n) transfer any rights granted to you under these Terms; or
+o) engage in conduct that violates the Terms or is otherwise deemed unacceptable by us in our sole discretion.
+
+7.4. User account (non-custody)
+
+Wild boar does not store Digital Assets reflected in the Personal Account; Digital Assets are stored on a Digital Asset Exchange or a non-custodial wallet. Use of the Personal Account is always your responsibility and at your own risk.
+
+You assume full responsibility for loss of Digital Assets stored or transferred from your non-custodial wallet or a wallet managed by a centralized intermediary, including unauthorized access, loss/compromise of passwords or private keys, errors due to transfers to/from incorrect public keys or addresses, or mismatch between distributed ledger networks of sender and recipient (“Blockchain mismatch”). If Digital Assets are lost due to blockchain mismatch when transferring to your account, Wild boar is not liable and does not undertake actions to recover such assets; you acknowledge such assets are not recoverable by Wild boar.
+
+7.5. Acquisition of Unit(s)
+
+If acquiring Unit(s) via a non-custodial wallet, the User signs a smart contract to execute the transfer transaction. After execution, Wild boar displays an online web-page notice of smart contract execution. From execution, within three (3) business days your funds will be allocated and the corresponding number of Fund units will be credited. The User receives email notice of the acquisition execution.
+
+If acquiring via a centralized intermediary, the user must contact the operator in chat and provide information including: the Fund name, the amount in USDT for acquisition, and the email used at registration; then execute a transaction to the address provided by the chat operator. After blockchain confirmation, the user receives notification from the operator. From execution, within three (3) business days funds will be allocated and units credited; email notice is sent.
+
+If acquiring on a date other than the first week of the calendar month, the user must pay the Management Company an acquisition surcharge of 1.5% of the value of one Fund unit.
+
+Redemption (payout) via Personal Account:
+When submitting a redemption request using a non-custodial wallet, the User receives notice of receipt of the request for the specified number of units; if the number exceeds the actual units owned, the request reflects the maximum available units. The request is executed within three (3) business days; funds are transferred in full to the user’s non-custodial wallet specified at registration; email notice is sent.
+
+When submitting a redemption request using a wallet address belonging to a centralized intermediary, the user specifies the wallet address to receive an amount equal to the value of the redeemed units; similar rules apply for exceeding unit quantity; execution within three (3) business days; funds transferred to the specified address; email notice is sent.
+
+If redemption is requested on a date other than the first week of the calendar month or earlier than six (6) calendar months from the acquisition date, the user must pay the Management Company a redemption discount/fee of 3% of the value of one Fund unit.
+
+We are not responsible for any distributed ledger network fees (“gas”) that may apply to your redemption request or transfers. You acknowledge we may not be able to execute redemption immediately. While we will use best efforts to execute in reasonable time, we provide no guarantee regarding processing time and are not liable for damages due to delay.
+
+7.6. Account history
+
+A historical record of transactions (“Transaction History”) may be available in your account. You acknowledge that Transaction History is not considered an appraisal/valuation of your account. We use reasonable efforts to ensure the information is accurate, but errors may occur; such errors do not affect actual funds and results. You are solely responsible for reviewing Transaction History and notices.
+
+Any transaction listed in Transaction History or other message (including orders, trades, receipts emailed to you) is deemed authorized, correct, approved, and confirmed by you unless we receive written notice to the contrary within three (3) business days from listing/sending (as applicable).
+
+8. GENERAL USE, PROHIBITED USE, AND TERMINATION
+8.1. Limited license
+
+We grant you a revocable, limited, royalty-free, non-exclusive, non-transferable, non-sublicensable license to access and use the Services through your personal/internal devices and to access and use the Website, in accordance with this Agreement. You agree that by using the Website, Wild boar does not transfer to you the Services or any Intellectual Property Rights.
+
+8.2. Accuracy of the Website, Services, and related media
+
+We intend to provide accurate and timely information, but Content may not always be fully accurate, complete, or current and may contain technical inaccuracies or typographical errors. Information may change or be updated without notice, including terms, policies, products, and services. You must verify all information before relying on it; decisions based on Website/Platform/Content are solely your responsibility. Links to non-affiliated third-party materials may be provided for convenience and are not controlled by us. We are not liable for any aspect of information/content/services in non-affiliated materials or sites linked to the Website/Services.
+
+8.3. Non-affiliated third-party access
+
+If, to the extent permitted by Wild boar, you grant a non-affiliated third party direct permission to access your Account, you acknowledge that granting such permission does not relieve you of your obligations. You are fully responsible for actions/omissions of any such third party and agree not to hold Wild boar liable and to indemnify Wild boar for liability arising from their actions/omissions.
+
+8.4. Prohibited use
+
+You agree you will not engage in Prohibited Activities. We reserve the right to monitor, review, retain, and/or disclose information necessary to comply with law, regulations, sanctions programs, legal process, or government requests. We may cancel and/or suspend your Account if we determine it is connected to Prohibited Activity.
+
+8.5. Suspension, termination, and cancellation
+
+a) We may suspend, freeze, restrict, or terminate your access to any/all Services and/or deactivate or cancel your Account if:
+(i) required by law or order;
+(ii) we reasonably suspect use of your Account in connection with Prohibited Activity;
+(iii) your Account is subject to proceedings/investigation and/or we perceive increased regulatory/legal non-compliance risk;
+(iv) you take any actions that Wild boar considers a violation of the Terms.
+
+b) If we take such actions, we may notify you unless prohibited by court order or process. You acknowledge that decisions may be based on confidential criteria necessary for risk management and security protocols, and that Wild boar is not obliged to disclose details of such procedures.
+
+8.6. Account balance after termination
+
+Upon account closure, remaining balance will be used to settle fees and obligations owed to Wild boar. After paying all outstanding amounts (if any), the User has ten (10) business days to redeem units of unit investment funds in the account. If termination is related to fraud, legal violations, money laundering, terrorist financing, or violation of these Terms, we reserve the right to retain full custody of Digital Assets that may be confiscated by government or law enforcement.
+
+8.7. Relationship of the parties
+
+Nothing in this Agreement is considered or should cause you and Wild boar to be regarded as partners for profit.
+
+8.8. Password security; contact information
+
+You are responsible for maintaining proper security and control over user identifiers and passwords used to access the Services. If you suspect or become aware of unauthorized use, you must notify Wild boar immediately. Wild boar is not liable for losses arising from access/use of your Account by you or any third party with or without your permission.
+
+8.9. Taxes
+
+You are solely responsible for determining whether any taxes apply to any transactions conducted in connection with the Services and for withholding, collecting, reporting, and remitting the correct amounts of taxes to the appropriate authorities.
+
+9. INTELLECTUAL PROPERTY
+9.1. All rights reserved
+
+All Intellectual Property Rights related to the Website, Content, User Content, and Services are owned by Wild boar. You acknowledge Wild boar retains ownership of all such rights.
+
+9.2. No right of use
+
+No right to use Wild boar’s IP is granted except as set forth in these Terms and subject to:
+a) you may view and use Services/Website/Content/User Content only for personal use and may not copy, reproduce, republish, upload, repost, modify, transmit, distribute, or otherwise use them for non-personal, public, or commercial use without Wild boar’s prior written consent;
+b) you may not remove or alter copyright, trademark, or other proprietary notices;
+c) you may not modify, publish, transmit, participate in transfer or sale, create derivative works, or otherwise exploit Content/User Content;
+d) unless expressly permitted by copyright law, copying/transmission/retransmission/publication/commercial use of downloaded material is not permitted without our express permission;
+e) where permitted copying/transmission/publication occurs, no changes or removal of trademarks/service marks/other designations or copyright notices are allowed;
+f) you may not use data mining, robots, or similar data gathering/extraction methods.
+
+9.3. User content
+
+By submitting any User Content, you warrant you have the right to do so and all necessary IP rights. We may disclose your identity to any third party claiming your User Content violates their IP rights or privacy rights.
+
+You hereby assign to Wild boar all rights, title, and interest in your User Content and associated IP rights. You have no right and hereby waive any claim for attribution or compensation based on any User Content or modifications based on any User Content.
+
+10. RISK DISCLOSURE
+
+Trading Digital Assets, derivatives, units of unit investment funds, and other financial assets is risky, and you should never trade more than you can afford to lose. The following list of risks related to such assets and the Services is not exhaustive. Please review the Risk Warning for additional information.
+
+a) Prices of Digital Assets are highly volatile; trading is extremely risky. Liquidity may be affected by regulatory activity, market manipulation, issuer actions/inaction, or unexplained volatility. By using the Services, you assume the risk of trading Digital Assets and derivatives.
+
+By entering any transaction, you represent that you have been, are, and will be solely responsible for your own independent risk assessment of the transaction and the underlying Digital Asset.
+
+b) We do not provide advice on any specific Digital Assets, derivatives, Digital Asset Exchanges, units of unit investment funds, or other financial assets. We do not provide advice on transactions or related risks, or investment or legal advice in connection with the Services. If we provide trading data, publish market commentary, articles, or social media posts, this is incidental to your relationship with us and must not be considered investment/financial advice.
+
+PURCHASING OR SELLING DIGITAL ASSETS AND/OR DERIVATIVES, UNITS OF UNIT INVESTMENT FUNDS, AND OTHER FINANCIAL ASSETS IS EXCLUSIVELY THE USER’S DECISION, AND WE ARE NOT LIABLE FOR ANY CONSEQUENTIAL LOSSES.
+
+c) No brokerage intermediation or investment advice. We provide asset management within the investment declarations of the fund units. Our relationship is not a broker-client relationship.
+
+d) Wild boar expressly states it does not guarantee profit or repetition of profit ratios achieved in the past and warns that no positive report on a trading strategy guarantees repetition of trading success in the future.
+
+e) The fund manager may breach obligations to manage in the Users’ best interests in ways unknown to us; funds invested may be lost.
+
+f) The User bears financial responsibility for any losses incurred in the Account due to trading activities of the fund managers.
+
+g) The User assumes full responsibility for financial losses (including direct losses or loss of profit) arising from risks including: lack of manager qualifications/knowledge; fraudulent operations; loss of control over the Account allowing third-party access; misunderstanding/misinterpretation of the Terms; closure of Wild boar’s account.
+
+h) We do not guarantee continuous, uninterrupted, or secure access to any part of the Services; operation may be disrupted by many factors beyond our control, including regulatory reasons and problems with blockchain networks.
+
+i) Although Wild boar conducts due diligence on exchanges it interacts with, exchanges may be unregulated and practices may vary widely, including security, encryption, and liability for losses. Exchanges may not follow rules on pricing, insider trading, price discovery, loss insurance, fraud protection, AML compliance, and other important functions; may be fraudulent fronts; and may be located in jurisdictions where recovery is unlikely. Exchanges may provide incorrect/delayed/erroneous data due to software errors and limited oversight; such data may mislead trading strategies or distort price discovery mechanisms. Errors, fraud, and other exchange problems have repeatedly caused significant irrecoverable losses; exchange software/mechanisms may fail and execute trades at erroneous prices; exchanges may cancel trades in others’ interests to the detriment of fund managers; and non-reviewable decisions may negatively affect investment value.
+
+11. LIQUIDATION OF ACCOUNTS AND PAYMENT OF DEFICIT BALANCE
+
+In the event of:
+a) death or a court decision declaring the User incapable (incompetent);
+b) filing for bankruptcy;
+c) failure to provide any information requested under these Terms or applicable law;
+d) abusive trading practices, manipulation, and/or fraud by the User or any person authorized to use the account; or
+e) any other circumstances/events that we deem appropriate to protect Wild boar and/or the User at Wild boar’s sole discretion,
+Wild boar reserves the right to perform any obligation imposed by the User, directly or as guarantor/surety, from any User funds certified by units of unit investment funds. This action may be taken without prior notice of sale/purchase or other notice to the User or their representatives/heirs/executors/administrators/trustees/successors, regardless of whether ownership is sole or joint.
+
+12. LIABILITY
+
+You agree to indemnify and hold harmless Wild boar from any liabilities, losses, costs, and expenses, including attorneys’ fees, incurred by Wild boar arising from the User’s failure to timely and fully perform obligations under this Agreement or any third-party license, or if any User representations and warranties are not true and correct.
+
+You also agree to promptly pay Wild boar all losses and costs, including attorneys’ fees, incurred due to non-performance of any provisions of these Terms and any other agreements between Wild boar and the User.
+
+In addition to liability limitations in other sections, Wild boar is not liable and is released from all claims and losses if the claim/loss was caused by:
+a) the User’s act or omission;
+b) any act/omission of any person accessing the User’s account, whether authorized by the User or not;
+c) system malfunction, equipment failure (User or Wild boar), system interruption or unavailability;
+d) delays, failures, or errors in executing any instruction;
+e) inaccurate or incomplete instructions received from the User;
+f) any use by the User or any other third party with account access of any financial/market data, quotes, news, analyst opinions, research reports, charts, or other data/information available through the trading platform or any third-party license, whether to complete a transaction or for any other purpose.
+
+13. DISCLAIMER OF WARRANTIES / LIMITATION OF LIABILITY
+
+13.1. Wild boar entities are not liable for any loss or damage caused directly or indirectly by events/acts/omissions beyond Wild boar’s control, including losses due to delays or inaccuracies in transmission of orders and/or information because of transmission/communication failures or power outages.
+
+13.2. Neither Wild boar nor its partners/agents warrant uninterrupted availability or error-free operation. The Website/Services are provided “AS IS” without any representations or warranties unless otherwise stated.
+
+13.3. Under no circumstances shall Wild boar or partners/agents be liable for direct, indirect, punitive, incidental, special, or consequential damages arising from use or inability to use the Website/Services, including lost profits, loss of business, trading losses, data loss or use, unauthorized access/alteration/theft/destruction of computers/systems/files/programs/information, or costs of substitute goods/services.
+
+13.4. To the fullest extent permitted by applicable law, you expressly understand and agree that in no event shall Wild boar entities and their founders, members, directors, investors, officers, employees, attorneys, agents, representatives, suppliers, or contractors be liable for any losses or liabilities (including loss of data, information, revenue, profits) arising from the Services or any performance/non-performance, or any other theory, even if advised of the possibility of such damages, except where a final court judgment determines such loss resulted from gross negligence, fraud, willful misconduct, or intentional violation of law.
+
+If you are dissatisfied with any part of the Services or this Agreement, your sole and exclusive remedy is to stop using the Services and close your Account. The Services are provided “AS IS” without any express or implied warranties. Wild boar entities disclaim implied warranties of title, merchantability, fitness for a particular purpose, and non-infringement.
+
+Wild boar entities make no warranty that: (I) the Services will meet your requirements; (II) the Services will be uninterrupted, timely, secure, or error-free; or (III) the quality, suitability, and performance of any Digital Assets, derivatives, units, Services, information, or other materials acquired or obtained by you will meet your expectations. Services are provided “AS IS” and “AS AVAILABLE” without warranties. Some jurisdictions do not allow exclusion/limitation of incidental or consequential damages; therefore, the above limitation may not apply to you.
+
+14. NO WAIVER
+
+From time to time, Wild boar may not require or strictly enforce compliance with any provision of these Terms and may not exercise any or all rights herein. Such non-enforcement must not be construed as a full waiver or relinquishment of Wild boar’s right to enforce or rely on any provision/right in this or any other instance.
+
+If applicable, an express waiver granted by Wild boar of any term/condition/requirement is not a waiver of any future obligation to comply with such term/condition/requirement.
+
+15. GOVERNING LAW AND JURISDICTION
+
+These Terms and any terms posted on the Website are governed by and construed in accordance with the laws of Georgia, without regard to conflict-of-laws principles that would apply the law of another jurisdiction.
+
+You agree to submit any Dispute (as defined below) to arbitration under Section 16. To the extent the arbitration agreement is invalid, you agree to submit to the non-exclusive jurisdiction of the courts of Georgia.
+
+16. SUBMISSION TO ARBITRATION
+
+Any dispute, claim, action, cause of action, demand, or proceeding arising out of or relating to these Terms and any terms posted on the Website (including their operation, existence, or termination), any Services, any act or transaction under these Terms or contemplated hereby (a “Dispute”), that is not resolved between you and Wild boar within 30 days from the date either party notifies the other in writing or by email, must be submitted and finally resolved by a court.
+
+In addition, the parties agree that:
+a) an attempt at informal resolution will be made for at least 30 days before any arbitration or court proceeding; informal negotiations begin after we receive your written notice. If unresolved, any dispute will be finally resolved in mandatory arbitration on an individual basis;
+b) any dispute/claim arising from or relating to the Terms or their breach/termination/invalidity shall be settled by arbitration under the rules of the Georgian International Arbitration Centre (GIAC);
+c) the number of arbitrators shall be at least one;
+d) the seat of arbitration is GIAC unless the parties agree otherwise;
+e) the arbitration language shall be Georgian;
+f) the courts of Georgia have exclusive jurisdiction over appeals from an arbitral award and over claims not subject to arbitration;
+g) the arbitrator may grant any remedies otherwise available in court;
+h) the parties shall share arbitration costs/expenses and bear their own legal costs/expenses.
+
+17. CLASS ACTION WAIVER
+
+You and Wild boar agree that any claims related to these Terms or your relationship with Wild boar as a user of the Services (whether based on contract, tort, statute, fraud, misrepresentation, or any other legal theory, whether arising during or after termination) must be brought only on an individual basis and not as a plaintiff or class member in any purported class or representative action.
+
+You agree not to join with any other individual/entity/group to seek resolution of relevant Disputes.
+
+18. PRIVACY POLICY
+
+Wild boar’s Privacy Policy can be found at the address specified in Annex A.
+
+19. MISCELLANEOUS
+
+19.1. You may not assign any rights and/or licenses granted under these Terms. We may assign our rights without limitation, including to any successor. Any attempted transfer/assignment in violation is void.
+
+19.2. If any provision of the Terms is held invalid or unenforceable under any law/regulation/order or by any governmental authority, local/state/federal, this does not affect the validity/enforceability of the remaining provisions.
+
+19.3. We are not responsible for failures or delays due to abnormal or unforeseeable circumstances beyond our control whose consequences would be unavoidable despite all efforts, including government actions or terrorist acts, war, earthquake, fire, flood or other natural disasters, labor conditions, delays/failures caused by another system/network issues, mechanical failures, data-processing failures, or where we are bound by other legal obligations (force majeure).
+
+19.4. Upon termination of your account or this Agreement for any reason, all rights and obligations of the parties that by their nature survive remain in force.
+
+19.5. Third-party rights. The Terms are not intended and must not be construed to create rights or remedies for any parties other than you and us and any affiliates, each of which is a third-party beneficiary of the Terms. No other person may assert rights as a third-party beneficiary.
+
+THE USER CONFIRMS THAT THEY HAVE RECEIVED, READ, AND UNDERSTOOD THE ABOVE TERMS AND HEREBY AGREE TO COMPLY WITH THE TERMS OF THIS AGREEMENT.<!-- ВСТАВЬ СЮДА АНГЛИЙСКИЙ ТЕКСТ (EN) -->
+      </div>
+{% else %}
+      <h1>Пользовательское соглашение</h1>
       <div class="ua-text">
         ПОЛЬЗОВАТЕЛЬСКОЕ СОГЛАШЕНИЕ
 (УСЛОВИЯ ИСПОЛЬЗОВАНИЯ САЙТА https://wildboar.finance/ )Настоящее Пользовательское соглашение (далее — Условия) является договором между Wild boar Limited Liabillity Company № 400 366 661 и стороной или сторонами («Пользователь», «вы» или «вас»), получающими доступ к Услугам и/или использующими их.
@@ -461,6 +988,7 @@ h) что стороны должны разделить расходы и ра�
 
 ПОЛЬЗОВАТЕЛЬ ПОДТВЕРЖДАЕТ, ЧТО ПОЛУЧИЛ, ПРОЧИТАЛ И ПОНЯЛ ВЫШЕУКАЗАННЫЕ УСЛОВИЯ, И НАСТОЯЩИМ СОГЛАШАЕТСЯ СООБЛЮДАТЬ УСЛОВИЯ НАСТОЯЩЕГО СОГЛАШЕНИЯ.
       </div>
+{% endif %}
     </article>
   </main>
 </body>

@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker, Session
 
 load_dotenv()
 
-ALLOWED_PURPOSES = {"registration", "reset", "login_2fa"}
+ALLOWED_PURPOSES = {"registration", "reset", "login_2fa", "password_change"}
 
 CODE_LENGTH = int(os.getenv("SECURITY_CODE_LENGTH", "6"))
 CODE_TTL_MINUTES = int(os.getenv("SECURITY_CODE_TTL_MINUTES", "15"))

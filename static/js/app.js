@@ -391,7 +391,7 @@
       if (step1) step1.classList.add("is-hidden");
       if (step2) step2.classList.remove("is-hidden");
       setError(confirmErr, "");
-      if (hintEl) hintEl.textContent = "Мы отправили 6-значный код на вашу почту. Код действителен 15 минут.";
+      // Подсказка уже задана в шаблоне по lang, не перезаписываем
       if (codeInput) codeInput.focus();
       refreshConfirm();
     }
@@ -541,6 +541,17 @@
 
     if (!emailEl || !sendBtn || !codeEl || !verifyBtn) return;
 
+    const lang = (document.documentElement.getAttribute("lang") || "ru").toLowerCase();
+    const isEn = lang === "en";
+    const MSG = {
+      enter_email: isEn ? "Enter email." : "Введите email.",
+      enter_6digit: isEn ? "Enter 6-digit code." : "Введите 6-значный код.",
+      error_http: (s) => (isEn ? `Error (HTTP ${s}).` : `Ошибка (HTTP ${s}).`),
+      network: isEn ? "Network error. Please try again." : "Сетевая ошибка. Повторите попытку.",
+      code_sent: isEn ? "If this email exists, a code has been sent." : "Если такой email существует, код отправлен на почту.",
+      invalid_response: isEn ? "Invalid server response." : "Некорректный ответ сервера.",
+    };
+
     function refreshVerify() {
       const email = (emailEl.value || "").trim();
       const code = (codeEl.value || "").trim();
@@ -558,7 +569,7 @@
 
       const email = (emailEl.value || "").trim();
       if (!email) {
-        setError(errEl, "Введите email.");
+        setError(errEl, MSG.enter_email);
         return;
       }
 
@@ -572,15 +583,15 @@
 
         // По контракту: всегда 200 {"status":"ok"} (даже если email не существует)
         if (resp.ok) {
-          if (infoEl) infoEl.textContent = "Если такой email существует, код отправлен на почту.";
+          if (infoEl) infoEl.textContent = MSG.code_sent;
           return;
         }
 
         // если всё же вернули ошибку — покажем текст
         const txt = await resp.text().catch(() => "");
-        setError(errEl, txt || `Ошибка (HTTP ${resp.status}).`);
+        setError(errEl, txt || MSG.error_http(resp.status));
       } catch {
-        setError(errEl, "Сетевая ошибка. Повторите попытку.");
+        setError(errEl, MSG.network);
       }
     });
 
@@ -593,7 +604,7 @@
 
       // на успех покажем нейтральное сообщение (как по контракту)
       if (infoEl && !errEl.textContent) {
-        infoEl.textContent = "Если такой email существует, код отправлен на почту.";
+        infoEl.textContent = MSG.code_sent;
       }
     });
 
@@ -604,8 +615,8 @@
       const email = (emailEl.value || "").trim();
       const code = (codeEl.value || "").trim();
 
-      if (!email) { setError(errEl, "Введите email."); return; }
-      if (!/^\d{6}$/.test(code)) { setError(errEl, "Введите 6-значный код."); return; }
+      if (!email) { setError(errEl, MSG.enter_email); return; }
+      if (!/^\d{6}$/.test(code)) { setError(errEl, MSG.enter_6digit); return; }
 
       try {
         const resp = await fetch("/forgot/verify", {
@@ -622,7 +633,7 @@
             window.location.href = redirect;
             return;
           }
-          setError(errEl, "Некорректный ответ сервера.");
+          setError(errEl, MSG.invalid_response);
           return;
         }
 
@@ -633,9 +644,9 @@
         }
 
         const txt = await resp.text().catch(() => "");
-        setError(errEl, txt || `Ошибка (HTTP ${resp.status}).`);
+        setError(errEl, txt || MSG.error_http(resp.status));
       } catch {
-        setError(errEl, "Сетевая ошибка. Повторите попытку.");
+        setError(errEl, MSG.network);
       }
     });
 
@@ -652,6 +663,16 @@
     const errEl = document.getElementById("forgotNewPassError");
 
     if (!passEl || !pass2El || !btn || !errEl) return;
+
+    const lang = (document.documentElement.getAttribute("lang") || "ru").toLowerCase();
+    const isEn = lang === "en";
+    const MSG_NP = {
+      invalid_link: isEn ? "Invalid link (token missing)." : "Некорректная ссылка (token отсутствует).",
+      password_req: isEn ? "Password does not meet requirements." : "Пароль не соответствует требованиям.",
+      passwords_match: isEn ? "Passwords do not match." : "Пароли не совпадают.",
+      error_http: (s) => (isEn ? `Error (HTTP ${s}).` : `Ошибка (HTTP ${s}).`),
+      network: isEn ? "Network error. Please try again." : "Сетевая ошибка. Повторите попытку.",
+    };
 
     function getToken() {
       const hidden = (tokenEl?.value || "").trim();
@@ -690,9 +711,9 @@
       setError(errEl, "");
 
       const v = validate();
-      if (!v.token) { setError(errEl, "Некорректная ссылка (token отсутствует)."); return; }
-      if (!allRulesOk(getPasswordRules(v.p1))) { setError(errEl, "Пароль не соответствует требованиям."); return; }
-      if (v.p1 !== v.p2) { setError(errEl, "Пароли не совпадают."); return; }
+      if (!v.token) { setError(errEl, MSG_NP.invalid_link); return; }
+      if (!allRulesOk(getPasswordRules(v.p1))) { setError(errEl, MSG_NP.password_req); return; }
+      if (v.p1 !== v.p2) { setError(errEl, MSG_NP.passwords_match); return; }
 
       try {
         const resp = await fetch("/forgot/new-password", {
@@ -715,13 +736,60 @@
         }
 
         const txt = await resp.text().catch(() => "");
-        setError(errEl, txt || `Ошибка (HTTP ${resp.status}).`);
+        setError(errEl, txt || MSG_NP.error_http(resp.status));
       } catch {
-        setError(errEl, "Сетевая ошибка. Повторите попытку.");
+        setError(errEl, MSG_NP.network);
       }
     });
 
     refresh();
+  }
+
+  // ---------- language switcher ----------
+  function initLanguageSwitcher() {
+    const switchers = document.querySelectorAll(".lang-switcher");
+    if (!switchers.length) return;
+
+    function closeAll() {
+      switchers.forEach((sw) => {
+        const dd = sw.querySelector(".lang-dropdown");
+        if (dd) dd.classList.add("hidden");
+      });
+    }
+
+    // закрывать при клике вне
+    document.addEventListener("click", (e) => {
+      const inside = e.target.closest(".lang-switcher");
+      if (!inside) closeAll();
+    });
+
+    switchers.forEach((sw) => {
+      const btn = sw.querySelector("[data-lang-toggle]");
+      const dropdown = sw.querySelector(".lang-dropdown");
+      if (!btn || !dropdown) return;
+
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        dropdown.classList.toggle("hidden");
+      });
+
+      dropdown.querySelectorAll("button[data-lang]").forEach((item) => {
+        item.addEventListener("click", async () => {
+          const lang = item.dataset.lang;
+          try {
+            const resp = await fetch("/set-language", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ lang }),
+              credentials: "same-origin",
+            });
+            if (resp.ok) window.location.reload();
+          } catch (e) {
+            console.error(e);
+          }
+        });
+      });
+    });
   }
 
   // ---------- modal open/close (ВОЗВРАЩАЕМ, это и было потеряно) ----------
@@ -796,15 +864,29 @@
     if (e.key === "Escape" && sidebar && sidebar.classList.contains("is-open")) closeSidebarMobile();
   });
 
-  // ---------- init ----------
-  initRegistration();
-  initLogin();
-  initForgotPage();
-  initForgotNewPasswordPage();
+  // ---------- sidebar links ----------
+  function initSidebarLinks() {
+    document.querySelectorAll(".sidebar-item[data-href]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const href = btn.dataset.href;
+        if (href) window.location.href = href;
+      });
+    });
+  }
 
-  // отключаем любые обработчики маски телефона (если были)
-  const ph = document.getElementById("regPhone");
-  if (ph) { ph.oninput = null; ph.onkeydown = null; ph.onkeyup = null; }
+  // ---------- init ----------
+  document.addEventListener("DOMContentLoaded", () => {
+    initLanguageSwitcher();
+    initSidebarLinks();
+    initRegistration();
+    initLogin();
+    initForgotPage();
+    initForgotNewPasswordPage();
+
+    // отключаем любые обработчики маски телефона (если были)
+    const ph = document.getElementById("regPhone");
+    if (ph) { ph.oninput = null; ph.onkeydown = null; ph.onkeyup = null; }
+  });
 })();
 
 

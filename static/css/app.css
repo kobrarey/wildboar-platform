@@ -255,6 +255,15 @@ body{
 }
 .sidebar__link:hover{ background:rgba(255,255,255,.35); }
 .sidebar__link--active{ background:rgba(255,255,255,.35); }
+button.sidebar__link{
+  border:none;
+  background:transparent;
+  cursor:pointer;
+  font-family:inherit;
+  font-size:inherit;
+  width:100%;
+  text-align:left;
+}
 
 .nav-icon{
   display:none;
@@ -307,6 +316,11 @@ body{
   align-items:flex-start;
   justify-content:space-between;
   padding:14px 18px 10px 18px;
+}
+.dash__top-right{
+  display:flex;
+  align-items:center;
+  gap:24px;
 }
 .dash__user{
   text-align:left;
@@ -534,4 +548,87 @@ body.sidebar-collapsed .sidebar__logout-icon{
 .code-resend-hint {
   margin-top: 6px;
   font-size: 12px;
+}
+
+/* ---------- Language switcher ---------- */
+.lang-switcher {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+}
+
+.icon-button {
+  width: 38px;
+  height: 38px;
+  border-radius: 12px;
+  border: 1px solid rgba(0,0,0,.12);
+  background: #f6f3ea;
+  cursor: pointer;
+  font-size: 18px;
+  line-height: 1;
+}
+
+.lang-dropdown {
+  position: absolute;
+  right: 0;
+  top: calc(100% + 8px);
+  min-width: 140px;
+  background: #fff;
+  border: 1px solid rgba(0,0,0,.12);
+  border-radius: 12px;
+  box-shadow: 0 10px 24px rgba(0,0,0,.12);
+  padding: 6px;
+  z-index: 9999;
+}
+
+.lang-dropdown button {
+  width: 100%;
+  text-align: left;
+  padding: 10px 10px;
+  border: none;
+  background: transparent;
+  border-radius: 10px;
+  cursor: pointer;
+  font-weight: 700;
+  font-size: 13px;
+}
+
+.lang-dropdown button:hover {
+  background: #f6f3ea;
+}
+
+.hidden { display: none !important; }
+
+.user-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.user-meta {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.1;
+}
+
+.user-name {
+  font-weight: 800;
+}
+
+.user-email {
+  font-size: 12px;
+  color: #666;
+}
+
+.account-type-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 6px 10px;
+  border-radius: 999px;
+  border: 1px solid rgba(0,0,0,.12);
+  background: #f6f3ea;
+  font-weight: 800;
+  font-size: 12px;
+  white-space: nowrap;
 }

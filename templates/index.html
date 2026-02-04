@@ -1,9 +1,9 @@
 <!doctype html>
-<html lang="ru">
+<html lang="{{ 'en' if lang == 'en' else 'ru' }}">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>WildBoar — Вход / Регистрация</title>
+  <title>WildBoar — {{ 'Login / Sign up' if lang == 'en' else 'Вход / Регистрация' }}</title>
   <link rel="stylesheet" href="/static/css/app.css" />
   <script defer src="/static/js/app.js?v=5_2"></script>
   <style>
@@ -15,9 +15,21 @@
   <header class="topbar">
     <div class="topbar__spacer"></div>
 
-    <div class="topbar__actions">
-      <button class="btn btn--ghost" type="button" data-modal-open="registerModal">Регистрация</button>
-      <button class="btn btn--primary" type="button" data-modal-open="loginModal">Войти</button>
+    <div class="topbar__actions header-actions">
+      <button class="btn btn--ghost" type="button" data-modal-open="registerModal">
+        {{ 'Sign up' if lang == 'en' else 'Регистрация' }}
+      </button>
+      <button class="btn btn--primary" type="button" data-modal-open="loginModal">
+        {{ 'Log in' if lang == 'en' else 'Войти' }}
+      </button>
+
+      <div class="lang-switcher">
+        <button data-lang-toggle class="icon-button" type="button">🌐</button>
+        <div class="lang-dropdown hidden">
+          <button type="button" data-lang="ru">Русский</button>
+          <button type="button" data-lang="en">English</button>
+        </div>
+      </div>
     </div>
   </header>
 
@@ -28,59 +40,66 @@
     <div class="modal__overlay" data-modal-close></div>
 
     <div class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="loginTitle">
-      <button class="modal__close" type="button" aria-label="Закрыть" data-modal-close>×</button>
+      <button class="modal__close" type="button" aria-label="{{ 'Close' if lang == 'en' else 'Закрыть' }}" data-modal-close>×</button>
 
-      <h1 class="modal__title" id="loginTitle">Вход</h1>
+      <h1 class="modal__title" id="loginTitle">{{ 'Log in' if lang == 'en' else 'Вход' }}</h1>
 
       <form class="form" method="post" action="/login" autocomplete="on" id="loginForm" novalidate>
+        <input type="hidden" name="lang" value="{{ lang }}" />
         <div id="loginStep1">
           <label class="field">
-            <span class="field__label">ЭЛЕКТРОННАЯ ПОЧТА *</span>
+            <span class="field__label">{{ 'EMAIL *' if lang == 'en' else 'ЭЛЕКТРОННАЯ ПОЧТА *' }}</span>
             <input class="field__input" type="email" name="email" placeholder="name@example.com" />
           </label>
 
           <label class="field">
-            <span class="field__label">ПАРОЛЬ *</span>
+            <span class="field__label">{{ 'PASSWORD *' if lang == 'en' else 'ПАРОЛЬ *' }}</span>
             <input class="field__input" type="password" name="password" placeholder="••••••••" />
           </label>
 
-          <button class="btn btn--primary btn--block" type="submit">Войти</button>
+          <button class="btn btn--primary btn--block" type="submit">
+            {{ 'Log in' if lang == 'en' else 'Войти' }}
+          </button>
 
           <!-- Ошибка логина (401 / прочие) -->
           <div class="form-error" id="loginError" role="alert" aria-live="polite"></div>
 
-          <a href="/forgot" class="link">Забыли пароль?</a>
+          <a href="/forgot" class="link">{{ 'Forgot password?' if lang == 'en' else 'Забыли пароль?' }}</a>
         </div>
       </form>
 
       <div id="loginStep2" class="is-hidden">
-        <h3 style="margin-top:0;">Введите код</h3>
+        <h3 style="margin-top:0;">{{ 'Enter the code' if lang == 'en' else 'Введите код' }}</h3>
         <p class="muted" id="login2faHint">
-          Мы отправили 6-значный код на вашу почту. Код действителен 15 минут.
+          {% if lang == 'en' %}
+            We sent a 6-digit code to your email. The code is valid for 15 minutes.
+          {% else %}
+            Мы отправили 6-значный код на вашу почту. Код действителен 15 минут.
+          {% endif %}
         </p>
 
         <label class="field" for="login2faCode">
-          <span class="field__label">Код из письма</span>
+          <span class="field__label">{{ 'Code from email' if lang == 'en' else 'Код из письма' }}</span>
           <div class="code-input-row">
             <input
               id="login2faCode"
               type="text"
               inputmode="numeric"
               autocomplete="one-time-code"
-              placeholder="6-значный код"
+              placeholder="{{ '6-digit code' if lang == 'en' else '6-значный код' }}"
               minlength="6"
               maxlength="6"
               pattern="\d{6}"
             />
             <button type="button" class="code-resend-btn" id="login2faResendBtn">
-              Отправить код ещё раз
+              {{ 'Resend code' if lang == 'en' else 'Отправить код ещё раз' }}
             </button>
           </div>
-          <div class="code-resend-hint muted">Можно запрашивать 1 раз в минуту</div>
+          <div class="code-resend-hint muted">{{ 'You can request once per minute' if lang == 'en' else 'Можно запрашивать 1 раз в минуту' }}</div>
         </label>
 
         <button type="button" class="btn btn--primary btn--block" id="login2faConfirmBtn" disabled>
-          Подтвердить
+          {{ 'Confirm' if lang == 'en' else 'Подтвердить' }}
         </button>
 
         <div class="form-error" id="login2faError" role="alert" aria-live="polite"></div>
@@ -93,31 +112,33 @@
     <div class="modal__overlay" data-modal-close></div>
 
     <div class="modal__panel" role="dialog" aria-modal="true" aria-labelledby="registerTitle">
-      <button class="modal__close" type="button" aria-label="Закрыть" data-modal-close>×</button>
+      <button class="modal__close" type="button" aria-label="{{ 'Close' if lang == 'en' else 'Закрыть' }}" data-modal-close>×</button>
 
-      <h1 class="modal__title" id="registerTitle">Регистрация в личном кабинете</h1>
+      <h1 class="modal__title" id="registerTitle">
+        {{ 'Sign up to the dashboard' if lang == 'en' else 'Регистрация в личном кабинете' }}
+      </h1>
 
       <form class="form" method="post" action="/register" autocomplete="on" id="registerForm" novalidate>
         <div id="registerStep1">
         <div class="form__row">
           <label class="field">
-            <span class="field__label">ИМЯ *</span>
+            <span class="field__label">{{ 'FIRST NAME *' if lang == 'en' else 'ИМЯ *' }}</span>
             <input class="field__input" type="text" name="first_name" />
           </label>
 
           <label class="field">
-            <span class="field__label">ФАМИЛИЯ *</span>
+            <span class="field__label">{{ 'LAST NAME *' if lang == 'en' else 'ФАМИЛИЯ *' }}</span>
             <input class="field__input" type="text" name="last_name" />
           </label>
         </div>
 
         <label class="field">
-          <span class="field__label">ЭЛЕКТРОННАЯ ПОЧТА *</span>
+          <span class="field__label">{{ 'EMAIL *' if lang == 'en' else 'ЭЛЕКТРОННАЯ ПОЧТА *' }}</span>
           <input class="field__input" type="email" name="email" placeholder="name@example.com" />
         </label>
 
         <label class="field">
-          <span class="field__label">НОМЕР ТЕЛЕФОНА</span>
+          <span class="field__label">{{ 'PHONE NUMBER' if lang == 'en' else 'НОМЕР ТЕЛЕФОНА' }}</span>
           <input
             class="field__input"
             type="tel"
@@ -130,70 +151,72 @@
         </label>
 
         <label class="field">
-          <span class="field__label">ПАРОЛЬ *</span>
+          <span class="field__label">{{ 'PASSWORD *' if lang == 'en' else 'ПАРОЛЬ *' }}</span>
           <input
             class="field__input"
             type="password"
             name="password"
             id="registerPassword"
-            placeholder="Введите пароль"
+            placeholder="{{ 'Enter password' if lang == 'en' else 'Введите пароль' }}"
           />
 
-          <!-- Список условий (статично в HTML, подсветка через JS) -->
           <ul class="password-rules" id="passwordRules">
-            <li class="rule rule-bad" data-rule="len">Длина ≥ 8</li>
-            <li class="rule rule-bad" data-rule="digit">Минимум 1 цифра</li>
-            <li class="rule rule-bad" data-rule="lower">Минимум 1 строчная буква</li>
-            <li class="rule rule-bad" data-rule="upper">Минимум 1 заглавная буква</li>
-            <li class="rule rule-bad" data-rule="special">Минимум 1 спецсимвол</li>
-            <li class="rule rule-bad" data-rule="nospace">Без пробелов/табов/переводов строки</li>
+            <li class="rule rule-bad" data-rule="len">{{ 'Length ≥ 8' if lang == 'en' else 'Длина ≥ 8' }}</li>
+            <li class="rule rule-bad" data-rule="digit">{{ 'At least 1 digit' if lang == 'en' else 'Минимум 1 цифра' }}</li>
+            <li class="rule rule-bad" data-rule="lower">{{ 'At least 1 lowercase letter' if lang == 'en' else 'Минимум 1 строчная буква' }}</li>
+            <li class="rule rule-bad" data-rule="upper">{{ 'At least 1 uppercase letter' if lang == 'en' else 'Минимум 1 заглавная буква' }}</li>
+            <li class="rule rule-bad" data-rule="special">{{ 'At least 1 special character' if lang == 'en' else 'Минимум 1 спецсимвол' }}</li>
+            <li class="rule rule-bad" data-rule="nospace">{{ 'No spaces/tabs/newlines' if lang == 'en' else 'Без пробелов/табов/переводов строки' }}</li>
           </ul>
         </label>
 
-        <a href="/useragreement" target="_blank" rel="noopener" class="link">Пользовательские условия</a>
+        <a href="/useragreement" target="_blank" rel="noopener" class="link">
+          {{ 'User agreement' if lang == 'en' else 'Пользовательские условия' }}
+        </a>
 
         <div class="reg-agree">
           <label class="check">
             <input class="check__input" type="checkbox" id="termsCheck" />
             <span class="check__box" aria-hidden="true"></span>
-            <span class="check__label">Прочитал и принимаю условия *</span>
+            <span class="check__label">{{ 'I have read and accept the terms *' if lang == 'en' else 'Прочитал и принимаю условия *' }}</span>
           </label>
         </div>
 
         <button class="btn btn--primary btn--block" type="submit" id="registerSubmit" disabled>
-          Зарегистрироваться
+          {{ 'Sign up' if lang == 'en' else 'Зарегистрироваться' }}
         </button>
 
-        <!-- Ошибка регистрации (400: email занят / пароль и т.п.) -->
         <div class="form-error" id="registerError" role="alert" aria-live="polite"></div>
         </div>
 
         <div id="registerStep2" class="is-hidden">
-          <h3 style="margin-top:0;">Подтвердите email</h3>
-          <p class="muted" id="registerCodeHint">Мы отправили код на вашу почту.</p>
+          <h3 style="margin-top:0;">{{ 'Confirm your email' if lang == 'en' else 'Подтвердите email' }}</h3>
+          <p class="muted" id="registerCodeHint">
+            {{ 'We sent a code to your email.' if lang == 'en' else 'Мы отправили код на вашу почту.' }}
+          </p>
 
           <label class="field">
-            <span class="field__label">Код из письма</span>
+            <span class="field__label">{{ 'Code from email' if lang == 'en' else 'Код из письма' }}</span>
             <div class="code-input-row">
               <input
                 id="registerCode"
                 type="text"
                 inputmode="numeric"
                 autocomplete="one-time-code"
-                placeholder="6-значный код"
+                placeholder="{{ '6-digit code' if lang == 'en' else '6-значный код' }}"
                 minlength="6"
                 maxlength="6"
                 pattern="\d{6}"
               />
               <button type="button" class="code-resend-btn" id="registerResendBtn">
-                Отправить код ещё раз
+                {{ 'Resend code' if lang == 'en' else 'Отправить код ещё раз' }}
               </button>
             </div>
-            <div class="code-resend-hint muted">Можно запрашивать 1 раз в минуту</div>
+            <div class="code-resend-hint muted">{{ 'You can request once per minute' if lang == 'en' else 'Можно запрашивать 1 раз в минуту' }}</div>
           </label>
 
           <button type="button" class="btn btn--primary btn--block" id="registerConfirmBtn" disabled>
-            Подтвердить
+            {{ 'Confirm' if lang == 'en' else 'Подтвердить' }}
           </button>
 
           <div class="form-error" id="registerConfirmError" role="alert" aria-live="polite"></div>
@@ -203,4 +226,5 @@
   </div>
 </body>
 </html>
+
 

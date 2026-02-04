@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="ru">
+<html lang="{{ 'en' if lang == 'en' else 'ru' }}">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
@@ -29,8 +29,13 @@
       </div>
 
       <div class="footer">
-        Это автоматическое письмо. Если вы не инициировали действие — просто игнорируйте его.<br/>
-        © Wild Boar
+        {% if lang == 'en' %}
+          This is an automated email. If you did not initiate this action, you can ignore it.<br/>
+          © Wild Boar
+        {% else %}
+          Это автоматическое письмо. Если вы не инициировали действие — просто игнорируйте его.<br/>
+          © Wild Boar
+        {% endif %}
       </div>
     </div>
   </div>
