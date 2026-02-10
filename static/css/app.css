@@ -548,6 +548,7 @@ body.sidebar-collapsed .sidebar__logout-icon{
 .code-resend-hint {
   margin-top: 6px;
   font-size: 12px;
+  color: #b00020;
 }
 
 /* ---------- Language switcher ---------- */
@@ -631,4 +632,141 @@ body.sidebar-collapsed .sidebar__logout-icon{
   font-weight: 800;
   font-size: 12px;
   white-space: nowrap;
+}
+
+/* =========================
+   Security settings accordions + emails
+   ========================= */
+
+.accordion {
+  border: 1px solid rgba(0,0,0,.12);
+  border-radius: 14px;
+  overflow: hidden;
+  background: #fff;
+}
+
+.accordion__header {
+  width: 100%;
+  border: 0;
+  background: #fff;
+  cursor: pointer;
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  text-align: left;
+}
+
+.accordion__left {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.accordion__title {
+  font-weight: 800;
+  letter-spacing: .2px;
+}
+
+.accordion__right {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.accordion__chevron {
+  width: 10px;
+  height: 10px;
+  border-right: 2px solid #111;
+  border-bottom: 2px solid #111;
+  transform: rotate(-45deg);
+  transition: transform .12s ease;
+}
+
+.accordion.is-open .accordion__chevron {
+  transform: rotate(45deg);
+}
+
+.accordion__body {
+  display: none;
+  padding: 16px;
+  border-top: 1px solid rgba(0,0,0,.12);
+}
+
+.accordion.is-open .accordion__body {
+  display: block;
+}
+
+.acc-indicator {
+  width: 20px;
+  height: 20px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 900;
+  font-size: 12px;
+  border: 1px solid rgba(0,0,0,.12);
+  background: #f6f3ea;
+}
+
+.acc-indicator--ok { }
+.acc-indicator--warn { }
+
+.email-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+.email-item {
+  border: 1px solid rgba(0,0,0,.12);
+  border-radius: 14px;
+  padding: 14px;
+  background: #fff;
+}
+
+.email-item__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+
+.email-item__title {
+  font-weight: 800;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px 10px;
+  border-radius: 999px;
+  font-size: 12px;
+  border: 1px solid rgba(0,0,0,.12);
+  background: #f6f3ea;
+}
+
+.status-badge--ok { }
+.status-badge--warn { }
+
+.email-item__value {
+  margin-bottom: 12px;
+}
+
+.email-item__actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.email-code {
+  margin-top: 10px;
+}
+
+.email-msg {
+  margin: 8px 0 0;
+  font-size: 13px;
 }

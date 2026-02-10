@@ -1,0 +1,20 @@
+{% extends "emails/base.html" %}
+{% block content %}
+  {% if lang == 'en' %}
+    <h2>Email confirmation</h2>
+    <p>You requested to confirm this email in Security settings. Confirmation code:</p>
+  {% else %}
+    <h2>Подтверждение почты</h2>
+    <p>Вы запрашивали подтверждение этой почты в настройках безопасности. Код подтверждения:</p>
+  {% endif %}
+
+  <div class="code">{{ code }}</div>
+
+  <p class="muted">
+    {% if lang == 'en' %}
+      Code is valid for {{ ttl_minutes }} minutes.
+    {% else %}
+      Код действует {{ ttl_minutes }} минут.
+    {% endif %}
+  </p>
+{% endblock %}

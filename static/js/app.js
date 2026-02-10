@@ -75,13 +75,14 @@
     _resendTimers.set(btn, { intervalId, timeoutId });
   }
 
+  // экспортируем в глобальную область, чтобы использовать на других страницах (security_settings.js)
+  window.startResendCooldown = startResendCooldown;
+
   async function postResend(endpoint, email, errEl, btn) {
     if (!email) {
       setError(errEl, MSG.email_not_found);
       return;
     }
-
-    startResendCooldown(btn, 60);
 
     try {
       const resp = await fetch(endpoint, {
@@ -91,10 +92,26 @@
         credentials: "same-origin",
       });
 
-      if (resp.ok) return;
+      if (resp.ok) {
+        // запуск таймера только если сервер принял запрос и отправил/принял код
+        startResendCooldown(btn, 60);
+        return;
+      }
 
-      const txt = await resp.text().catch(() => "");
-      setError(errEl, txt || MSG.error_http(resp.status));
+      const raw = await resp.text().catch(() => "");
+      let msg = raw || MSG.error_http(resp.status);
+      // пробуем вытащить message из JSON {"status": "...", "message": "..."}
+      if (raw) {
+        try {
+          const data = JSON.parse(raw);
+          if (data && typeof data.message === "string") {
+            msg = data.message;
+          }
+        } catch {
+          // raw был не JSON — оставляем как есть
+        }
+      }
+      setError(errEl, msg);
       return;
 
     } catch {
@@ -607,9 +624,20 @@
           return;
         }
 
-        // если всё же вернули ошибку — покажем текст
-        const txt = await resp.text().catch(() => "");
-        setError(errEl, txt || MSG.error_http(resp.status));
+        // если всё же вернули ошибку — аккуратно покажем сообщение
+        const raw = await resp.text().catch(() => "");
+        let msg = raw || MSG.error_http(resp.status);
+        if (raw) {
+          try {
+            const data = JSON.parse(raw);
+            if (data && typeof data.message === "string") {
+              msg = data.message;
+            }
+          } catch {
+            // не JSON — оставляем raw
+          }
+        }
+        setError(errEl, msg);
       } catch {
         setError(errEl, MSG.network);
       }
@@ -721,7 +749,12 @@
     function refresh() {
       const v = validate();
       btn.disabled = !v.ok;
-      setError(errEl, "");
+      // показываем ошибку "Пароли не совпадают" в режиме реального времени
+      if (v.p2.length > 0 && v.p1 !== v.p2) {
+        setError(errEl, MSG_NP.passwords_match);
+      } else {
+        setError(errEl, "");
+      }
     }
 
     passEl.addEventListener("input", refresh);

@@ -50,24 +50,27 @@ def create_code(user_id: int, purpose: str, db: Optional[Session] = None) -> str
 
     try:
         # rate-limit: not more often than once per RESEND_COOLDOWN_SECONDS
-        last = db.execute(
-            text(
-                """
-                SELECT created_at
-                FROM public.security_codes
-                WHERE user_id = :user_id
-                  AND purpose = :purpose
-                ORDER BY created_at DESC
-                LIMIT 1
-                """
-            ),
-            {"user_id": user_id, "purpose": purpose},
-        ).mappings().first()
+        # rate-limit только для части сценариев (регистрация и смена пароля).
+        # Для login_2fa и reset позволяем запрашивать код без ожидания.
+        if purpose in {"registration", "password_change"}:
+            last = db.execute(
+                text(
+                    """
+                    SELECT created_at
+                    FROM public.security_codes
+                    WHERE user_id = :user_id
+                      AND purpose = :purpose
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """
+                ),
+                {"user_id": user_id, "purpose": purpose},
+            ).mappings().first()
 
-        if last is not None:
-            last_created = last["created_at"]
-            if (now - last_created).total_seconds() < RESEND_COOLDOWN_SECONDS:
-                raise ValueError("code_cooldown")
+            if last is not None:
+                last_created = last["created_at"]
+                if (now - last_created).total_seconds() < RESEND_COOLDOWN_SECONDS:
+                    raise ValueError("code_cooldown")
 
         # deactivate all previous unused codes for this user/purpose
         db.execute(

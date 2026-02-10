@@ -6,7 +6,8 @@
   <title>{% if lang == 'en' %}Security settings{% else %}Настройки безопасности{% endif %} — Wild Boar</title>
   <link rel="stylesheet" href="/static/css/app.css" />
   <script defer src="/static/js/app.js?v=5_2"></script>
-  <script defer src="/static/js/security_settings.js"></script>
+  <!-- cache-busting для скрипта настроек безопасности -->
+  <script defer src="/static/js/security_settings.js?v=2"></script>
 </head>
 
 <body class="page page--dashboard">
@@ -37,6 +38,7 @@
         <span class="nav-dot" aria-hidden="true"></span>
         <span class="nav-label">{{ 'My portfolio' if lang == 'en' else 'Мой портфель' }}</span>
       </a>
+
       <a class="sidebar__link sidebar__link--active nav-item" href="/settings/security">
         <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
@@ -95,62 +97,372 @@
     <main class="dash__content">
       <h1 class="dash__h1">{% if lang == 'en' %}Security settings{% else %}Настройки безопасности{% endif %}</h1>
 
+      {% set e1 = emails[0] %}
+      {% set e2 = emails[1] %}
+      {% set slot1_ok = (e1.email and e1.verified) %}
+      {% set slot2_ok = (e2.email and e2.verified) %}
+      {% set non_empty = (1 if e1.email else 0) + (1 if e2.email else 0) %}
+
       <div class="card">
-        <div class="card__body security-form">
-          <h2 class="dash__h2" style="margin:0 0 14px; font-size:18px;">
-            {% if lang == 'en' %}Change password{% else %}Сменить пароль{% endif %}
-          </h2>
+        <div class="card__body">
 
-          <div class="field" style="margin-bottom:12px;">
-            <label class="field__label" for="newPassword">
-              {% if lang == 'en' %}New password{% else %}Придумайте новый пароль{% endif %}
-            </label>
-            <input class="field__input" type="password" id="newPassword" autocomplete="new-password" />
-          </div>
-
-          <div class="field" style="margin-bottom:12px;">
-            <label class="field__label" for="confirmPassword">
-              {% if lang == 'en' %}Confirm password{% else %}Повторите пароль{% endif %}
-            </label>
-            <input class="field__input" type="password" id="confirmPassword" autocomplete="new-password" />
-          </div>
-
-          <p id="passwordMismatch" class="form-error hidden" role="alert">
-            {% if lang == 'en' %}Passwords do not match{% else %}Пароли не совпадают{% endif %}
-          </p>
-
-          <div style="margin-top:14px;">
-            <button id="sendPasswordCodeBtn" class="btn btn--light" type="button" disabled>
-              {% if lang == 'en' %}Get code by email{% else %}Получить код на почту{% endif %}
+          <!-- Accordion: Change password -->
+          <div class="accordion" data-accordion>
+            <button class="accordion__header" type="button" data-acc-toggle aria-expanded="false">
+              <span class="accordion__left">
+                <span class="accordion__title">
+                  {% if lang == 'en' %}Change password{% else %}Смена пароля{% endif %}
+                </span>
+              </span>
+              <span class="accordion__right">
+                <span class="accordion__chevron" aria-hidden="true"></span>
+              </span>
             </button>
-          </div>
 
-          <div id="codeBlock" class="hidden" style="margin-top:14px;">
-            <div class="field" style="max-width:260px;">
-              <label class="field__label" for="passwordCodeInput">{% if lang == 'en' %}Code from email{% else %}Код из письма{% endif %}</label>
-              <input
-                class="field__input"
-                type="text"
-                id="passwordCodeInput"
-                inputmode="numeric"
-                minlength="6"
-                maxlength="6"
-                pattern="\d{6}"
-                placeholder="{% if lang == 'en' %}6-digit code{% else %}6-значный код{% endif %}"
-              />
+            <div class="accordion__body">
+              <!-- Email slot selection for password code -->
+              <div class="field" style="margin-bottom:12px;">
+                {% if slot1_ok and slot2_ok %}
+                  <label class="field__label" for="passwordEmailSlot">
+                    {% if lang == 'en' %}Where to send the code?{% else %}На какую почту отправить код?{% endif %}
+                  </label>
+                  <select class="field__input" id="passwordEmailSlot">
+                    <option value="1">
+                      {% if lang == 'en' %}Email #1{% else %}Почта №1{% endif %} ({{ e1.email }})
+                    </option>
+                    <option value="2">
+                      {% if lang == 'en' %}Email #2{% else %}Почта №2{% endif %} ({{ e2.email }})
+                    </option>
+                  </select>
+                {% else %}
+                  <input type="hidden" id="passwordEmailSlot" value="{{ 1 if slot1_ok else 2 }}" />
+                  <p class="muted" style="margin:0 0 10px; font-size:13px;">
+                    {% if lang == 'en' %}The code will be sent to:{% else %}Код будет отправлен на:{% endif %}
+                    <strong>
+                      {% if slot1_ok %}{{ e1.email }}{% else %}{{ e2.email }}{% endif %}
+                    </strong>
+                  </p>
+                {% endif %}
+              </div>
+
+              <div class="field" style="margin-bottom:12px;">
+                <label class="field__label" for="newPassword">
+                  {% if lang == 'en' %}New password{% else %}Придумайте новый пароль{% endif %}
+                </label>
+                <input class="field__input" type="password" id="newPassword" autocomplete="new-password" />
+              </div>
+
+              <div class="field" style="margin-bottom:12px;">
+                <label class="field__label" for="confirmPassword">
+                  {% if lang == 'en' %}Confirm password{% else %}Повторите пароль{% endif %}
+                </label>
+                <input class="field__input" type="password" id="confirmPassword" autocomplete="new-password" />
+              </div>
+
+              <p id="passwordMismatch" class="form-error hidden" role="alert">
+                {% if lang == 'en' %}Passwords do not match{% else %}Пароли не совпадают{% endif %}
+              </p>
+
+              <div style="margin-top:14px;">
+                <button id="sendPasswordCodeBtn" class="btn btn--light" type="button" disabled>
+                  {% if lang == 'en' %}Get code by email{% else %}Получить код на почту{% endif %}
+                </button>
+              </div>
+
+              <div id="codeBlock" class="hidden" style="margin-top:14px;">
+                <div class="field">
+                  <label class="field__label" for="passwordCodeInput">
+                    {% if lang == 'en' %}Code from email{% else %}Код из письма{% endif %}
+                  </label>
+                  <div class="code-input-row">
+                    <input
+                      class="field__input"
+                      type="text"
+                      id="passwordCodeInput"
+                      inputmode="numeric"
+                      minlength="6"
+                      maxlength="6"
+                      pattern="\d{6}"
+                      placeholder="{% if lang == 'en' %}6-digit code{% else %}6-значный код{% endif %}"
+                    />
+                    <button type="button" class="code-resend-btn" id="passwordCodeResendBtn">
+                      {% if lang == 'en' %}Send code again{% else %}Отправить код ещё раз{% endif %}
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <div style="margin-top:14px;">
+                <button id="confirmPasswordChangeBtn" class="btn btn--primary" type="button" disabled>
+                  {% if lang == 'en' %}Change password{% else %}Сменить пароль{% endif %}
+                </button>
+              </div>
+
+              <p id="passwordChangeMessage" class="muted" style="margin-top:12px; font-size:13px;"></p>
             </div>
           </div>
 
-          <div style="margin-top:14px;">
-            <button id="confirmPasswordChangeBtn" class="btn btn--primary" type="button" disabled>
-              {% if lang == 'en' %}Change password{% else %}Сменить пароль{% endif %}
+          <!-- Accordion: Emails management -->
+          <div class="accordion" data-accordion style="margin-top:12px;">
+            <button class="accordion__header" type="button" data-acc-toggle aria-expanded="false">
+              <span class="accordion__left">
+                <span class="accordion__title">
+                  {% if lang == 'en' %}Email management{% else %}Управление почтами{% endif %}
+                </span>
+              </span>
+
+              <span class="accordion__right">
+                {% if slot1_ok and slot2_ok %}
+                  <span class="acc-indicator acc-indicator--ok" aria-label="ok">✓</span>
+                {% else %}
+                  <span class="acc-indicator acc-indicator--warn" aria-label="needs attention">!</span>
+                {% endif %}
+                <span class="accordion__chevron" aria-hidden="true"></span>
+              </span>
             </button>
+
+            <div class="accordion__body">
+
+              <div class="email-grid">
+
+                <!-- Email #1 -->
+                <div class="email-item" data-email-item data-slot="1">
+                  <div class="email-item__head">
+                    <div class="email-item__title">{% if lang == 'en' %}Email #1{% else %}Почта №1{% endif %}</div>
+                    <div class="email-item__status">
+                      {% if not e1.email %}
+                        <span class="status-badge">{% if lang == 'en' %}Not added{% else %}Не добавлена{% endif %}</span>
+                      {% elif e1.verified %}
+                        <span class="status-badge status-badge--ok">{% if lang == 'en' %}Verified{% else %}Подтверждена{% endif %}</span>
+                      {% else %}
+                        <span class="status-badge status-badge--warn">{% if lang == 'en' %}Not verified{% else %}Не подтверждена{% endif %}</span>
+                      {% endif %}
+                    </div>
+                  </div>
+
+                  <div class="email-item__value" data-email-value>
+                    {% if e1.email %}
+                      {{ e1.email }}
+                    {% else %}
+                      <span class="muted">{% if lang == 'en' %}Not added{% else %}Не добавлена{% endif %}</span>
+                    {% endif %}
+                  </div>
+
+                  <div class="email-item__actions">
+                    <button
+                      type="button"
+                      class="btn btn--light"
+                      data-email-delete
+                      {% if not e1.email %}disabled{% endif %}
+                      {% if non_empty <= 1 %}data-only-email="1"{% endif %}
+                    >
+                      {% if lang == 'en' %}Delete{% else %}Удалить{% endif %}
+                    </button>
+
+                    <button
+                      type="button"
+                      class="btn btn--primary"
+                      data-email-confirm
+                      {% if (not e1.email) or e1.verified %}disabled{% endif %}
+                    >
+                      {% if lang == 'en' %}Confirm{% else %}Подтвердить{% endif %}
+                    </button>
+                  </div>
+
+                  <div class="form-error" data-email-error role="alert" aria-live="polite"></div>
+                  <p class="muted email-msg" data-email-msg></p>
+
+                  <div class="email-code hidden" data-email-code-block>
+                    <div class="code-input-row">
+                      <input
+                        class="field__input"
+                        type="text"
+                        inputmode="numeric"
+                        minlength="6"
+                        maxlength="6"
+                        pattern="\d{6}"
+                        placeholder="{% if lang == 'en' %}6-digit code{% else %}6-значный код{% endif %}"
+                        data-email-code-input
+                      />
+                      <button type="button" class="code-resend-btn" data-email-resend>
+                        {% if lang == 'en' %}Send code again{% else %}Отправить код ещё раз{% endif %}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Email #2 -->
+                <div class="email-item" data-email-item data-slot="2">
+                  <div class="email-item__head">
+                    <div class="email-item__title">{% if lang == 'en' %}Email #2{% else %}Почта №2{% endif %}</div>
+                    <div class="email-item__status">
+                      {% if not e2.email %}
+                        <span class="status-badge">{% if lang == 'en' %}Not added{% else %}Не добавлена{% endif %}</span>
+                      {% elif e2.verified %}
+                        <span class="status-badge status-badge--ok">{% if lang == 'en' %}Verified{% else %}Подтверждена{% endif %}</span>
+                      {% else %}
+                        <span class="status-badge status-badge--warn">{% if lang == 'en' %}Not verified{% else %}Не подтверждена{% endif %}</span>
+                      {% endif %}
+                    </div>
+                  </div>
+
+                  <div class="email-item__value">
+                    {% if e2.email %}
+                      <div data-email-value>{{ e2.email }}</div>
+                    {% else %}
+                      <input
+                        class="field__input"
+                        type="email"
+                        inputmode="email"
+                        placeholder="{% if lang == 'en' %}Enter email{% else %}Введите e-mail{% endif %}"
+                        autocomplete="email"
+                        data-email-input
+                      />
+                    {% endif %}
+                  </div>
+
+                  <div class="email-item__actions">
+                    <button
+                      type="button"
+                      class="btn btn--light"
+                      data-email-delete
+                      {% if not e2.email %}disabled{% endif %}
+                      {% if non_empty <= 1 %}data-only-email="1"{% endif %}
+                    >
+                      {% if lang == 'en' %}Delete{% else %}Удалить{% endif %}
+                    </button>
+
+                    <button
+                      type="button"
+                      class="btn btn--primary"
+                      data-email-confirm
+                      {% if (not e2.email and not true) or e2.verified %}{% endif %}
+                      {% if e2.verified %}disabled{% endif %}
+                    >
+                      {% if lang == 'en' %}Confirm{% else %}Подтвердить{% endif %}
+                    </button>
+                  </div>
+
+                  <div class="form-error" data-email-error role="alert" aria-live="polite"></div>
+                  <p class="muted email-msg" data-email-msg></p>
+
+                  <div class="email-code hidden" data-email-code-block>
+                    <div class="code-input-row">
+                      <input
+                        class="field__input"
+                        type="text"
+                        inputmode="numeric"
+                        minlength="6"
+                        maxlength="6"
+                        pattern="\d{6}"
+                        placeholder="{% if lang == 'en' %}6-digit code{% else %}6-значный код{% endif %}"
+                        data-email-code-input
+                      />
+                      <button type="button" class="code-resend-btn" data-email-resend>
+                        {% if lang == 'en' %}Send code again{% else %}Отправить код ещё раз{% endif %}
+                      </button>
+                    </div>
+                    <div class="code-resend-hint muted">
+                      {% if lang == 'en' %}You can request once per minute{% else %}Можно запрашивать 1 раз в минуту{% endif %}
+                    </div>
+                  </div>
+
+                </div>
+
+              </div><!-- /email-grid -->
+
+              <p class="muted" style="margin:12px 0 4px; font-size:13px;">
+                {% if lang == 'en' %}
+                  At least one verified email must remain on the account.
+                {% else %}
+                  В аккаунте должна оставаться хотя бы одна подтверждённая почта.
+                {% endif %}
+              </p>
+              <p class="muted" style="margin:0; font-size:13px;">
+                {% if lang == 'en' %}
+                  You can add a backup email to keep access to your account. If you lose access to your primary email, you will still be able to access your Wild Boar account via the backup email.
+                {% else %}
+                  Вы можете добавить вторую почту в аккаунт для сохранения доступа к нему. Если доступ к основной почте будет потерян, у вас по‑прежнему останется доступ к аккаунту Wild Boar по резервной почте.
+                {% endif %}
+              </p>
+            </div>
           </div>
 
-          <p id="passwordChangeMessage" class="muted" style="margin-top:12px; font-size:13px;"></p>
         </div>
       </div>
     </main>
+  </div>
+
+  <!-- Modal: last email warning -->
+  <div class="modal" id="emailWarningModal" aria-hidden="true">
+    <div class="modal__overlay" data-email-warning-close></div>
+    <div class="modal__panel">
+      <button class="modal__close" type="button" data-email-warning-close aria-label="{{ 'Close' if lang == 'en' else 'Закрыть' }}">×</button>
+      <h2 class="modal__title">
+        {% if lang == 'en' %}Cannot delete email{% else %}Нельзя удалить почту{% endif %}
+      </h2>
+      <p>
+        {% if lang == 'en' %}
+          You cannot delete the only email.
+        {% else %}
+          Нельзя удалить единственную почту.
+        {% endif %}
+      </p>
+    </div>
+  </div>
+
+  <!-- Modal: backup email added -->
+  <div class="modal" id="emailSuccessModal" aria-hidden="true">
+    <div class="modal__overlay" data-email-success-close></div>
+    <div class="modal__panel">
+      <button class="modal__close" type="button" data-email-success-close aria-label="{{ 'Close' if lang == 'en' else 'Закрыть' }}">×</button>
+      <h2 class="modal__title">
+        {% if lang == 'en' %}Backup email added{% else %}Резервная почта добавлена{% endif %}
+      </h2>
+      <p>
+        {% if lang == 'en' %}
+          Backup email was added successfully.
+        {% else %}
+          Резервная почта была успешно добавлена.
+        {% endif %}
+      </p>
+    </div>
+  </div>
+
+  <!-- Modal: backup email deleted -->
+  <div class="modal" id="emailDeleteSuccessModal" aria-hidden="true">
+    <div class="modal__overlay" data-email-delete-success-close></div>
+    <div class="modal__panel">
+      <button class="modal__close" type="button" data-email-delete-success-close aria-label="{{ 'Close' if lang == 'en' else 'Закрыть' }}">×</button>
+      <h2 class="modal__title">
+        {% if lang == 'en' %}Backup email deleted{% else %}Резервная почта удалена{% endif %}
+      </h2>
+      <p>
+        {% if lang == 'en' %}
+          Backup email was deleted successfully.
+        {% else %}
+          Резервная почта была успешно удалена.
+        {% endif %}
+      </p>
+    </div>
+  </div>
+
+  <!-- Modal: password changed -->
+  <div class="modal" id="passwordChangedModal" aria-hidden="true">
+    <div class="modal__overlay" data-password-changed-close></div>
+    <div class="modal__panel">
+      <button class="modal__close" type="button" data-password-changed-close aria-label="{{ 'Close' if lang == 'en' else 'Закрыть' }}">×</button>
+      <h2 class="modal__title">
+        {% if lang == 'en' %}Password changed{% else %}Пароль изменён{% endif %}
+      </h2>
+      <p>
+        {% if lang == 'en' %}
+          Your password has been changed successfully.
+        {% else %}
+          Пароль был успешно заменён.
+        {% endif %}
+      </p>
+    </div>
   </div>
 
   <div class="backdrop" id="backdrop" hidden></div>
