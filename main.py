@@ -1,7 +1,8 @@
 import os
 import re
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta, date, timezone
+from decimal import Decimal
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -11,7 +12,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, Plai
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from sqlalchemy import create_engine, String, Text, BigInteger, Boolean, DateTime, ForeignKey, func, or_, text
+from sqlalchemy import (
+    create_engine, String, Text, BigInteger, Boolean, DateTime, Date, ForeignKey,
+    Integer, Numeric, UniqueConstraint, Column, func, or_, text,
+)
 from sqlalchemy.orm import sessionmaker, Session, declarative_base, Mapped, mapped_column
 from sqlalchemy.exc import IntegrityError
 from typing import Generator
@@ -143,6 +147,57 @@ class PasswordResetSession(Base):
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
 
     is_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+
+class Fund(Base):
+    __tablename__ = "funds"
+
+    id = Column(Integer, primary_key=True)
+    code = Column(String(32), unique=True, nullable=False)
+    name_ru = Column(String(100), nullable=False)
+    name_en = Column(String(100), nullable=False)
+    category = Column(String(16), nullable=False)  # 'active', 'index', 'test'
+    sort_order = Column(Integer, nullable=False, default=0)
+    is_active = Column(Boolean, nullable=False, default=True)
+
+
+class FundNavMinute(Base):
+    __tablename__ = "fund_nav_minute"
+
+    id = Column(BigInteger, primary_key=True)
+    fund_id = Column(Integer, ForeignKey("funds.id", ondelete="CASCADE"), nullable=False)
+    ts_utc = Column(DateTime(timezone=True), nullable=False)
+
+    # было: price_usdt
+    nav_usdt = Column(Numeric(30, 10), nullable=False)
+    shares_outstanding = Column(Numeric(30, 10), nullable=False)
+
+
+class UserFundPosition(Base):
+    __tablename__ = "user_fund_positions"
+
+    id = Column(BigInteger, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    fund_id = Column(Integer, ForeignKey("funds.id", ondelete="CASCADE"), nullable=False)
+    shares = Column(Numeric(30, 10), nullable=False, default=0)
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "fund_id", name="user_fund_positions_unique"),
+    )
+
+
+class UserPortfolioDaily(Base):
+    __tablename__ = "user_portfolio_daily"
+
+    id = Column(BigInteger, primary_key=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    date_utc = Column(Date, nullable=False)
+    balance_usdt = Column(Numeric(30, 10), nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "date_utc", name="user_portfolio_daily_unique"),
+    )
 
 
 # -----------------------
@@ -348,6 +403,115 @@ def get_lang_from_request(request: Request) -> str:
     if lang not in SUPPORTED_LANGS:
         lang = DEFAULT_LANG
     return lang
+
+
+def get_user_portfolio(db: Session, user: User, lang: str) -> dict:
+    # 1) USDT-баланс — на этом этапе просто 0
+    stable_balance = Decimal("0")
+
+    # 2) Список фондов
+    funds = (
+        db.query(Fund)
+        .filter(Fund.is_active == True)
+        .order_by(Fund.category, Fund.sort_order, Fund.id)
+        .all()
+    )
+
+    # 3) Позиции пользователя по фондам
+    positions = (
+        db.query(UserFundPosition)
+        .filter(UserFundPosition.user_id == user.id)
+        .all()
+    )
+    pos_by_fund = {p.fund_id: p for p in positions}
+
+    # 4) Текущие цены (последняя запись fund_nav_minute по каждому фонду)
+    subq = (
+        db.query(
+            FundNavMinute.fund_id,
+            func.max(FundNavMinute.ts_utc).label("max_ts"),
+        )
+        .group_by(FundNavMinute.fund_id)
+        .subquery()
+    )
+
+    prices_rows = (
+        db.query(
+            FundNavMinute.fund_id,
+            FundNavMinute.nav_usdt,
+            FundNavMinute.shares_outstanding,
+        )
+        .join(
+            subq,
+            (FundNavMinute.fund_id == subq.c.fund_id)
+            & (FundNavMinute.ts_utc == subq.c.max_ts),
+        )
+        .all()
+    )
+
+    nav_by_fund = {r.fund_id: r.nav_usdt for r in prices_rows}
+    shares_out_by_fund = {r.fund_id: r.shares_outstanding for r in prices_rows}
+
+    # 5) Собираем payload
+    funds_payload = []
+    total_balance = Decimal("0")
+
+    for fund in funds:
+        nav_usdt = Decimal(nav_by_fund.get(fund.id) or 0)
+        shares_outstanding = Decimal(shares_out_by_fund.get(fund.id) or 0)
+
+        if shares_outstanding > 0:
+            price = nav_usdt / shares_outstanding
+        else:
+            price = Decimal("0")
+
+        shares = Decimal(pos_by_fund[fund.id].shares) if fund.id in pos_by_fund else Decimal("0")
+        value = price * shares
+
+        total_balance += value
+
+        name = fund.name_ru if lang == "ru" else fund.name_en
+
+        funds_payload.append(
+            {
+                "id": fund.id,
+                "code": fund.code,
+                "category": fund.category,
+                "name": name,
+                "price": price,
+                "shares": shares,
+                "value": value,
+            }
+        )
+
+    # 6) Баланс "вчера" из user_portfolio_daily (если есть)
+    today_utc = datetime.now(timezone.utc).date()
+    yesterday = today_utc - timedelta(days=1)
+
+    prev_row = (
+        db.query(UserPortfolioDaily)
+        .filter(
+            UserPortfolioDaily.user_id == user.id,
+            UserPortfolioDaily.date_utc == yesterday,
+        )
+        .first()
+    )
+
+    prev_balance = Decimal(prev_row.balance_usdt) if prev_row else None
+
+    if prev_balance is not None and prev_balance > 0:
+        daily_change_pct = (total_balance / prev_balance - Decimal("1")) * Decimal("100")
+    else:
+        daily_change_pct = None
+
+    return {
+        "current_balance": total_balance,
+        "prev_balance": prev_balance,
+        "daily_change_pct": daily_change_pct,
+        "stable_balance": stable_balance,
+        "stable_symbol": "USDT",
+        "funds": funds_payload,
+    }
 
 
 # -----------------------
@@ -965,15 +1129,21 @@ def change_password_confirm(
 
 
 @app.get("/dashboard")
-def dashboard(request: Request, user: User = Depends(get_current_user)):
+def dashboard(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     lang = get_lang_from_request(request)
+    portfolio = get_user_portfolio(db, user, lang)
     return templates.TemplateResponse(
         "dashboard.html",
         {
             "request": request,
-            "lang": lang,
             "user": user,
+            "lang": lang,
             "account_type": user.account_type,
+            "portfolio": portfolio,
         },
     )
 

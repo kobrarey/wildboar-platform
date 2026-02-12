@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>WildBoar — {{ 'Personal account' if lang == 'en' else 'Личный кабинет' }}</title>
-  <link rel="stylesheet" href="/static/css/app.css" />
+  <link rel="stylesheet" href="/static/css/app.css?v=portfolio7" />
   <script defer src="/static/js/app.js?v=5_2"></script>
 </head>
 
@@ -91,15 +91,164 @@
       </div>
     </header>
 
-    <main class="dash__content">
-      <h1 class="dash__h1">{{ 'My portfolio' if lang == 'en' else 'Мой портфель' }}</h1>
+    <main class="dash__content dash__content--portfolio">
+      <h1 class="dash__h1 dash__h1--portfolio">{{ 'My portfolio' if lang == 'en' else 'Мой портфель' }}</h1>
 
-      <!-- Заглушка по ТЗ: можно оставить пустым блоком -->
-      <div class="card">
+      {# --- Portfolio UI (stage 6) --- #}
+
+      {% set active_funds = portfolio.funds | selectattr('category', 'equalto', 'active') | list %}
+      {% set index_funds  = portfolio.funds | selectattr('category', 'equalto', 'index')  | list %}
+      {% set test_funds   = portfolio.funds | selectattr('category', 'equalto', 'test')   | list %}
+
+      <div class="card portfolio-card">
         <div class="card__body">
-          <div class="muted">{{ 'My portfolio section is under development.' if lang == 'en' else 'Раздел “Мой портфель” — в разработке.' }}</div>
+          <div class="portfolio-header__row1">
+            <div class="portfolio-metric">
+              <div class="p-label">{{ 'Текущий баланс' if lang == 'ru' else 'Current balance' }}</div>
+              <div class="p-value">{{ '%.2f'|format(portfolio.current_balance or 0) }} {{ portfolio.stable_symbol or 'USDT' }}</div>
+            </div>
+            <div class="portfolio-metric portfolio-metric--right">
+              <div class="p-label">{{ 'Изменение за последний день' if lang == 'ru' else 'Change over last day' }}</div>
+              <div class="p-value">
+                {% if portfolio.daily_change_pct is not none %}
+                  {% if portfolio.daily_change_pct > 0 %}+{% endif %}{{ '%.2f'|format(portfolio.daily_change_pct) }}%
+                {% else %}
+                  —
+                {% endif %}
+              </div>
+            </div>
+          </div>
         </div>
       </div>
+
+      <section class="funds-section">
+        <h2 class="funds-title">
+          {% if lang == 'en' %}Stablecoin balance{% else %}Баланс стейблкоинов{% endif %}
+        </h2>
+
+        <div class="card">
+          <div class="card__body stablecoin-card">
+            <div class="stablecoin-card__content">
+              <div class="stablecoin-balance">
+                <span class="p-label">{{ portfolio.stable_symbol or 'USDT' }}</span>
+                <span class="stablecoin-value">{{ '%.2f'|format(portfolio.stable_balance or 0) }}</span>
+              </div>
+              <div class="stablecoin-actions">
+                <button class="btn btn--primary btn--small" type="button" disabled aria-disabled="true">
+                  {{ 'Пополнить' if lang == 'ru' else 'Deposit' }}
+                </button>
+                <button class="btn btn--primary btn--small" type="button" disabled aria-disabled="true">
+                  {{ 'Вывести' if lang == 'ru' else 'Withdraw' }}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      {% if active_funds %}
+      <section class="funds-section">
+        <h2 class="funds-title">
+          {% if lang == 'en' %}Actively managed funds{% else %}Фонды активного управления{% endif %}
+        </h2>
+
+        <div class="card">
+          <div class="card__body funds-table">
+            <div class="funds-header">
+              <span class="col-name">{{ 'Фонд' if lang == 'ru' else 'Fund' }}</span>
+              <span class="col-price">{{ 'Цена' if lang == 'ru' else 'Price' }}</span>
+              <span class="col-qty">{{ 'Количество' if lang == 'ru' else 'Quantity' }}</span>
+              <span class="col-value">{{ 'Стоимость' if lang == 'ru' else 'Value' }}</span>
+              <span class="col-action"></span>
+            </div>
+
+            {% for f in active_funds %}
+            <div class="fund-row">
+              <span class="col-name">{{ f.name }}</span>
+              <span class="col-price">{{ '%.2f'|format(f.price or 0) }} USDT</span>
+              <span class="col-qty">{{ '%.4f'|format(f.shares or 0) }}</span>
+              <span class="col-value">{{ '%.2f'|format(f.value or 0) }} USDT</span>
+              <span class="col-action">
+                <button class="btn btn--primary btn--small" type="button" disabled aria-disabled="true">
+                  {{ 'Инвестировать' if lang == 'ru' else 'Invest' }}
+                </button>
+              </span>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </section>
+      {% endif %}
+
+      {% if index_funds %}
+      <section class="funds-section">
+        <h2 class="funds-title">
+          {% if lang == 'en' %}Index funds{% else %}Индексные фонды{% endif %}
+        </h2>
+
+        <div class="card">
+          <div class="card__body funds-table">
+            <div class="funds-header">
+              <span class="col-name">{{ 'Фонд' if lang == 'ru' else 'Fund' }}</span>
+              <span class="col-price">{{ 'Цена' if lang == 'ru' else 'Price' }}</span>
+              <span class="col-qty">{{ 'Количество' if lang == 'ru' else 'Quantity' }}</span>
+              <span class="col-value">{{ 'Стоимость' if lang == 'ru' else 'Value' }}</span>
+              <span class="col-action"></span>
+            </div>
+
+            {% for f in index_funds %}
+            <div class="fund-row">
+              <span class="col-name">{{ f.name }}</span>
+              <span class="col-price">{{ '%.2f'|format(f.price or 0) }} USDT</span>
+              <span class="col-qty">{{ '%.4f'|format(f.shares or 0) }}</span>
+              <span class="col-value">{{ '%.2f'|format(f.value or 0) }} USDT</span>
+              <span class="col-action">
+                <button class="btn btn--primary btn--small" type="button" disabled aria-disabled="true">
+                  {{ 'Инвестировать' if lang == 'ru' else 'Invest' }}
+                </button>
+              </span>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </section>
+      {% endif %}
+
+      {% if test_funds %}
+      <section class="funds-section">
+        <h2 class="funds-title">
+          {% if lang == 'en' %}Test funds{% else %}Тестовые фонды{% endif %}
+        </h2>
+
+        <div class="card">
+          <div class="card__body funds-table">
+            <div class="funds-header">
+              <span class="col-name">{{ 'Фонд' if lang == 'ru' else 'Fund' }}</span>
+              <span class="col-price">{{ 'Цена' if lang == 'ru' else 'Price' }}</span>
+              <span class="col-qty">{{ 'Количество' if lang == 'ru' else 'Quantity' }}</span>
+              <span class="col-value">{{ 'Стоимость' if lang == 'ru' else 'Value' }}</span>
+              <span class="col-action"></span>
+            </div>
+
+            {% for f in test_funds %}
+            <div class="fund-row">
+              <span class="col-name">{{ f.name }}</span>
+              <span class="col-price">{{ '%.2f'|format(f.price or 0) }} USDT</span>
+              <span class="col-qty">{{ '%.4f'|format(f.shares or 0) }}</span>
+              <span class="col-value">{{ '%.2f'|format(f.value or 0) }} USDT</span>
+              <span class="col-action">
+                <button class="btn btn--primary btn--small" type="button" disabled aria-disabled="true">
+                  {{ 'Инвестировать' if lang == 'ru' else 'Invest' }}
+                </button>
+              </span>
+            </div>
+            {% endfor %}
+          </div>
+        </div>
+      </section>
+      {% endif %}
+
+      {# --- /Portfolio UI --- #}
     </main>
   </div>
 

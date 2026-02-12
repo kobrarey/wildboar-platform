@@ -50,6 +50,8 @@ body{
   color:#fff;
 }
 .btn--primary:hover{ background:var(--wb-purple-dark); }
+.btn--primary[aria-disabled="true"]{ opacity:.7; cursor:not-allowed; }
+.btn--primary[aria-disabled="true"]:hover{ background:var(--wb-purple); }
 .btn--ghost{
   background:transparent;
   border-color:var(--wb-border);
@@ -769,4 +771,127 @@ body.sidebar-collapsed .sidebar__logout-icon{
 .email-msg {
   margin: 8px 0 0;
   font-size: 13px;
+}
+
+/* ---------- Portfolio (My portfolio) ---------- */
+.dash__h1--portfolio {
+  text-align: center;
+  margin-bottom: 16px;
+}
+
+.dash__content--portfolio .portfolio-card { margin-bottom: 16px; }
+
+.portfolio-header__row1 {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 24px;
+  flex-wrap: wrap;
+}
+
+.portfolio-metric{
+  min-width: 140px;
+}
+
+.portfolio-metric--right{
+  text-align: right;
+}
+
+.p-label{
+  font-size: 12px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--wb-muted);
+  margin-bottom: 6px;
+}
+
+.p-value{
+  font-size: 22px;
+  font-weight: 800;
+  color: #111;
+}
+
+.stablecoin-card__content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.stablecoin-balance {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.stablecoin-balance .stablecoin-value {
+  font-size: 18px;
+  font-weight: 800;
+  color: #111;
+}
+
+.stablecoin-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.funds-section{
+  max-width: 920px;
+  margin: 24px auto 0 auto;
+}
+
+.funds-title{
+  margin:18px 0 10px 0;
+  font-size:18px;
+  font-weight:800;
+  text-align:left;
+}
+
+.funds-table{
+  overflow-x:auto;
+}
+
+.funds-header,
+.fund-row{
+  min-width:720px;
+  display:grid;
+  grid-template-columns: minmax(180px, 2fr) 1fr 1fr 1fr minmax(140px, auto);
+  gap:12px 24px;
+  align-items:center;
+}
+
+.funds-header{
+  padding:10px 0;
+  border-bottom:1px solid rgba(0,0,0,.10);
+  font-size:12px;
+  letter-spacing:.06em;
+  text-transform:uppercase;
+  color:var(--wb-muted);
+}
+
+.funds-header .col-price,
+.funds-header .col-qty,
+.funds-header .col-value {
+  text-align: center;
+}
+
+.fund-row{
+  padding:12px 0;
+  border-bottom:1px solid rgba(0,0,0,.06);
+}
+
+.col-price, .col-qty, .col-value {
+  text-align: center;
+}
+
+.col-action{
+  text-align: right;
+  padding-left: 16px;
+}
+
+@media (max-width: 640px) {
+  .portfolio-metric--right { text-align: left; }
+  .portfolio-header__row1 { flex-direction: column; gap: 12px; }
 }
