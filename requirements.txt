@@ -52,6 +52,7 @@ pyasn1_modules==0.4.2
 pycparser==3.0
 pycryptodome==3.23.0
 pydantic==2.12.5
+pydantic-settings==2.10.1
 pydantic_core==2.41.5
 pyparsing==3.3.2
 python-dotenv==1.2.1

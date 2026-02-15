@@ -1,5 +1,4 @@
 import logging
-import os
 from typing import Optional, TYPE_CHECKING
 
 from cryptography.fernet import Fernet
@@ -8,16 +7,18 @@ from web3 import Web3
 
 from sqlalchemy.exc import IntegrityError
 
+from app.config import settings
+
 if TYPE_CHECKING:
     from sqlalchemy.orm import Session
-    from main import User, UserWallet
+    from app.models import User, UserWallet
 
 log = logging.getLogger(__name__)
 
 # -----------------------
 # Encryption layer
 # -----------------------
-_WALLET_ENC_KEY = os.getenv("WALLET_ENC_KEY")
+_WALLET_ENC_KEY = settings.WALLET_ENC_KEY
 if not _WALLET_ENC_KEY or _WALLET_ENC_KEY in {"CHANGE_ME", "CHANGE_ME_TO_FERNET_KEY"}:
     raise RuntimeError("WALLET_ENC_KEY is not set (or is a placeholder)")
 
@@ -26,7 +27,7 @@ fernet = Fernet(_WALLET_ENC_KEY.encode("utf-8"))
 # -----------------------
 # BSC RPC (optional for now)
 # -----------------------
-_BSC_RPC_URL = os.getenv("BSC_RPC_URL")
+_BSC_RPC_URL = settings.BSC_RPC_URL
 w3: Optional[Web3] = None
 if _BSC_RPC_URL:
     w3 = Web3(Web3.HTTPProvider(_BSC_RPC_URL))
@@ -47,7 +48,7 @@ def create_bsc_wallet_for_user(db: "Session", user: "User", commit: bool = True)
     If exists - returns it; otherwise creates wallet.
     If commit=False -> only db.add() + db.flush(), commit must be done by caller.
     """
-    from main import UserWallet  # чтобы не было circular
+    from app.models import UserWallet
 
     existing = (
         db.query(UserWallet)

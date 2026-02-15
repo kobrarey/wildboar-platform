@@ -1,27 +1,19 @@
-import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
-from dotenv import load_dotenv
-from sqlalchemy import create_engine, text
-from sqlalchemy.orm import sessionmaker, Session
+from sqlalchemy import text
+from sqlalchemy.orm import Session
 
-load_dotenv()
+from app.config import settings
+from app.db import SessionLocal
 
 ALLOWED_PURPOSES = {"registration", "reset", "login_2fa", "password_change"}
 
-CODE_LENGTH = int(os.getenv("SECURITY_CODE_LENGTH", "6"))
-CODE_TTL_MINUTES = int(os.getenv("SECURITY_CODE_TTL_MINUTES", "15"))
-MAX_ATTEMPTS = int(os.getenv("SECURITY_CODE_MAX_ATTEMPTS", "5"))
-RESEND_COOLDOWN_SECONDS = int(os.getenv("SECURITY_CODE_RESEND_COOLDOWN_SECONDS", "60"))
-
-DATABASE_URL = os.getenv("DATABASE_URL")
-if not DATABASE_URL:
-    raise RuntimeError("DATABASE_URL is required for codes.py")
-
-_engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-_SessionLocal = sessionmaker(bind=_engine, autocommit=False, autoflush=False)
+CODE_LENGTH = settings.SECURITY_CODE_LENGTH
+CODE_TTL_MINUTES = settings.SECURITY_CODE_TTL_MINUTES
+MAX_ATTEMPTS = settings.SECURITY_CODE_MAX_ATTEMPTS
+RESEND_COOLDOWN_SECONDS = settings.SECURITY_CODE_RESEND_COOLDOWN_SECONDS
 
 
 def utcnow() -> datetime:
@@ -45,7 +37,7 @@ def create_code(user_id: int, purpose: str, db: Optional[Session] = None) -> str
 
     close_after = False
     if db is None:
-        db = _SessionLocal()
+        db = SessionLocal()
         close_after = True
 
     try:
@@ -116,7 +108,7 @@ def verify_code(user_id: int, purpose: str, code: str, db: Optional[Session] = N
 
     close_after = False
     if db is None:
-        db = _SessionLocal()
+        db = SessionLocal()
         close_after = True
 
     try:
@@ -194,3 +186,26 @@ def verify_code(user_id: int, purpose: str, code: str, db: Optional[Session] = N
     finally:
         if close_after:
             db.close()
+
+
+def get_active_code(user_id: int, purpose: str, db: Session) -> Optional[str]:
+    if purpose not in ALLOWED_PURPOSES:
+        raise ValueError("Invalid purpose")
+
+    row = db.execute(
+        text(
+            """
+            SELECT code
+            FROM public.security_codes
+            WHERE user_id = :user_id
+              AND purpose = :purpose
+              AND is_used = FALSE
+              AND expires_at > :now
+            ORDER BY created_at DESC
+            LIMIT 1
+            """
+        ),
+        {"user_id": user_id, "purpose": purpose, "now": utcnow()},
+    ).mappings().first()
+
+    return row["code"] if row else None

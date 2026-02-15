@@ -89,6 +89,18 @@ MESSAGES = {
 SUPPORTED = {"en", "ru"}
 DEFAULT = "ru"
 
+SUPPORTED_LANGS = SUPPORTED
+DEFAULT_LANG = DEFAULT
+LANG_COOKIE_NAME = "lang"
+
+
+def get_lang_from_request(request) -> str:
+    """Read lang from request cookie; fallback to DEFAULT_LANG."""
+    lang = request.cookies.get(LANG_COOKIE_NAME, DEFAULT_LANG)
+    if lang not in SUPPORTED_LANGS:
+        lang = DEFAULT_LANG
+    return lang
+
 
 def t(lang: str | None, key: str) -> str:
     """Return message for key in given lang; fallback to default lang."""
