@@ -6,6 +6,7 @@
   <title>WildBoar — {{ 'Personal account' if lang == 'en' else 'Личный кабинет' }}</title>
   <link rel="stylesheet" href="/static/css/app.css?v=portfolio7" />
   <script defer src="/static/js/app.js?v=5_2"></script>
+  <script defer src="/static/js/dashboard_wallet.js"></script>
 </head>
 
 <body class="page page--dashboard">
@@ -35,7 +36,15 @@
         </svg>
         <span class="nav-dot" aria-hidden="true"></span>
         <span class="nav-label">{{ 'My portfolio' if lang == 'en' else 'Мой портфель' }}</span>
-      </a>  
+      </a>
+      <button type="button" class="sidebar__link nav-item sidebar-item" data-href="/history">
+        <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"></path>
+          <path d="M3 3v5h5"></path>
+        </svg>
+        <span class="nav-dot" aria-hidden="true"></span>
+        <span class="nav-label">{{ 'История операций' if lang == 'ru' else 'Transaction history' }}</span>
+      </button>
       <button type="button" class="sidebar__link nav-item sidebar-item" data-href="/settings/security">
         <svg class="nav-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
@@ -134,10 +143,10 @@
                 <span class="stablecoin-value">{{ '%.2f'|format(portfolio.stable_balance or 0) }}</span>
               </div>
               <div class="stablecoin-actions">
-                <button class="btn btn--primary btn--small" type="button" disabled aria-disabled="true">
+                <button type="button" class="btn btn--secondary" data-modal-open="depositModal">
                   {{ 'Пополнить' if lang == 'ru' else 'Deposit' }}
                 </button>
-                <button class="btn btn--primary btn--small" type="button" disabled aria-disabled="true">
+                <button type="button" class="btn btn--secondary" data-modal-open="withdrawModal">
                   {{ 'Вывести' if lang == 'ru' else 'Withdraw' }}
                 </button>
               </div>
@@ -254,5 +263,137 @@
 
   <!-- затемнение для мобильного меню -->
   <div class="backdrop" id="backdrop" hidden></div>
+
+  <!-- Deposit modal -->
+  <div id="depositModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="depositTitle" aria-hidden="true">
+    <div class="modal-overlay" data-modal-close></div>
+    <div class="modal-dialog wallet-modal">
+      <button class="modal-close" type="button" aria-label="close" data-modal-close>×</button>
+      <h2 class="modal-title" id="depositTitle">{{ 'Внести USDT' if lang == 'ru' else 'Deposit USDT' }}</h2>
+
+      <div class="modal-body">
+        <div class="wallet-lines">
+          <div class="wallet-line">
+            <span class="wallet-line__label">{{ 'Монета' if lang == 'ru' else 'Coin' }}: </span>
+            <span class="wallet-line__value">USDT</span>
+          </div>
+          <div class="wallet-line">
+            <span class="wallet-line__label">{{ 'Сеть' if lang == 'ru' else 'Network' }}: </span>
+            <span class="wallet-line__value">BSC (BEP20)</span>
+          </div>
+        </div>
+
+        <div class="deposit-panel">
+          <div class="deposit-panel__qr">
+            {{ deposit_qr_svg|safe }}
+          </div>
+
+          <div class="deposit-panel__addr">
+            <div class="field">
+              <div class="field__label">{{ 'Адрес USDT' if lang == 'ru' else 'USDT address' }}</div>
+              <div class="address-row">
+                <input
+                  class="field__input"
+                  type="text"
+                  id="depositAddress"
+                  value="{{ user_usdt_address|default('') }}"
+                  readonly
+                />
+                <button type="button" class="copy-btn" id="depositCopyBtn" aria-label="copy">
+                  <!-- two-squares icon -->
+                  <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+                    <path d="M8 8h11v11H8z" fill="none" stroke="currentColor" stroke-width="2"/>
+                    <path d="M5 16H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h11a1 1 0 0 1 1 1v1" fill="none" stroke="currentColor" stroke-width="2"/>
+                  </svg>
+                </button>
+              </div>
+              <div class="copy-status" id="depositCopyStatus" aria-live="polite"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Withdraw modal -->
+  <div
+    id="withdrawModal"
+    class="modal"
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="withdrawTitle"
+    aria-hidden="true"
+    data-usdt-balance="{{ (usdt_balance|default(0))|float }}"
+  >
+    <div class="modal-overlay" data-modal-close></div>
+    <div class="modal-dialog wallet-modal">
+      <button class="modal-close" type="button" aria-label="close" data-modal-close>×</button>
+      <h2 class="modal-title" id="withdrawTitle">{{ 'Вывести' if lang == 'ru' else 'Withdraw' }}</h2>
+
+      <div class="modal-body">
+        <div class="wallet-lines" style="margin-bottom: 10px;">
+          <div class="wallet-line">
+            <span class="wallet-line__label">{{ 'Монета' if lang == 'ru' else 'Coin' }}: </span>
+            <span class="wallet-line__value">USDT</span>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field__label">{{ 'Адрес кошелька' if lang == 'ru' else 'Wallet address' }}</div>
+          <input class="field__input" type="text" id="withdrawAddress" placeholder="0x..." />
+          <div class="addr-status addr-status--empty" id="withdrawAddrStatus">
+            <span class="dot"></span>
+            <span class="text" id="withdrawAddrStatusText"></span>
+          </div>
+        </div>
+
+        <div class="wallet-lines" style="margin: 10px 0 6px;">
+          <div class="wallet-line">
+            <span class="wallet-line__label">{{ 'Вид сети' if lang == 'ru' else 'Network' }}: </span>
+            <span class="wallet-line__value">BSC (BEP20)</span>
+          </div>
+        </div>
+
+        <div class="field">
+          <div class="field__label">{{ 'Сумма' if lang == 'ru' else 'Amount' }}</div>
+          <div class="amount-row">
+            <input class="field__input" type="text" id="withdrawAmount" placeholder="0.00" />
+            <button type="button" class="btn btn--ghost amount-max-btn" id="withdrawMaxBtn">MAX</button>
+          </div>
+          <div class="field__hint">
+            {{ 'Доступно' if lang == 'ru' else 'Available' }}:
+            {{ '%.2f'|format((usdt_balance|default(0))|float) }} USDT
+          </div>
+          <div class="error-text" id="withdrawAmountError"></div>
+        </div>
+
+        <div class="wallet-lines" style="margin: 8px 0;">
+          <div class="wallet-line">
+            <span class="wallet-line__label">{{ 'Комиссия за совершение операции' if lang == 'ru' else 'Fee' }}: </span>
+            <span class="wallet-line__value">1 USDT</span>
+          </div>
+        </div>
+
+        <div class="field field--receive">
+          <div class="field__label">{{ 'К получению' if lang == 'ru' else 'You receive' }}</div>
+          <input class="field__input" type="text" id="withdrawReceive" value="0.00" readonly />
+        </div>
+
+        <div class="withdraw-actions">
+          <button type="button" class="btn btn--primary" id="withdrawConfirmBtn" disabled>
+            {{ 'Подтвердить' if lang == 'ru' else 'Confirm' }}
+          </button>
+        </div>
+
+        <div class="status-text" id="withdrawMessage"></div>
+
+        <div class="warning-text" style="margin-top: 10px;">
+          {{ 'Вставляйте адрес в поле "Адрес кошелька" только в сети BSC (BEP20) иначе ваши средства будут утеряны.'
+             if lang == 'ru'
+             else 'Paste the address only for BSC (BEP20). Otherwise your funds may be lost.' }}
+        </div>
+      </div>
+    </div>
+  </div>
 </body>
 </html>

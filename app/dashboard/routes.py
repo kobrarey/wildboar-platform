@@ -1,6 +1,8 @@
 """Dashboard routes: dashboard, useragreement, set-language."""
+import segno
 from fastapi import APIRouter, Depends
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from pydantic import BaseModel
 from starlette.requests import Request
 from sqlalchemy.orm import Session
 
@@ -9,7 +11,8 @@ from app.web import templates
 from app.i18n import get_lang_from_request, SUPPORTED_LANGS, LANG_COOKIE_NAME
 from app.auth import get_current_user
 from app.portfolio import get_user_portfolio
-from app.models import User
+from app.models import User, UserWallet
+from app.utils.wallet_check import validate_address_status
 
 router = APIRouter()
 
@@ -22,6 +25,20 @@ def dashboard(
 ):
     lang = get_lang_from_request(request)
     portfolio = get_user_portfolio(db, user, lang)
+
+    wallet = (
+        db.query(UserWallet)
+        .filter(UserWallet.user_id == user.id, UserWallet.blockchain == "BSC")
+        .first()
+    )
+    user_usdt_address = wallet.address if wallet else ""
+    usdt_balance = float(portfolio.get("stable_balance") or 0)
+
+    deposit_qr_svg = (
+        segno.make(user_usdt_address).svg_inline(scale=3)
+        if user_usdt_address else ""
+    )
+
     return templates.TemplateResponse(
         "dashboard.html",
         {
@@ -30,6 +47,9 @@ def dashboard(
             "lang": lang,
             "account_type": user.account_type,
             "portfolio": portfolio,
+            "user_usdt_address": user_usdt_address,
+            "usdt_balance": usdt_balance,
+            "deposit_qr_svg": deposit_qr_svg,
         },
     )
 
@@ -58,3 +78,36 @@ async def set_language(request: Request):
         path="/",
     )
     return resp
+
+
+class WalletValidateRequest(BaseModel):
+    address: str = ""
+
+
+@router.post("/api/wallet/validate")
+def api_wallet_validate(
+    payload: WalletValidateRequest,
+    user: User = Depends(get_current_user),
+):
+    if not user:
+        return JSONResponse({"status": "error", "message": "Unauthorized"}, status_code=401)
+
+    status = validate_address_status(payload.address)
+    return {"status": status}
+
+
+@router.get("/history")
+def history_page(request: Request, user: User = Depends(get_current_user)):
+    if not user:
+        return RedirectResponse("/", status_code=303)
+
+    lang = get_lang_from_request(request)
+    return templates.TemplateResponse(
+        "history.html",
+        {
+            "request": request,
+            "user": user,
+            "lang": lang,
+            "account_type": user.account_type,
+        },
+    )
