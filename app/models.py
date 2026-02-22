@@ -1,10 +1,12 @@
 from datetime import datetime, timezone
+from decimal import Decimal
 
 from sqlalchemy import (
     Column, Integer, BigInteger, String, Text, Boolean,
     DateTime, Date, ForeignKey, Numeric,
     UniqueConstraint,
 )
+from sqlalchemy import text as sa_text
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
@@ -62,6 +64,72 @@ class UserWallet(Base):
         DateTime(timezone=True),
         server_default=func.now(),
         nullable=False,
+    )
+
+    # stage 9.1: USDT balance tracking (updated by workers)
+    usdt_balance: Mapped[Decimal] = mapped_column(
+        Numeric(38, 18),
+        nullable=False,
+        server_default=sa_text("0"),
+    )
+    usdt_balance_updated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    usdt_balance_block: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+    usdt_reserved: Mapped[Decimal] = mapped_column(
+        Numeric(38, 18),
+        nullable=False,
+        server_default=sa_text("0"),
+    )
+
+
+class WalletTransfer(Base):
+    __tablename__ = "wallet_transfers"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    wallet_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("user_wallets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    coin: Mapped[str] = mapped_column(String(16), nullable=False, default="USDT")
+    network: Mapped[str] = mapped_column(String(32), nullable=False, default="BSC (BEP20)")
+    type: Mapped[str] = mapped_column(String(16), nullable=False)  # deposit | withdraw
+
+    from_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    to_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    tx_hash: Mapped[str] = mapped_column(String(80), nullable=False)
+    log_index: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    amount: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")  # pending|success|failed
+    compliance_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    block_number: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    tx_time: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    detected_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        nullable=False,
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("tx_hash", "log_index", name="wallet_transfers_tx_hash_log_index_uq"),
     )
 
 

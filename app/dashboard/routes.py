@@ -11,7 +11,7 @@ from app.web import templates
 from app.i18n import get_lang_from_request, SUPPORTED_LANGS, LANG_COOKIE_NAME
 from app.auth import get_current_user
 from app.portfolio import get_user_portfolio
-from app.models import User, UserWallet
+from app.models import User, UserWallet, WalletTransfer
 from app.utils.wallet_check import validate_address_status
 
 router = APIRouter()
@@ -97,11 +97,30 @@ def api_wallet_validate(
 
 
 @router.get("/history")
-def history_page(request: Request, user: User = Depends(get_current_user)):
+def history_page(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     if not user:
         return RedirectResponse("/", status_code=303)
 
     lang = get_lang_from_request(request)
+
+    transfers_all = (
+        db.query(WalletTransfer)
+        .filter(WalletTransfer.user_id == user.id)
+        .order_by(WalletTransfer.tx_time.desc().nullslast(), WalletTransfer.detected_at.desc().nullslast())
+        .all()
+    )
+
+    transfers_deposits = (
+        db.query(WalletTransfer)
+        .filter(WalletTransfer.user_id == user.id, WalletTransfer.type == "deposit")
+        .order_by(WalletTransfer.tx_time.desc().nullslast(), WalletTransfer.detected_at.desc().nullslast())
+        .all()
+    )
+
     return templates.TemplateResponse(
         "history.html",
         {
@@ -109,5 +128,7 @@ def history_page(request: Request, user: User = Depends(get_current_user)):
             "user": user,
             "lang": lang,
             "account_type": user.account_type,
+            "transfers_all": transfers_all,
+            "transfers_deposits": transfers_deposits,
         },
     )

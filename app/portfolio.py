@@ -7,13 +7,21 @@ from sqlalchemy.orm import Session
 from sqlalchemy import func as sa_func
 
 from app.models import (
-    User, Fund, FundNavMinute, UserFundPosition, UserPortfolioDaily
+    User, Fund, FundNavMinute, UserFundPosition, UserPortfolioDaily, UserWallet
 )
 
 
 def get_user_portfolio(db: Session, user: User, lang: str) -> dict:
-    # 1) USDT-баланс — на этом этапе просто 0
-    stable_balance = Decimal("0")
+    # 1) USDT-баланс из user_wallets
+    wallet = (
+        db.query(UserWallet)
+        .filter(UserWallet.user_id == user.id, UserWallet.blockchain == "BSC")
+        .first()
+    )
+    if wallet is not None:
+        stable_balance = Decimal(wallet.usdt_balance or 0) - Decimal(wallet.usdt_reserved or 0)
+    else:
+        stable_balance = Decimal("0")
 
     # 2) Список фондов
     funds = (
@@ -60,7 +68,7 @@ def get_user_portfolio(db: Session, user: User, lang: str) -> dict:
 
     # 5) Собираем payload
     funds_payload = []
-    total_balance = Decimal("0")
+    total_balance = stable_balance  # включаем USDT в текущий баланс
 
     for fund in funds:
         nav_usdt = Decimal(nav_by_fund.get(fund.id) or 0)

@@ -1055,3 +1055,129 @@ body.sidebar-collapsed .sidebar__logout-icon{
   border-color: var(--wb-purple);
   box-shadow: 0 0 0 3px rgba(117, 93, 212, 0.14);
 }
+
+/* ===== Stage 9.1: history transfers table ===== */
+
+/* History: wider card like Bybit */
+.dash__content--history .card{
+  max-width: 1240px;  /* было 920px -> +35% шире */
+}
+
+/* tables should fit screen (no horizontal scrollbar) */
+.tx-table{
+  overflow: hidden;
+}
+
+.tx-header,
+.tx-row{
+  display:grid;
+  align-items:center;
+}
+
+/* tighter grid so it fits typical screens */
+.tx-header,
+.tx-row{
+  gap: 10px 14px;           /* меньше расстояния между столбцами */
+}
+
+/* Bybit-подобная шапка (без UPPERCASE) */
+.tx-header{
+  padding:10px 0;
+  border-bottom:1px solid rgba(0,0,0,.10);
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 12px;
+  color:var(--wb-muted);
+}
+
+.tx-header > div{
+  white-space: nowrap;   /* главное: не переносить */
+}
+
+/* строки — компактнее */
+.tx-row{
+  padding:12px 0;
+  border-bottom:1px solid rgba(0,0,0,.06);
+  font-size: 13px;
+}
+
+/* All: 9 columns */
+.tx-table--all .tx-header,
+.tx-table--all .tx-row{
+  grid-template-columns:
+    64px                      /* coin */
+    100px                     /* network */
+    56px                      /* amount */
+    90px                      /* type */
+    minmax(160px, 1fr)        /* address */
+    minmax(160px, 1fr)        /* txid */
+    110px                     /* status */
+    140px                     /* compliance status */
+    160px;                    /* datetime */
+}
+
+/* Deposits: 8 columns */
+.tx-table--deposits .tx-header,
+.tx-table--deposits .tx-row{
+  grid-template-columns:
+    64px
+    100px
+    56px
+    minmax(180px, 1fr)        /* address */
+    minmax(180px, 1fr)        /* txid */
+    110px
+    140px                     /* compliance status */
+    160px;                    /* datetime */
+}
+
+.tx-col-center{ text-align:center; }
+.tx-col-coin{ font-weight:800; color:#111; }
+
+.tx-col-copy{
+  display:flex;
+  align-items:center;
+  gap:10px;
+}
+
+.tx-hash{
+  white-space:nowrap;
+  font-variant-numeric:tabular-nums;
+}
+
+/* копи-кнопки чуть меньше */
+.tx-copy-btn{
+  width: 30px;
+  height: 30px;
+}
+
+.tx-copy-btn svg{ display:block; }
+
+.copy-btn.is-copied,
+.tx-copy-btn.is-copied{
+  border-color: var(--wb-purple);
+  box-shadow: 0 0 0 3px rgba(117, 93, 212, 0.14);
+}
+
+.tx-status{
+  display:inline-flex;
+  align-items:center;
+  gap:8px;
+  font-weight:700;
+  white-space:nowrap;
+}
+.tx-status::before{
+  content:"";
+  width:6px;
+  height:6px;
+  border-radius:50%;
+  display:inline-block;
+  background:#6e6e6e;
+}
+
+.tx-status--pending{ color:#b45309; }
+.tx-status--pending::before{ background:#b45309; }
+
+.tx-status--success{ color:#166534; }
+.tx-status--success::before{ background:#166534; }
+
+.tx-col-dt{ white-space:nowrap; }

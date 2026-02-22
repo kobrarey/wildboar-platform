@@ -23,6 +23,12 @@ class Settings(BaseSettings):
 
     # wallets / bsc
     BSC_RPC_URL: str = ""
+    BSC_WS_URL: str = ""
+    BSC_USDT_CONTRACT: str = "0x55d398326f99059fF775485246999027B3197955"
+    BSC_USDT_DECIMALS: int = 18
+    BSC_CONFIRMATIONS: int = 20
+    BSC_CONFIRM_POLL_SEC: int = 15
+    BSC_BALANCE_POLL_SEC: int = 15
     WALLET_ENC_KEY: str = ""
 
     # auth / session
