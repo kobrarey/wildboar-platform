@@ -243,19 +243,63 @@ async def subscribe_chunk(addresses: list[str], wallet_map: dict[str, tuple[int,
 
 
 async def main():
+    reload_sec = int(getattr(settings, "BSC_WALLET_MAP_RELOAD_SEC", 60))
+
     wallet_map = load_wallet_map()
-    if not wallet_map:
-        logging.warning("No BSC wallets found in DB. Sleeping...")
+    last_addrs = set(wallet_map.keys())
 
-    addresses = list(wallet_map.keys())
-    chunks = _chunk(addresses, 1000) if addresses else [[]]
+    while True:
+        if not last_addrs:
+            logging.warning("No BSC wallets found in DB. Waiting for wallets...")
+            await asyncio.sleep(reload_sec)
+            wallet_map = load_wallet_map()
+            last_addrs = set(wallet_map.keys())
+            continue
 
-    tasks = [asyncio.create_task(subscribe_chunk(ch, wallet_map)) for ch in chunks if ch]
-    if not tasks:
-        while True:
-            await asyncio.sleep(30)
+        addresses = list(last_addrs)
+        chunks = _chunk(addresses, 1000)
 
-    await asyncio.gather(*tasks)
+        tasks = [asyncio.create_task(subscribe_chunk(ch, wallet_map)) for ch in chunks if ch]
+        if not tasks:
+            await asyncio.sleep(reload_sec)
+            wallet_map = load_wallet_map()
+            last_addrs = set(wallet_map.keys())
+            continue
+
+        try:
+            while True:
+                done, _pending = await asyncio.wait(
+                    tasks,
+                    timeout=reload_sec,
+                    return_when=asyncio.FIRST_EXCEPTION,
+                )
+
+                # если какая-то подписка упала — выбрасываем исключение, чтобы сработал внешний restart
+                for t in done:
+                    exc = t.exception()
+                    if exc:
+                        raise exc
+
+                # timeout -> проверяем, не появились ли новые кошельки
+                new_map = load_wallet_map()
+                new_addrs = set(new_map.keys())
+
+                if new_addrs != last_addrs:
+                    logging.info(
+                        "Wallet list changed: %d -> %d addresses. Reloading subscriptions...",
+                        len(last_addrs),
+                        len(new_addrs),
+                    )
+                    for t in tasks:
+                        t.cancel()
+                    await asyncio.gather(*tasks, return_exceptions=True)
+
+                    wallet_map = new_map
+                    last_addrs = new_addrs
+                    break  # пересоздадим подписки с новым списком
+        finally:
+            # если выходим из try из-за исключения — задачи завершит внешний restart-цикл
+            pass
 
 
 if __name__ == "__main__":

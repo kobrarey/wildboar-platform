@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     BSC_CONFIRMATIONS: int = 20
     BSC_CONFIRM_POLL_SEC: int = 15
     BSC_BALANCE_POLL_SEC: int = 15
+    BSC_WALLET_MAP_RELOAD_SEC: int = 60
     WALLET_ENC_KEY: str = ""
 
     # auth / session
