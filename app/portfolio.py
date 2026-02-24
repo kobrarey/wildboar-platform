@@ -19,9 +19,20 @@ def get_user_portfolio(db: Session, user: User, lang: str) -> dict:
         .first()
     )
     if wallet is not None:
-        stable_balance = Decimal(wallet.usdt_balance or 0) - Decimal(wallet.usdt_reserved or 0)
+        usdt_total = Decimal(wallet.usdt_balance or 0)
+        usdt_available_raw = usdt_total - Decimal(wallet.usdt_reserved or 0)
     else:
-        stable_balance = Decimal("0")
+        usdt_total = Decimal("0")
+        usdt_available_raw = Decimal("0")
+
+    # compliance gate: если пользователь не ok — доступно 0
+    if getattr(user, "compliance_status", "ok") != "ok":
+        usdt_available = Decimal("0")
+    else:
+        usdt_available = usdt_available_raw
+
+    # backward compatibility: stable_balance = available
+    stable_balance = usdt_available
 
     # 2) Список фондов
     funds = (
@@ -68,7 +79,7 @@ def get_user_portfolio(db: Session, user: User, lang: str) -> dict:
 
     # 5) Собираем payload
     funds_payload = []
-    total_balance = stable_balance  # включаем USDT в текущий баланс
+    total_balance = usdt_total  # включаем общий USDT в текущий баланс
 
     for fund in funds:
         nav_usdt = Decimal(nav_by_fund.get(fund.id) or 0)
@@ -124,5 +135,7 @@ def get_user_portfolio(db: Session, user: User, lang: str) -> dict:
         "daily_change_pct": daily_change_pct,
         "stable_balance": stable_balance,
         "stable_symbol": "USDT",
+        "usdt_balance_total": usdt_total,
+        "usdt_balance_available": usdt_available,
         "funds": funds_payload,
     }

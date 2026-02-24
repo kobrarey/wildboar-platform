@@ -7,6 +7,7 @@ from sqlalchemy import (
     UniqueConstraint,
 )
 from sqlalchemy import text as sa_text
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 from sqlalchemy.sql import func
 
@@ -32,6 +33,15 @@ class User(Base):
 
     backup_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_backup_email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    # stage 9.2: compliance gate
+    compliance_status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=sa_text("'ok'"),
+    )
+    compliance_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    compliance_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class SessionModel(Base):
@@ -86,6 +96,15 @@ class UserWallet(Base):
         server_default=sa_text("0"),
     )
 
+    # stage 9.2: wallet compliance
+    compliance_status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=sa_text("'ok'"),
+    )
+    freeze_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    compliance_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
 
 class WalletTransfer(Base):
     __tablename__ = "wallet_transfers"
@@ -127,6 +146,10 @@ class WalletTransfer(Base):
         nullable=False,
     )
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    # stage 9.2: transfer compliance result
+    compliance_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    compliance_details: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
     __table_args__ = (
         UniqueConstraint("tx_hash", "log_index", name="wallet_transfers_tx_hash_log_index_uq"),

@@ -849,6 +849,10 @@
   document.addEventListener("click", (e) => {
     const openBtn = e.target.closest("[data-modal-open]");
     if (openBtn) {
+      // do not open modals from disabled / aria-disabled controls
+      if (openBtn.disabled || openBtn.getAttribute("aria-disabled") === "true") {
+        return;
+      }
       const id = openBtn.getAttribute("data-modal-open");
       const modal = document.getElementById(id);
       openModal(modal);

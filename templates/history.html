@@ -235,7 +235,18 @@
                           </span>
                         </div>
 
-                        <div>{{ tx.compliance_status|default('', true) }}</div>
+                        <div>
+                          {% set cs = (tx.compliance_status or '')|lower %}
+                          {% if cs == 'blocked' %}
+                            <span class="status-blocked">blocked</span>
+                          {% elif cs == 'pending_check' %}
+                            <span class="status-pending">pending_check</span>
+                          {% elif cs == 'ok' %}
+                            <span class="status-ok">ok</span>
+                          {% else %}
+                            {{ tx.compliance_status|default('', true) }}
+                          {% endif %}
+                        </div>
                         <div class="tx-col-dt">{{ dt.strftime('%Y-%m-%d %H:%M:%S') if dt else '' }}</div>
                       </div>
                     {% endfor %}
@@ -304,7 +315,18 @@
                           </span>
                         </div>
 
-                        <div>{{ tx.compliance_status|default('', true) }}</div>
+                        <div>
+                          {% set cs = (tx.compliance_status or '')|lower %}
+                          {% if cs == 'blocked' %}
+                            <span class="status-blocked">blocked</span>
+                          {% elif cs == 'pending_check' %}
+                            <span class="status-pending">pending_check</span>
+                          {% elif cs == 'ok' %}
+                            <span class="status-ok">ok</span>
+                          {% else %}
+                            {{ tx.compliance_status|default('', true) }}
+                          {% endif %}
+                        </div>
                         <div class="tx-col-dt">{{ dt.strftime('%Y-%m-%d %H:%M:%S') if dt else '' }}</div>
                       </div>
                     {% endfor %}

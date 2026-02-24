@@ -26,13 +26,16 @@ def dashboard(
     lang = get_lang_from_request(request)
     portfolio = get_user_portfolio(db, user, lang)
 
+    usdt_balance_total = float(portfolio.get("usdt_balance_total") or 0)
+    usdt_balance_available = float(portfolio.get("usdt_balance_available") or 0)
+
     wallet = (
         db.query(UserWallet)
         .filter(UserWallet.user_id == user.id, UserWallet.blockchain == "BSC")
         .first()
     )
     user_usdt_address = wallet.address if wallet else ""
-    usdt_balance = float(portfolio.get("stable_balance") or 0)
+    usdt_balance = usdt_balance_total
 
     deposit_qr_svg = (
         segno.make(user_usdt_address).svg_inline(scale=3)
@@ -50,6 +53,11 @@ def dashboard(
             "user_usdt_address": user_usdt_address,
             "usdt_balance": usdt_balance,
             "deposit_qr_svg": deposit_qr_svg,
+            "user_compliance_status": getattr(user, "compliance_status", "ok"),
+            "user_compliance_reason": getattr(user, "compliance_reason", None),
+            "wallet_compliance_status": (wallet.compliance_status if wallet else "ok"),
+            "usdt_balance_total": usdt_balance_total,
+            "usdt_balance_available": usdt_balance_available,
         },
     )
 

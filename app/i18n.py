@@ -42,6 +42,8 @@ MESSAGES = {
         "portfolio_quantity": "Quantity",
         "portfolio_value": "Value",
         "portfolio_invest": "Invest",
+        "compliance_blocked": "Operations are blocked due to sanctions screening.",
+        "compliance_pending_check": "Operations are temporarily blocked: compliance check pending.",
     },
     "ru": {
         "email_required": "Email обязателен",
@@ -83,6 +85,8 @@ MESSAGES = {
         "portfolio_quantity": "Количество",
         "portfolio_value": "Стоимость",
         "portfolio_invest": "Инвестировать",
+        "compliance_blocked": "Операции заблокированы: выявлено совпадение по санкциям.",
+        "compliance_pending_check": "Операции временно заблокированы: проверка комплаенса не завершена.",
     },
 }
 

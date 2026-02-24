@@ -135,17 +135,31 @@
           {% if lang == 'en' %}Stablecoin balance{% else %}Баланс стейблкоинов{% endif %}
         </h2>
 
+        {% set user_cs = user_compliance_status|default('ok', true) %}
+        {% set wallet_cs = wallet_compliance_status|default('ok', true) %}
+        {% set compliance_blocked = (user_cs != 'ok') or (wallet_cs != 'ok') %}
+
         <div class="card">
           <div class="card__body stablecoin-card">
             <div class="stablecoin-card__content">
               <div class="stablecoin-balance">
                 <span class="p-label">{{ portfolio.stable_symbol or 'USDT' }}</span>
-                <span class="stablecoin-value">{{ '%.2f'|format(portfolio.stable_balance or 0) }}</span>
+                <span class="stablecoin-value">
+                  {{ '%.2f'|format((usdt_balance_total|default(portfolio.stable_balance|default(0), true))|float) }}
+                </span>
               </div>
               <div class="stablecoin-actions">
-                <button type="button" class="btn btn--secondary" data-modal-open="depositModal">
-                  {{ 'Пополнить' if lang == 'ru' else 'Deposit' }}
-                </button>
+                <button
+                type="button"
+                class="btn btn--secondary"
+                {% if compliance_blocked %}
+                  disabled aria-disabled="true"
+                {% else %}
+                  data-modal-open="depositModal"
+                {% endif %}
+              >
+                {{ 'Пополнить' if lang == 'ru' else 'Deposit' }}
+              </button>
                 <button type="button" class="btn btn--secondary" data-modal-open="withdrawModal">
                   {{ 'Вывести' if lang == 'ru' else 'Withdraw' }}
                 </button>
@@ -153,6 +167,27 @@
             </div>
           </div>
         </div>
+
+        {% if compliance_blocked %}
+          <div class="compliance-warning" role="alert">
+            <div class="compliance-warning__icon" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24">
+                <path d="M12 3L2 21h20L12 3z" fill="none" stroke="currentColor" stroke-width="2"/>
+                <path d="M12 9v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                <circle cx="12" cy="17" r="1" fill="currentColor"/>
+              </svg>
+            </div>
+            <div class="compliance-warning__text">
+              <strong>
+                {% if lang == 'ru' %}
+                  На адрес поступили USDT с санкционными/ограниченными признаками. Пополнение и покупка паёв отключены. Пожалуйста, выведите средства обратно.
+                {% else %}
+                  USDT with sanctioned/restricted indicators has been received to the address. Deposits and fund share purchases are disabled. Please withdraw the funds back.
+                {% endif %}
+              </strong>
+            </div>
+          </div>
+        {% endif %}
       </section>
 
       {% if active_funds %}
@@ -323,7 +358,7 @@
     aria-modal="true"
     aria-labelledby="withdrawTitle"
     aria-hidden="true"
-    data-usdt-balance="{{ (usdt_balance|default(0))|float }}"
+    data-usdt-balance="{{ (usdt_balance_available|default(usdt_balance|default(0), true))|float }}"
   >
     <div class="modal-overlay" data-modal-close></div>
     <div class="modal-dialog wallet-modal">
@@ -362,7 +397,7 @@
           </div>
           <div class="field__hint">
             {{ 'Доступно' if lang == 'ru' else 'Available' }}:
-            {{ '%.2f'|format((usdt_balance|default(0))|float) }} USDT
+            {{ '%.2f'|format((usdt_balance_available|default(usdt_balance|default(0), true))|float) }} USDT
           </div>
           <div class="error-text" id="withdrawAmountError"></div>
         </div>

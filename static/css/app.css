@@ -1181,3 +1181,45 @@ body.sidebar-collapsed .sidebar__logout-icon{
 .tx-status--success::before{ background:#166534; }
 
 .tx-col-dt{ white-space:nowrap; }
+
+/* ===== Stage 9.2: compliance warning + statuses ===== */
+
+.compliance-warning{
+  margin-top: 12px;
+  display:flex;
+  gap: 10px;
+  align-items:flex-start;
+  padding: 12px 14px;
+  border: 1px solid rgba(220, 38, 38, .25);
+  background: rgba(220, 38, 38, .06);
+}
+
+.compliance-warning__icon{
+  color: #dc2626;
+  line-height: 1;
+  margin-top: 2px;
+}
+
+.compliance-warning__text{
+  color: #111;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.status-blocked{
+  color: #dc2626;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.status-pending{
+  color: #d97706;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.status-ok{
+  color: #166534;
+  font-weight: 700;
+  white-space: nowrap;
+}

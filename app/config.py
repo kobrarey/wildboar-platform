@@ -32,6 +32,17 @@ class Settings(BaseSettings):
     BSC_WALLET_MAP_RELOAD_SEC: int = 60
     WALLET_ENC_KEY: str = ""
 
+    # --- compliance / sanctions screening ---
+    CHAINALYSIS_SANCTIONS_API_KEY: str = ""
+    COMPLIANCE_USE_CHAINALYSIS_API: bool = True
+    COMPLIANCE_USE_ORACLE: bool = True
+    COMPLIANCE_USE_OFAC: bool = True
+    COMPLIANCE_FAIL_CLOSED: bool = True  # всегда включено, но оставляем как настройку
+    COMPLIANCE_HTTP_TIMEOUT_SEC: int = 10
+    COMPLIANCE_POLL_SEC: int = 10
+    COMPLIANCE_ORACLE_CONTRACT: str = "0x40C57923924B5c5c5455c48D93317139ADDaC8fb"
+    COMPLIANCE_OFAC_FILE: str = "data/ofac_addresses.json"
+
     # auth / session
     SESSION_TTL_DAYS: int = 30
     COOKIE_NAME: str = "session_id"
