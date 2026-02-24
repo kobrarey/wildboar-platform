@@ -187,7 +187,7 @@
                   </div>
 
                   {% if transfers_all and (transfers_all|length) > 0 %}
-                    {% for tx in transfers_all|sort(attribute='detected_at', reverse=True) %}
+                    {% for tx in transfers_all %}
                       {% set ttype = (tx.type or '')|lower %}
                       {% set is_withdraw = ttype in ['withdraw', 'withdrawal'] %}
                       {% set addr_full = (tx.to_address if is_withdraw else tx.from_address) or tx.to_address or tx.from_address %}
@@ -273,7 +273,7 @@
                   </div>
 
                   {% if transfers_deposits and (transfers_deposits|length) > 0 %}
-                    {% for tx in transfers_deposits|sort(attribute='detected_at', reverse=True) %}
+                    {% for tx in transfers_deposits %}
                       {% set addr_full = tx.from_address or tx.to_address %}
                       {% set txid_full = tx.tx_hash %}
                       {% set st = (tx.status or '')|lower %}

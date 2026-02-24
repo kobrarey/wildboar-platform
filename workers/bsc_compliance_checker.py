@@ -10,9 +10,10 @@ import asyncio
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
+from sqlalchemy import and_, or_
 from aiohttp import resolver
 
 from app.config import settings
@@ -47,12 +48,23 @@ async def rpc_get_tx_from(session: aiohttp.ClientSession, tx_hash: str) -> str |
 def _load_targets(limit: int = 100) -> list[WalletTransfer]:
     db = SessionLocal()
     try:
+        retry_cutoff = utcnow() - timedelta(seconds=int(getattr(settings, "COMPLIANCE_PENDING_RETRY_SEC", 60)))
+
         return (
             db.query(WalletTransfer)
             .filter(
                 WalletTransfer.type == "deposit",
                 WalletTransfer.status == "success",
-                WalletTransfer.compliance_status.is_(None),
+                or_(
+                    WalletTransfer.compliance_status.is_(None),
+                    and_(
+                        WalletTransfer.compliance_status == "pending_check",
+                        or_(
+                            WalletTransfer.compliance_checked_at.is_(None),
+                            WalletTransfer.compliance_checked_at < retry_cutoff,
+                        ),
+                    ),
+                ),
             )
             .order_by(WalletTransfer.confirmed_at.desc().nullslast(), WalletTransfer.detected_at.desc())
             .limit(limit)
@@ -71,12 +83,53 @@ def _apply_result(
     db = SessionLocal()
     try:
         tr = db.query(WalletTransfer).filter(WalletTransfer.id == transfer_id).first()
-        if not tr or tr.compliance_status is not None:
+        if not tr:
+            return
+        # обрабатываем только None или pending_check; blocked не трогаем никогда
+        if tr.compliance_status not in (None, "pending_check"):
             return
 
         tr.compliance_status = final_status  # ok | blocked | pending_check
         tr.compliance_checked_at = utcnow()
         tr.compliance_details = details
+
+        # если проверка теперь ok — можем снять pending_check с кошелька/пользователя,
+        # но только если у них больше нет success-депозитов с blocked/pending_check.
+        if final_status == "ok":
+            wallet = db.query(UserWallet).filter(UserWallet.id == tr.wallet_id).first()
+            user = db.query(User).filter(User.id == tr.user_id).first()
+
+            if wallet and wallet.compliance_status == "pending_check":
+                still_bad = (
+                    db.query(WalletTransfer.id)
+                    .filter(
+                        WalletTransfer.wallet_id == wallet.id,
+                        WalletTransfer.type == "deposit",
+                        WalletTransfer.status == "success",
+                        WalletTransfer.compliance_status.in_(("blocked", "pending_check")),
+                    )
+                    .first()
+                )
+                if not still_bad:
+                    wallet.compliance_status = "ok"
+                    wallet.freeze_reason = None
+                    wallet.compliance_checked_at = utcnow()
+
+            if user and user.compliance_status == "pending_check":
+                still_bad_u = (
+                    db.query(WalletTransfer.id)
+                    .filter(
+                        WalletTransfer.user_id == user.id,
+                        WalletTransfer.type == "deposit",
+                        WalletTransfer.status == "success",
+                        WalletTransfer.compliance_status.in_(("blocked", "pending_check")),
+                    )
+                    .first()
+                )
+                if not still_bad_u:
+                    user.compliance_status = "ok"
+                    user.compliance_reason = None
+                    user.compliance_updated_at = utcnow()
 
         if final_status in ("blocked", "pending_check"):
             wallet = db.query(UserWallet).filter(UserWallet.id == tr.wallet_id).first()

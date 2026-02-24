@@ -40,6 +40,7 @@ class Settings(BaseSettings):
     COMPLIANCE_FAIL_CLOSED: bool = True  # всегда включено, но оставляем как настройку
     COMPLIANCE_HTTP_TIMEOUT_SEC: int = 10
     COMPLIANCE_POLL_SEC: int = 10
+    COMPLIANCE_PENDING_RETRY_SEC: int = 60
     COMPLIANCE_ORACLE_CONTRACT: str = "0x40C57923924B5c5c5455c48D93317139ADDaC8fb"
     COMPLIANCE_OFAC_FILE: str = "data/ofac_addresses.json"
 
