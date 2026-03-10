@@ -1,7 +1,8 @@
-"""BSC USDT deposit listener (Stage 9.1).
+"""BSC USDT deposit listener (Stage 9.2.1 + backfill).
 
-Listens to USDT Transfer logs via WebSocket.
-On each Transfer to one of our user wallets -> inserts wallet_transfers row with status='pending'.
+- Backfill on startup via eth_getLogs (missed deposits while worker was down)
+- Persists cursor (block/log_index) in Postgres table worker_cursors
+- Continues realtime tracking via WS subscription
 
 Run:
     python -m workers.bsc_usdt_deposit_listener
@@ -15,12 +16,12 @@ import time
 from datetime import datetime, timezone
 from decimal import Decimal
 
-import websockets
-from websockets import exceptions as ws_exceptions
-
 import aiohttp
 from aiohttp import resolver
+import websockets
+from websockets import exceptions as ws_exceptions
 from eth_utils import to_checksum_address
+from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import insert
 
 from app.config import settings
@@ -31,6 +32,7 @@ if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 TRANSFER_TOPIC = "0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef"
+CURSOR_NAME = "bsc_usdt_listener"
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(levelname)s | %(message)s")
 
@@ -57,6 +59,27 @@ def _chunk(lst: list[str], size: int) -> list[list[str]]:
     return [lst[i : i + size] for i in range(0, len(lst), size)]
 
 
+async def rpc_with_retries(coro_factory, label: str, attempts: int = 5, base_delay: int = 3):
+    """
+    Runs async RPC call with retries/backoff.
+    If all retries fail -> raises the last exception.
+    """
+    delay = base_delay
+    last_exc = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            return await coro_factory()
+        except Exception as e:
+            last_exc = e
+            logging.warning("%s failed (attempt %d/%d): %s", label, attempt, attempts, e)
+            if attempt < attempts:
+                await asyncio.sleep(delay)
+                delay = min(30, delay * 2)
+
+    raise last_exc
+
+
 def load_wallet_map() -> dict[str, tuple[int, int]]:
     """address_lower -> (wallet_id, user_id)."""
     db = SessionLocal()
@@ -73,6 +96,67 @@ def load_wallet_map() -> dict[str, tuple[int, int]]:
         return m
     finally:
         db.close()
+
+
+def get_cursor(db, name: str) -> tuple[int, int] | None:
+    row = db.execute(
+        sa_text("SELECT last_block, last_log_index FROM worker_cursors WHERE name=:name"),
+        {"name": name},
+    ).first()
+    if not row:
+        return None
+    return int(row[0]), int(row[1])
+
+
+def upsert_cursor(db, name: str, last_block: int, last_log_index: int) -> None:
+    # monotonic upsert: never move cursor backwards
+    db.execute(
+        sa_text(
+            """
+            INSERT INTO worker_cursors (name, last_block, last_log_index)
+            VALUES (:name, :b, :i)
+            ON CONFLICT (name) DO UPDATE SET
+              last_block = CASE
+                WHEN EXCLUDED.last_block > worker_cursors.last_block THEN EXCLUDED.last_block
+                WHEN EXCLUDED.last_block = worker_cursors.last_block
+                     AND EXCLUDED.last_log_index > worker_cursors.last_log_index THEN EXCLUDED.last_block
+                ELSE worker_cursors.last_block
+              END,
+              last_log_index = CASE
+                WHEN EXCLUDED.last_block > worker_cursors.last_block THEN EXCLUDED.last_log_index
+                WHEN EXCLUDED.last_block = worker_cursors.last_block
+                     AND EXCLUDED.last_log_index > worker_cursors.last_log_index THEN EXCLUDED.last_log_index
+                ELSE worker_cursors.last_log_index
+              END,
+              updated_at = now()
+            """
+        ),
+        {"name": name, "b": int(last_block), "i": int(last_log_index)},
+    )
+    db.commit()
+
+
+def db_upsert_cursor(name: str, last_block: int, last_log_index: int) -> None:
+    db = SessionLocal()
+    try:
+        upsert_cursor(db, name, last_block, last_log_index)
+    finally:
+        db.close()
+
+
+async def rpc_get_latest_block(session: aiohttp.ClientSession) -> int:
+    if not settings.BSC_RPC_URL:
+        raise RuntimeError("BSC_RPC_URL is not set")
+    payload = {"jsonrpc": "2.0", "method": "eth_blockNumber", "params": [], "id": 1}
+    async with session.post(settings.BSC_RPC_URL, json=payload) as resp:
+        if resp.status != 200:
+            txt = await resp.text()
+            raise RuntimeError(f"eth_blockNumber HTTP {resp.status}: {txt[:200]}")
+        data = await resp.json(content_type=None)
+        result = data.get("result")
+        if not result:
+            raise RuntimeError(f"eth_blockNumber bad result: {data}")
+        return int(result, 16)
 
 
 async def rpc_get_block_timestamp(session: aiohttp.ClientSession, block_number: int) -> datetime | None:
@@ -97,6 +181,31 @@ async def rpc_get_block_timestamp(session: aiohttp.ClientSession, block_number: 
             return None
         ts = int(ts_hex, 16)
         return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+
+async def rpc_get_logs(session: aiohttp.ClientSession, from_block: int, to_block: int, to_topics: list[str]) -> list[dict]:
+    """eth_getLogs for USDT Transfer where topic[2] in to_topics."""
+    if not settings.BSC_RPC_URL:
+        raise RuntimeError("BSC_RPC_URL is not set")
+
+    params = {
+        "fromBlock": hex(int(from_block)),
+        "toBlock": hex(int(to_block)),
+        "address": settings.BSC_USDT_CONTRACT,
+        "topics": [TRANSFER_TOPIC, None, to_topics],
+    }
+    payload = {"jsonrpc": "2.0", "method": "eth_getLogs", "params": [params], "id": 1}
+    async with session.post(settings.BSC_RPC_URL, json=payload) as resp:
+        if resp.status != 200:
+            txt = await resp.text()
+            raise RuntimeError(f"eth_getLogs HTTP {resp.status}: {txt[:200]}")
+        data = await resp.json(content_type=None)
+        if "error" in data and data["error"]:
+            raise RuntimeError(f"eth_getLogs error: {data['error']}")
+        result = data.get("result") or []
+        if not isinstance(result, list):
+            raise RuntimeError(f"eth_getLogs bad result: {data}")
+        return result
 
 
 def db_insert_transfer(
@@ -138,7 +247,14 @@ def db_insert_transfer(
         db.close()
 
 
-async def handle_log(log: dict, wallet_map: dict[str, tuple[int, int]], rpc_session: aiohttp.ClientSession, block_time_cache: dict[int, datetime]):
+async def handle_log(
+    log: dict,
+    wallet_map: dict[str, tuple[int, int]],
+    rpc_session: aiohttp.ClientSession,
+    block_time_cache: dict[int, datetime],
+    *,
+    update_cursor_flag: bool,
+):
     tx_hash = log.get("transactionHash")
     if not tx_hash:
         return
@@ -197,6 +313,9 @@ async def handle_log(log: dict, wallet_map: dict[str, tuple[int, int]], rpc_sess
         tx_time=tx_time,
     )
 
+    if update_cursor_flag:
+        await asyncio.to_thread(db_upsert_cursor, CURSOR_NAME, block_number, log_index)
+
     logging.info("Deposit detected: user_id=%s wallet_id=%s tx=%s li=%s amount=%s", user_id, wallet_id, tx_hash, log_index, str(amount))
 
 
@@ -204,7 +323,7 @@ async def subscribe_chunk(addresses: list[str], wallet_map: dict[str, tuple[int,
     if not settings.BSC_WS_URL:
         raise RuntimeError("BSC_WS_URL is not set")
 
-    connector = aiohttp.TCPConnector(resolver=resolver.ThreadedResolver())
+    connector = aiohttp.TCPConnector(resolver=resolver.ThreadedResolver(), ttl_dns_cache=300)
     async with aiohttp.ClientSession(connector=connector) as rpc_session:
         block_time_cache: dict[int, datetime] = {}
 
@@ -237,9 +356,83 @@ async def subscribe_chunk(addresses: list[str], wallet_map: dict[str, tuple[int,
                 event = json.loads(raw)
                 if event.get("method") != "eth_subscription":
                     continue
-                log = (event.get("params") or {}).get("result")
-                if isinstance(log, dict):
-                    await handle_log(log, wallet_map, rpc_session, block_time_cache)
+                lg = (event.get("params") or {}).get("result")
+                if isinstance(lg, dict):
+                    await handle_log(lg, wallet_map, rpc_session, block_time_cache, update_cursor_flag=True)
+
+
+async def backfill_on_start(wallet_map: dict[str, tuple[int, int]]):
+    if not getattr(settings, "BSC_BACKFILL_ON_START", True):
+        logging.info("Backfill on start disabled.")
+        return
+
+    if not settings.BSC_RPC_URL:
+        logging.warning("BSC_RPC_URL is not set; cannot run backfill.")
+        return
+
+    addresses = list(wallet_map.keys())
+    if not addresses:
+        logging.info("No wallets in DB; skipping backfill.")
+        return
+
+    connector = aiohttp.TCPConnector(resolver=resolver.ThreadedResolver(), ttl_dns_cache=300)
+    timeout = aiohttp.ClientTimeout(total=20)
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as rpc_session:
+        latest_block = await rpc_with_retries(
+            lambda: rpc_get_latest_block(rpc_session),
+            "eth_blockNumber (backfill start)",
+        )
+        buffer_blocks = int(getattr(settings, "BSC_REORG_BUFFER_BLOCKS", 20))
+        chunk_blocks = int(getattr(settings, "BSC_BACKFILL_CHUNK_BLOCKS", 2000))
+        lookback_blocks = int(getattr(settings, "BSC_START_LOOKBACK_BLOCKS", 50000))
+
+        to_block = max(0, int(latest_block) - buffer_blocks)
+
+        db = SessionLocal()
+        try:
+            cur = get_cursor(db, CURSOR_NAME)
+        finally:
+            db.close()
+
+        if cur:
+            from_block = int(cur[0])
+            logging.info("Backfill cursor found: from_block=%d", from_block)
+        else:
+            from_block = max(0, to_block - lookback_blocks)
+            logging.info("Backfill cursor missing: from_block=%d (lookback=%d)", from_block, lookback_blocks)
+
+        if from_block > to_block:
+            logging.info("Backfill: nothing to do (from_block=%d > to_block=%d)", from_block, to_block)
+            await asyncio.to_thread(db_upsert_cursor, CURSOR_NAME, to_block, 0)
+            return
+
+        block_time_cache: dict[int, datetime] = {}
+        addr_chunks = _chunk(addresses, 1000)
+
+        logging.info("Backfill start: [%d..%d] (latest=%d, buffer=%d)", from_block, to_block, latest_block, buffer_blocks)
+
+        start = from_block
+        while start <= to_block:
+            end = min(to_block, start + chunk_blocks - 1)
+
+            logs_all: list[dict] = []
+            for a_chunk in addr_chunks:
+                to_topics = [_encode_topic_address(a) for a in a_chunk]
+                part = await rpc_with_retries(
+                    lambda: rpc_get_logs(rpc_session, start, end, to_topics),
+                    f"eth_getLogs {start}-{end}",
+                )
+                logs_all.extend(part)
+
+            logs_all.sort(key=lambda x: (_hex_to_int(x.get("blockNumber", "0x0")), _hex_to_int(x.get("logIndex", "0x0"))))
+
+            for lg in logs_all:
+                await handle_log(lg, wallet_map, rpc_session, block_time_cache, update_cursor_flag=False)
+
+            await asyncio.to_thread(db_upsert_cursor, CURSOR_NAME, end, 0)
+            logging.info("Backfill chunk done: %d..%d (logs=%d)", start, end, len(logs_all))
+
+            start = end + 1
 
 
 async def main():
@@ -247,6 +440,9 @@ async def main():
 
     wallet_map = load_wallet_map()
     last_addrs = set(wallet_map.keys())
+
+    # one-time backfill on startup
+    await backfill_on_start(wallet_map)
 
     while True:
         if not last_addrs:
@@ -268,37 +464,26 @@ async def main():
 
         try:
             while True:
-                done, _pending = await asyncio.wait(
-                    tasks,
-                    timeout=reload_sec,
-                    return_when=asyncio.FIRST_EXCEPTION,
-                )
+                done, _pending = await asyncio.wait(tasks, timeout=reload_sec, return_when=asyncio.FIRST_EXCEPTION)
 
-                # если какая-то подписка упала — выбрасываем исключение, чтобы сработал внешний restart
                 for t in done:
                     exc = t.exception()
                     if exc:
                         raise exc
 
-                # timeout -> проверяем, не появились ли новые кошельки
                 new_map = load_wallet_map()
                 new_addrs = set(new_map.keys())
 
                 if new_addrs != last_addrs:
-                    logging.info(
-                        "Wallet list changed: %d -> %d addresses. Reloading subscriptions...",
-                        len(last_addrs),
-                        len(new_addrs),
-                    )
+                    logging.info("Wallet list changed: %d -> %d addresses. Reloading subscriptions...", len(last_addrs), len(new_addrs))
                     for t in tasks:
                         t.cancel()
                     await asyncio.gather(*tasks, return_exceptions=True)
 
                     wallet_map = new_map
                     last_addrs = new_addrs
-                    break  # пересоздадим подписки с новым списком
+                    break
         finally:
-            # если выходим из try из-за исключения — задачи завершит внешний restart-цикл
             pass
 
 

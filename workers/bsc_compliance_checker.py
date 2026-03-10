@@ -93,6 +93,8 @@ def _apply_result(
         tr.compliance_checked_at = utcnow()
         tr.compliance_details = details
 
+        db.flush()  # ВАЖНО при autoflush=False, чтобы still_bad видел обновлённый tr
+
         # если проверка теперь ok — можем снять pending_check с кошелька/пользователя,
         # но только если у них больше нет success-депозитов с blocked/pending_check.
         if final_status == "ok":

@@ -65,7 +65,8 @@ async def main_loop():
         resolver=resolver.ThreadedResolver(),
         ttl_dns_cache=300,
     )
-    async with aiohttp.ClientSession(connector=connector) as session:
+    timeout = aiohttp.ClientTimeout(total=20)
+    async with aiohttp.ClientSession(connector=connector, timeout=timeout) as session:
         while True:
             try:
                 current_block = await rpc_get_current_block(session)

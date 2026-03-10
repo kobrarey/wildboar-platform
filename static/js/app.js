@@ -75,8 +75,18 @@
     _resendTimers.set(btn, { intervalId, timeoutId });
   }
 
-  // экспортируем в глобальную область, чтобы использовать на других страницах (security_settings.js)
+  function clearResendCooldown(btn, label) {
+    if (!btn) return;
+    const prev = _resendTimers.get(btn);
+    if (prev?.intervalId) clearInterval(prev.intervalId);
+    if (prev?.timeoutId) clearTimeout(prev.timeoutId);
+    _resendTimers.delete(btn);
+    btn.disabled = true;
+    btn.textContent = label != null ? label : MSG.resend_again;
+  }
+
   window.startResendCooldown = startResendCooldown;
+  window.clearResendCooldown = clearResendCooldown;
 
   async function postResend(endpoint, email, errEl, btn) {
     if (!email) {

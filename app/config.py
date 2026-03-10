@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -30,6 +32,10 @@ class Settings(BaseSettings):
     BSC_CONFIRM_POLL_SEC: int = 15
     BSC_BALANCE_POLL_SEC: int = 15
     BSC_WALLET_MAP_RELOAD_SEC: int = 60
+    BSC_REORG_BUFFER_BLOCKS: int = 20
+    BSC_BACKFILL_CHUNK_BLOCKS: int = 2000
+    BSC_START_LOOKBACK_BLOCKS: int = 50000
+    BSC_BACKFILL_ON_START: bool = True
     WALLET_ENC_KEY: str = ""
 
     # --- compliance / sanctions screening ---
@@ -47,6 +53,30 @@ class Settings(BaseSettings):
     # auth / session
     SESSION_TTL_DAYS: int = 30
     COOKIE_NAME: str = "session_id"
+
+    # --- stage 10: withdrawals ---
+    FEE_WALLET_OK_ADDRESS: str = ""
+    FEE_WALLET_OK_PRIVATE_KEY: str = ""
+    FEE_WALLET_BLOCKED_ADDRESS: str = ""
+    FEE_WALLET_BLOCKED_PRIVATE_KEY: str = ""
+
+    WITHDRAW_FEE_USDT: Decimal = Decimal("1")
+    WITHDRAW_SESSION_TTL_MIN: int = 15
+
+    WITHDRAW_GAS_BUFFER_MULT: Decimal = Decimal("1.2")
+    WITHDRAW_GAS_MAX_BNB: Decimal = Decimal("0.01")
+    ERC20_TRANSFER_GAS_FALLBACK: int = 70000
+
+    # --- telegram watchdog ---
+    TELEGRAM_BOT_TOKEN: str = ""
+    TELEGRAM_CHAT_ID: str = ""
+    BNB_ALERT_THRESHOLD_USD: Decimal = Decimal("100")
+    TELEGRAM_CHECK_SEC: int = 3600
+
+    # --- pancake quote ---
+    PANCAKE_ROUTER_V2: str = ""
+    WBNB_ADDRESS: str = ""
+    USDT_BSC_ADDRESS: str = ""
 
 
 settings = Settings()

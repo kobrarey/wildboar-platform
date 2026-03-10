@@ -4,7 +4,12 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>WildBoar — {{ 'Transaction history' if lang == 'en' else 'История операций' }}</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=portfolio9_1" />
+  <link rel="stylesheet" href="/static/css/app.css?v=portfolio10_2" />
+  <style>
+    /* центрирование Адрес/Txid и вкладки — гарантированно на странице истории */
+    .tx-col-addr, .tx-col-txid { justify-self: center; }
+    .tab-btn--small { padding: 8px 14px; min-width: 110px; text-align: center; }
+  </style>
   <script defer src="/static/js/app.js?v=5_2"></script>
   <script defer src="/static/js/history.js?v=9_1_1"></script>
 </head>
@@ -131,7 +136,7 @@
 
             <div class="tabs-row" data-subgroup="trading">
               <button type="button" class="tab-btn tab-btn--small is-active" data-sub="all">
-                {{ 'Все транзакции' if lang == 'ru' else 'All transactions' }}
+                {{ 'Все трансакции' if lang == 'ru' else 'All transactions' }}
               </button>
               <button type="button" class="tab-btn tab-btn--small" data-sub="buys">
                 {{ 'Покупки' if lang == 'ru' else 'Purchases' }}
@@ -143,7 +148,7 @@
 
             <div class="tabs-row hidden" data-subgroup="transfers">
               <button type="button" class="tab-btn tab-btn--small is-active" data-sub="all">
-                {{ 'Все транзакции' if lang == 'ru' else 'All transactions' }}
+                {{ 'Все трансакции' if lang == 'ru' else 'All transactions' }}
               </button>
               <button type="button" class="tab-btn tab-btn--small" data-sub="deposits">
                 {{ 'Пополнения' if lang == 'ru' else 'Deposits' }}
@@ -176,14 +181,14 @@
                 <div class="tx-table tx-table--all">
                   <div class="tx-header">
                     <div>{{ 'Монета' if lang=='ru' else 'Coin' }}</div>
-                    <div>{{ 'Вид сети' if lang=='ru' else 'Network' }}</div>
-                    <div class="tx-col-center">{{ 'К-во' if lang=='ru' else 'Amount' }}</div>
-                    <div>{{ 'Тип' if lang=='ru' else 'Type' }}</div>
-                    <div>{{ 'Адрес' if lang=='ru' else 'Address' }}</div>
-                    <div>Txid</div>
-                    <div>{{ 'Статус' if lang=='ru' else 'Status' }}</div>
-                    <div>Compliance status</div>
-                    <div>{{ 'Дата/время' if lang=='ru' else 'Date/time' }}</div>
+                    <div class="tx-col-center">{{ 'Вид сети' if lang=='ru' else 'Network' }}</div>
+                    <div class="tx-col-center">{{ 'Количество' if lang=='ru' else 'Amount' }}</div>
+                    <div class="tx-col-center">{{ 'Тип' if lang=='ru' else 'Type' }}</div>
+                    <div class="tx-col-center tx-col-addr">{{ 'Адрес' if lang=='ru' else 'Address' }}</div>
+                    <div class="tx-col-center tx-col-txid">Txid</div>
+                    <div class="tx-col-center">{{ 'Статус' if lang=='ru' else 'Status' }}</div>
+                    <div class="tx-col-center">Compliance status</div>
+                    <div class="tx-col-center">{{ 'Дата/время' if lang=='ru' else 'Date/time' }}</div>
                   </div>
 
                   {% if transfers_all and (transfers_all|length) > 0 %}
@@ -193,18 +198,19 @@
                       {% set addr_full = (tx.to_address if is_withdraw else tx.from_address) or tx.to_address or tx.from_address %}
                       {% set txid_full = tx.tx_hash %}
                       {% set st = (tx.status or '')|lower %}
+                      {% set cs = (tx.compliance_status or '')|lower %}
                       {% set dt = tx.tx_time or tx.detected_at %}
 
                       <div class="tx-row">
                         <div class="tx-col-coin">{{ tx.coin|default('USDT', true) }}</div>
-                        <div>{{ tx.network|default('BSC (BEP20)', true) }}</div>
+                        <div class="tx-col-center">{{ tx.network|default('BSC (BEP20)', true) }}</div>
                         <div class="tx-col-center">{{ '%.2f'|format(tx.amount or 0) }}</div>
-                        <div>
+                        <div class="tx-col-center">
                           {% if is_withdraw %}{{ 'Вывод' if lang=='ru' else 'Withdrawal' }}
                           {% else %}{{ 'Пополнение' if lang=='ru' else 'Deposit' }}{% endif %}
                         </div>
 
-                        <div class="tx-col-copy">
+                        <div class="tx-col-cell-center tx-col-addr"><div class="tx-col-copy">
                           <span class="tx-hash">{{ short_hex(addr_full) }}</span>
                           {% if addr_full %}
                           <button type="button" class="copy-btn tx-copy-btn" data-copy="{{ addr_full }}" aria-label="{{ 'Скопировать' if lang=='ru' else 'Copy' }}">
@@ -214,9 +220,10 @@
                             </svg>
                           </button>
                           {% endif %}
+                          </div>
                         </div>
 
-                        <div class="tx-col-copy">
+                        <div class="tx-col-cell-center tx-col-txid"><div class="tx-col-copy">
                           <span class="tx-hash">{{ short_hex(txid_full) }}</span>
                           {% if txid_full %}
                           <button type="button" class="copy-btn tx-copy-btn" data-copy="{{ txid_full }}" aria-label="{{ 'Скопировать' if lang=='ru' else 'Copy' }}">
@@ -226,28 +233,41 @@
                             </svg>
                           </button>
                           {% endif %}
+                          </div>
                         </div>
 
-                        <div>
-                          <span class="tx-status {{ 'tx-status--success' if st=='success' else 'tx-status--pending' }}">
-                            {% if st=='success' %}{{ 'Завершено' if lang=='ru' else 'Completed' }}
-                            {% else %}{{ 'В обработке' if lang=='ru' else 'Pending' }}{% endif %}
-                          </span>
-                        </div>
-
-                        <div>
-                          {% set cs = (tx.compliance_status or '')|lower %}
-                          {% if cs == 'blocked' %}
-                            <span class="status-blocked">blocked</span>
-                          {% elif cs == 'pending_check' %}
-                            <span class="status-pending">pending_check</span>
-                          {% elif cs == 'ok' %}
-                            <span class="status-ok">ok</span>
+                        <div class="tx-col-center">
+                          {% if is_withdraw %}
+                            {% if st == 'processing' %}
+                              <span class="tx-status tx-status--pending">{{ 'В обработке' if lang=='ru' else 'Pending' }}</span>
+                            {% elif st == 'success' %}
+                              <span class="tx-status tx-status--success">{{ 'Завершено' if lang=='ru' else 'Completed' }}</span>
+                            {% elif st == 'failed' %}
+                              <span class="tx-status tx-status--failed">{{ 'Ошибка' if lang=='ru' else 'Failed' }}</span>
+                            {% else %}
+                              <span class="tx-status tx-status--pending">{{ st or ('В обработке' if lang=='ru' else 'Pending') }}</span>
+                            {% endif %}
                           {% else %}
-                            {{ tx.compliance_status|default('', true) }}
+                            <span class="tx-status {{ 'tx-status--success' if st=='success' else 'tx-status--pending' }}">
+                              {% if st=='success' %}{{ 'Завершено' if lang=='ru' else 'Completed' }}
+                              {% else %}{{ 'В обработке' if lang=='ru' else 'Pending' }}{% endif %}
+                            </span>
                           {% endif %}
                         </div>
-                        <div class="tx-col-dt">{{ dt.strftime('%Y-%m-%d %H:%M:%S') if dt else '' }}</div>
+
+                        <div class="tx-col-center">
+                          {% if is_withdraw %}
+                            {% if cs == 'ok' %}<span class="cs-ok">ok</span>
+                            {% elif cs == 'blocked' %}<span class="cs-blocked">blocked</span>
+                            {% else %}—{% endif %}
+                          {% else %}
+                            {% if cs == 'ok' %}<span class="status-ok">ok</span>
+                            {% elif cs == 'blocked' %}<span class="status-blocked">blocked</span>
+                            {% elif cs == 'pending_check' %}<span class="status-pending">pending check</span>
+                            {% else %}—{% endif %}
+                          {% endif %}
+                        </div>
+                        <div class="tx-col-dt tx-col-center">{{ dt.strftime('%Y-%m-%d %H:%M:%S') if dt else '' }}</div>
                       </div>
                     {% endfor %}
                   {% else %}
@@ -263,13 +283,13 @@
                 <div class="tx-table tx-table--deposits">
                   <div class="tx-header">
                     <div>{{ 'Монета' if lang=='ru' else 'Coin' }}</div>
-                    <div>{{ 'Вид сети' if lang=='ru' else 'Network' }}</div>
-                    <div class="tx-col-center">{{ 'К-во' if lang=='ru' else 'Amount' }}</div>
-                    <div>{{ 'Адрес' if lang=='ru' else 'Address' }}</div>
-                    <div>Txid</div>
-                    <div>{{ 'Статус' if lang=='ru' else 'Status' }}</div>
-                    <div>Compliance status</div>
-                    <div>{{ 'Дата/время' if lang=='ru' else 'Date/time' }}</div>
+                    <div class="tx-col-center">{{ 'Вид сети' if lang=='ru' else 'Network' }}</div>
+                    <div class="tx-col-center">{{ 'Количество' if lang=='ru' else 'Amount' }}</div>
+                    <div class="tx-col-center tx-col-addr">{{ 'Адрес' if lang=='ru' else 'Address' }}</div>
+                    <div class="tx-col-center tx-col-txid">Txid</div>
+                    <div class="tx-col-center">{{ 'Статус' if lang=='ru' else 'Status' }}</div>
+                    <div class="tx-col-center">Compliance status</div>
+                    <div class="tx-col-center">{{ 'Дата/время' if lang=='ru' else 'Date/time' }}</div>
                   </div>
 
                   {% if transfers_deposits and (transfers_deposits|length) > 0 %}
@@ -281,10 +301,10 @@
 
                       <div class="tx-row">
                         <div class="tx-col-coin">{{ tx.coin|default('USDT', true) }}</div>
-                        <div>{{ tx.network|default('BSC (BEP20)', true) }}</div>
+                        <div class="tx-col-center">{{ tx.network|default('BSC (BEP20)', true) }}</div>
                         <div class="tx-col-center">{{ '%.2f'|format(tx.amount or 0) }}</div>
 
-                        <div class="tx-col-copy">
+                        <div class="tx-col-cell-center tx-col-addr"><div class="tx-col-copy">
                           <span class="tx-hash">{{ short_hex(addr_full) }}</span>
                           {% if addr_full %}
                           <button type="button" class="copy-btn tx-copy-btn" data-copy="{{ addr_full }}" aria-label="{{ 'Скопировать' if lang=='ru' else 'Copy' }}">
@@ -294,9 +314,10 @@
                             </svg>
                           </button>
                           {% endif %}
+                          </div>
                         </div>
 
-                        <div class="tx-col-copy">
+                        <div class="tx-col-cell-center tx-col-txid"><div class="tx-col-copy">
                           <span class="tx-hash">{{ short_hex(txid_full) }}</span>
                           {% if txid_full %}
                           <button type="button" class="copy-btn tx-copy-btn" data-copy="{{ txid_full }}" aria-label="{{ 'Скопировать' if lang=='ru' else 'Copy' }}">
@@ -306,28 +327,29 @@
                             </svg>
                           </button>
                           {% endif %}
+                          </div>
                         </div>
 
-                        <div>
+                        <div class="tx-col-center">
                           <span class="tx-status {{ 'tx-status--success' if st=='success' else 'tx-status--pending' }}">
                             {% if st=='success' %}{{ 'Завершено' if lang=='ru' else 'Completed' }}
                             {% else %}{{ 'В обработке' if lang=='ru' else 'Pending' }}{% endif %}
                           </span>
                         </div>
 
-                        <div>
-                          {% set cs = (tx.compliance_status or '')|lower %}
-                          {% if cs == 'blocked' %}
+                        <div class="tx-col-center">
+                          {% set cs = tx.compliance_status %}
+                          {% if cs == 'ok' %}
+                            <span class="status-ok">ok</span>
+                          {% elif cs == 'blocked' %}
                             <span class="status-blocked">blocked</span>
                           {% elif cs == 'pending_check' %}
-                            <span class="status-pending">pending_check</span>
-                          {% elif cs == 'ok' %}
-                            <span class="status-ok">ok</span>
+                            <span class="status-pending">pending check</span>
                           {% else %}
-                            {{ tx.compliance_status|default('', true) }}
+                            —
                           {% endif %}
                         </div>
-                        <div class="tx-col-dt">{{ dt.strftime('%Y-%m-%d %H:%M:%S') if dt else '' }}</div>
+                        <div class="tx-col-dt tx-col-center">{{ dt.strftime('%Y-%m-%d %H:%M:%S') if dt else '' }}</div>
                       </div>
                     {% endfor %}
                   {% else %}
@@ -338,10 +360,88 @@
                 </div>
               </div>
 
-              <!-- Transfers / Withdrawals (placeholder in 9.1) -->
               <div class="history-panel hidden" data-panel="transfers/withdrawals">
-                <div class="muted" style="margin-top:14px;">
-                  {{ 'Данные появятся позже.' if lang == 'ru' else 'Data will appear later.' }}
+                <div class="tx-table tx-table--withdrawals">
+                  <div class="tx-header">
+                    <div>{{ 'Монета' if lang=='ru' else 'Coin' }}</div>
+                    <div class="tx-col-center">{{ 'Вид сети' if lang=='ru' else 'Network' }}</div>
+                    <div class="tx-col-center">{{ 'Количество' if lang=='ru' else 'Amount' }}</div>
+                    <div class="tx-col-center tx-col-addr">{{ 'Адрес' if lang=='ru' else 'Address' }}</div>
+                    <div class="tx-col-center tx-col-txid">Txid</div>
+                    <div class="tx-col-center">{{ 'Статус' if lang=='ru' else 'Status' }}</div>
+                    <div class="tx-col-center">Compliance status</div>
+                    <div class="tx-col-center">{{ 'Дата/время' if lang=='ru' else 'Date/time' }}</div>
+                  </div>
+
+                  {% if transfers_withdrawals and (transfers_withdrawals|length) > 0 %}
+                    {% for tx in transfers_withdrawals %}
+                      {% set to_full = tx.to_address %}
+                      {% set txid_full = tx.tx_hash %}
+                      {% set st = (tx.status or '')|lower %}
+                      {% set cs = (tx.compliance_status or '')|lower %}
+                      {% set dt = tx.tx_time or tx.detected_at %}
+
+                      <div class="tx-row">
+                        <div class="tx-col-coin">{{ tx.coin|default('USDT', true) }}</div>
+                        <div class="tx-col-center">{{ tx.network|default('BSC (BEP20)', true) }}</div>
+                        <div class="tx-col-center">{{ '%.2f'|format(tx.amount or 0) }}</div>
+
+                        <div class="tx-col-cell-center tx-col-addr"><div class="tx-col-copy">
+                          <span class="tx-hash">{{ short_hex(to_full) }}</span>
+                          {% if to_full %}
+                            <button type="button" class="copy-btn tx-copy-btn" data-copy="{{ to_full }}" aria-label="{{ 'Скопировать' if lang=='ru' else 'Copy' }}">
+                              <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+                                <path d="M8 8h11v11H8z" fill="none" stroke="currentColor" stroke-width="2"/>
+                                <path d="M5 16H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h11a1 1 0 0 1 1 1v1" fill="none" stroke="currentColor" stroke-width="2"/>
+                              </svg>
+                            </button>
+                          {% endif %}
+                          </div>
+                        </div>
+
+                        <div class="tx-col-cell-center tx-col-txid"><div class="tx-col-copy">
+                          <span class="tx-hash">{{ short_hex(txid_full) }}</span>
+                          {% if txid_full %}
+                            <button type="button" class="copy-btn tx-copy-btn" data-copy="{{ txid_full }}" aria-label="{{ 'Скопировать' if lang=='ru' else 'Copy' }}">
+                              <svg width="18" height="18" viewBox="0 0 24 24" aria-hidden="true">
+                                <path d="M8 8h11v11H8z" fill="none" stroke="currentColor" stroke-width="2"/>
+                                <path d="M5 16H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h11a1 1 0 0 1 1 1v1" fill="none" stroke="currentColor" stroke-width="2"/>
+                              </svg>
+                            </button>
+                          {% endif %}
+                          </div>
+                        </div>
+
+                        <div class="tx-col-center">
+                          {% if st == 'processing' %}
+                            <span class="tx-status tx-status--pending">{{ 'В обработке' if lang=='ru' else 'Pending' }}</span>
+                          {% elif st == 'success' %}
+                            <span class="tx-status tx-status--success">{{ 'Завершено' if lang=='ru' else 'Completed' }}</span>
+                          {% elif st == 'failed' %}
+                            <span class="tx-status tx-status--failed">{{ 'Ошибка' if lang=='ru' else 'Failed' }}</span>
+                          {% else %}
+                            <span class="tx-status tx-status--pending">{{ st or ('В обработке' if lang=='ru' else 'Pending') }}</span>
+                          {% endif %}
+                        </div>
+
+                        <div class="tx-col-center">
+                          {% if cs == 'ok' %}
+                            <span class="cs-ok">ok</span>
+                          {% elif cs == 'blocked' %}
+                            <span class="cs-blocked">blocked</span>
+                          {% else %}
+                            —
+                          {% endif %}
+                        </div>
+
+                        <div class="tx-col-dt tx-col-center">{{ dt.strftime('%Y-%m-%d %H:%M:%S') if dt else '' }}</div>
+                      </div>
+                    {% endfor %}
+                  {% else %}
+                    <div class="muted-text" style="margin-top:14px;">
+                      {{ 'Пока нет данных.' if lang=='ru' else 'No data yet.' }}
+                    </div>
+                  {% endif %}
                 </div>
               </div>
             </div>

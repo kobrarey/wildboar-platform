@@ -15,7 +15,7 @@ def get_user_portfolio(db: Session, user: User, lang: str) -> dict:
     # 1) USDT-баланс из user_wallets
     wallet = (
         db.query(UserWallet)
-        .filter(UserWallet.user_id == user.id, UserWallet.blockchain == "BSC")
+        .filter(UserWallet.user_id == user.id, UserWallet.blockchain == "BSC", UserWallet.is_active == True)
         .first()
     )
     if wallet is not None:

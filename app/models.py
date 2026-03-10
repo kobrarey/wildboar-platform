@@ -105,6 +105,9 @@ class UserWallet(Base):
     freeze_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     compliance_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa_text("TRUE"))
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
 
 class WalletTransfer(Base):
     __tablename__ = "wallet_transfers"
@@ -129,12 +132,19 @@ class WalletTransfer(Base):
     from_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
     to_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
-    tx_hash: Mapped[str] = mapped_column(String(80), nullable=False)
-    log_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    tx_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    log_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     amount: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
 
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")  # pending|success|failed
+    amount_gross: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    fee_usdt: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False, server_default=sa_text("1"))
+    gas_tx_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    fee_tx_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    email_slot: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")  # pending|processing|success|failed
     compliance_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     block_number: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -154,6 +164,23 @@ class WalletTransfer(Base):
     __table_args__ = (
         UniqueConstraint("tx_hash", "log_index", name="wallet_transfers_tx_hash_log_index_uq"),
     )
+
+
+class WithdrawSession(Base):
+    __tablename__ = "withdraw_sessions"
+
+    token: Mapped[str] = mapped_column(String(80), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    wallet_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("user_wallets.id", ondelete="CASCADE"), nullable=False)
+
+    to_address: Mapped[str] = mapped_column(String(64), nullable=False)
+    amount_gross: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
+    fee_usdt: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False, server_default=sa_text("1"))
+    email_slot: Mapped[int] = mapped_column(Integer, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class PasswordResetSession(Base):

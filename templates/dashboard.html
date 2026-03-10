@@ -138,6 +138,8 @@
         {% set user_cs = user_compliance_status|default('ok', true) %}
         {% set wallet_cs = wallet_compliance_status|default('ok', true) %}
         {% set compliance_blocked = (user_cs != 'ok') or (wallet_cs != 'ok') %}
+        {% set is_blocked = (user_cs == 'blocked') or (wallet_cs == 'blocked') %}
+        {% set is_pending_check = ((user_cs == 'pending_check') or (wallet_cs == 'pending_check')) and not is_blocked %}
 
         <div class="card">
           <div class="card__body stablecoin-card">
@@ -168,7 +170,7 @@
           </div>
         </div>
 
-        {% if compliance_blocked %}
+        {% if is_blocked %}
           <div class="compliance-warning" role="alert">
             <div class="compliance-warning__icon" aria-hidden="true">
               <svg width="18" height="18" viewBox="0 0 24 24">
@@ -183,6 +185,25 @@
                   На адрес поступили USDT с санкционными/ограниченными признаками. Пополнение и покупка паёв отключены. Пожалуйста, выведите средства обратно.
                 {% else %}
                   USDT with sanctioned/restricted indicators has been received to the address. Deposits and fund share purchases are disabled. Please withdraw the funds back.
+                {% endif %}
+              </strong>
+            </div>
+          </div>
+        {% elif is_pending_check %}
+          <div class="compliance-warning compliance-warning--pending" role="alert">
+            <div class="compliance-warning__icon" aria-hidden="true">
+              <svg width="18" height="18" viewBox="0 0 24 24">
+                <path d="M12 3L2 21h20L12 3z" fill="none" stroke="currentColor" stroke-width="2"/>
+                <path d="M12 9v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                <circle cx="12" cy="17" r="1" fill="currentColor"/>
+              </svg>
+            </div>
+            <div class="compliance-warning__text">
+              <strong>
+                {% if lang == 'ru' %}
+                  Идёт проверка комплаенса, дождитесь её завершения.
+                {% else %}
+                  Compliance check in progress, please wait for it to complete.
                 {% endif %}
               </strong>
             </div>
@@ -426,6 +447,104 @@
           {{ 'Вставляйте адрес в поле "Адрес кошелька" только в сети BSC (BEP20) иначе ваши средства будут утеряны.'
              if lang == 'ru'
              else 'Paste the address only for BSC (BEP20). Otherwise your funds may be lost.' }}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Withdraw confirm (2nd modal) -->
+  <div id="withdrawConfirmModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="w2Title" aria-hidden="true">
+    <div class="modal-overlay" data-modal-close></div>
+    <div class="modal-dialog wallet-modal wallet-modal--wide">
+      <button class="modal-close" type="button" aria-label="close" data-modal-close>×</button>
+      <h2 class="modal-title" id="w2Title">{{ 'Вывод средств' if lang=='ru' else 'Withdraw funds' }}</h2>
+
+      <div class="modal-body">
+        <!-- Address / Amount as inputs (like sketch) -->
+        <div class="w2-grid">
+          <div class="w2-row">
+            <div class="w2-label">{{ 'Адрес вывода:' if lang=='ru' else 'Withdraw address:' }}</div>
+            <input class="field__input w2-input" id="w2Address" type="text" readonly />
+          </div>
+
+          <div class="w2-row">
+            <div class="w2-label">{{ 'Сумма вывода:' if lang=='ru' else 'Withdraw amount:' }}</div>
+            <input class="field__input w2-input-sm" id="w2AmountNet" type="text" readonly />
+          </div>
+        </div>
+
+        <div class="w2-fee">{{ 'Комиссия: 1 USDT' if lang=='ru' else 'Fee: 1 USDT' }}</div>
+
+        <!-- Email select (like sketch) -->
+        <div class="w2-email">
+          <div class="w2-email-label">
+            {{ 'Выберите почту для получения письма' if lang=='ru' else 'Choose email to receive the code' }}
+          </div>
+
+          <div class="w2-email-row">
+            <!-- if 2 emails -> select -->
+            <select class="field__input w2-email-select" id="w2EmailSelect"></select>
+
+            <!-- if 1 email -> readonly text input -->
+            <input class="field__input w2-email-text hidden" id="w2EmailText" type="text" readonly />
+
+            <button type="button" class="btn btn--primary w2-get-code-btn" id="w2GetCodeBtn" disabled>
+              {{ 'Получить код' if lang=='ru' else 'Get code' }}
+            </button>
+          </div>
+        </div>
+
+        <div class="w2-code-title">
+          {{ 'Проверьте корректность данных и введите код с почты:' if lang=='ru' else 'Check details and enter the email code:' }}
+        </div>
+
+        <div class="w2-code-row">
+          <input
+            class="field__input"
+            id="w2Code"
+            type="text"
+            inputmode="numeric"
+            minlength="6"
+            maxlength="6"
+            autocomplete="one-time-code"
+            placeholder="123456"
+          />
+          <button type="button" class="btn btn--primary w2-resend-btn" id="w2ResendBtn" disabled>
+            {{ 'Получить код повторно' if lang=='ru' else 'Resend code' }}
+          </button>
+        </div>
+
+        <div class="w2-resend-hint">
+          {{ 'Можно запрашивать 1 раз в минуту' if lang=='ru' else 'You can request once per minute' }}
+        </div>
+
+        <div class="error-text" id="w2Error"></div>
+
+        <div class="withdraw-actions">
+          <button type="button" class="btn btn--primary" id="w2ConfirmBtn" disabled>
+            {{ 'Подтвердить' if lang=='ru' else 'Confirm' }}
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Withdraw processing (3rd modal) -->
+  <div id="withdrawProcessingModal" class="modal" role="dialog" aria-modal="true" aria-labelledby="w3Title" aria-hidden="true">
+    <div class="modal-overlay" data-modal-close></div>
+    <div class="modal-dialog wallet-modal wallet-modal--wide">
+      <button class="modal-close" type="button" aria-label="close" data-modal-close>×</button>
+      <h2 class="modal-title hidden" id="w3Title"></h2>
+
+      <div class="modal-body w3-body">
+        <div class="w3-text">
+          {% if lang=='ru' %}
+            Ваша трансакция выполняется, подробности можете посмотреть в
+            <a class="link" href="/history?tab=transfers&sub=withdrawals">личном кабинете</a>.
+          {% else %}
+            Your transaction is being processed. You can view details in your
+            <a class="link" href="/history?tab=transfers&sub=withdrawals">personal account</a>.
+          {% endif %}
         </div>
       </div>
     </div>

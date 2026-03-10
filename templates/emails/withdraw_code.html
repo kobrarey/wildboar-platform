@@ -1,0 +1,18 @@
+{% extends "emails/base.html" %}
+{% block content %}
+  {% if lang == 'en' %}
+    <h2>Withdraw confirmation</h2>
+    <p>A withdrawal request was created on your behalf:</p>
+    <p><b>{{ amount_gross_2dp }} USDT</b> to address:</p>
+    <p style="font-family:monospace">{{ to_address }}</p>
+    <p>If this wasn’t you, ignore this email and change your password and emails in your Wild Boar account.</p>
+    <p>Your code:</p>
+  {% else %}
+    <h2>Подтверждение вывода</h2>
+    <p>От вашего имени поступил запрос на вывод <b>{{ amount_gross_2dp }} USDT</b> на адрес:</p>
+    <p style="font-family:monospace">{{ to_address }}</p>
+    <p>Если это были не вы, то проигнорируйте это сообщение и смените пароль и почты в вашем личном кабинете Wild Boar.</p>
+    <p>Код:</p>
+  {% endif %}
+  <div class="code">{{ code }}</div>
+{% endblock %}

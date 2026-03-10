@@ -42,20 +42,21 @@ def decrypt_private_key(enc: str) -> str:
     data = fernet.decrypt(enc.encode("utf-8"))
     return data.decode("utf-8")
 
-def create_bsc_wallet_for_user(db: "Session", user: "User", commit: bool = True) -> "UserWallet":
+def create_bsc_wallet_for_user(db: "Session", user: "User", commit: bool = True, force_new: bool = False) -> "UserWallet":
     """
-    Guarantees exactly one BSC wallet per user.
-    If exists - returns it; otherwise creates wallet.
+    Returns active BSC wallet for user; creates one if none active.
+    Supports rotation: user may have multiple wallets, only one is_active.
     If commit=False -> only db.add() + db.flush(), commit must be done by caller.
+    If force_new=True -> always create new wallet (for rotation).
     """
     from app.models import UserWallet
 
     existing = (
         db.query(UserWallet)
-        .filter(UserWallet.user_id == user.id, UserWallet.blockchain == "BSC")
+        .filter(UserWallet.user_id == user.id, UserWallet.blockchain == "BSC", UserWallet.is_active == True)
         .first()
     )
-    if existing:
+    if existing and not force_new:
         return existing
 
     acct = Account.create()
@@ -69,6 +70,7 @@ def create_bsc_wallet_for_user(db: "Session", user: "User", commit: bool = True)
         blockchain="BSC",
         address=address,
         encrypted_private_key=enc_priv,
+        is_active=True,
     )
     db.add(wallet)
 
@@ -80,7 +82,7 @@ def create_bsc_wallet_for_user(db: "Session", user: "User", commit: bool = True)
             # на случай гонки за уникальность
             existing = (
                 db.query(UserWallet)
-                .filter(UserWallet.user_id == user.id, UserWallet.blockchain == "BSC")
+                .filter(UserWallet.user_id == user.id, UserWallet.blockchain == "BSC", UserWallet.is_active == True)
                 .first()
             )
             if existing:

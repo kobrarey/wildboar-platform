@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.db import SessionLocal
 
-ALLOWED_PURPOSES = {"registration", "reset", "login_2fa", "password_change"}
+ALLOWED_PURPOSES = {"registration", "reset", "login_2fa", "password_change", "withdraw"}
 
 CODE_LENGTH = settings.SECURITY_CODE_LENGTH
 CODE_TTL_MINUTES = settings.SECURITY_CODE_TTL_MINUTES
@@ -44,7 +44,7 @@ def create_code(user_id: int, purpose: str, db: Optional[Session] = None) -> str
         # rate-limit: not more often than once per RESEND_COOLDOWN_SECONDS
         # rate-limit только для части сценариев (регистрация и смена пароля).
         # Для login_2fa и reset позволяем запрашивать код без ожидания.
-        if purpose in {"registration", "password_change"}:
+        if purpose in {"registration", "password_change", "withdraw"}:
             last = db.execute(
                 text(
                     """

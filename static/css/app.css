@@ -50,8 +50,10 @@ body{
   color:#fff;
 }
 .btn--primary:hover{ background:var(--wb-purple-dark); }
-.btn--primary[aria-disabled="true"]{ opacity:.7; cursor:not-allowed; }
-.btn--primary[aria-disabled="true"]:hover{ background:var(--wb-purple); }
+.btn--primary[aria-disabled="true"],
+.btn--primary:disabled{ opacity:.55; cursor:not-allowed; pointer-events:none; }
+.btn--primary[aria-disabled="true"]:hover,
+.btn--primary:disabled:hover{ background:var(--wb-purple); }
 .btn--ghost{
   background:transparent;
   border-color:var(--wb-border);
@@ -1036,6 +1038,8 @@ body.sidebar-collapsed .sidebar__logout-icon{
   gap:10px;
   flex-wrap:wrap;
   margin-bottom: 10px;
+  overflow-x:auto;
+  padding-bottom:2px;
 }
 
 .tab-btn{
@@ -1047,8 +1051,12 @@ body.sidebar-collapsed .sidebar__logout-icon{
   border-radius: 0;
 }
 .tab-btn--small{
-  padding: 8px 10px;
+  padding: 8px 14px;
   font-weight: 600;
+  white-space: nowrap;
+  flex-shrink: 0;
+  min-width: 110px;
+  text-align: center;
 }
 
 .tab-btn.is-active{
@@ -1138,6 +1146,18 @@ body.sidebar-collapsed .sidebar__logout-icon{
   align-items:center;
   gap:10px;
 }
+/* обёртка для центрирования адреса/Txid в ячейке грида */
+.tx-col-cell-center{
+  display:flex;
+  justify-content:center;
+  align-items:center;
+}
+
+/* центрирование столбцов Адрес и Txid */
+.tx-col-addr,
+.tx-col-txid{
+  justify-self:center !important;
+}
 
 .tx-hash{
   white-space:nowrap;
@@ -1180,6 +1200,9 @@ body.sidebar-collapsed .sidebar__logout-icon{
 .tx-status--success{ color:#166534; }
 .tx-status--success::before{ background:#166534; }
 
+.tx-status--failed{ color:#dc2626; }
+.tx-status--failed::before{ background:#dc2626; }
+
 .tx-col-dt{ white-space:nowrap; }
 
 /* ===== Stage 9.2: compliance warning + statuses ===== */
@@ -1206,6 +1229,14 @@ body.sidebar-collapsed .sidebar__logout-icon{
   line-height: 1.35;
 }
 
+.compliance-warning--pending{
+  border-color: rgba(217, 119, 6, .3);
+  background: rgba(217, 119, 6, .06);
+}
+.compliance-warning--pending .compliance-warning__icon{
+  color: #d97706;
+}
+
 .status-blocked{
   color: #dc2626;
   font-weight: 700;
@@ -1222,4 +1253,128 @@ body.sidebar-collapsed .sidebar__logout-icon{
   color: #166534;
   font-weight: 700;
   white-space: nowrap;
+}
+
+/* ===== Stage 10: history withdraw statuses ===== */
+.status-processing{ color:#d97706; font-weight:700; white-space:nowrap; }
+.status-success{ color:#166534; font-weight:700; white-space:nowrap; }
+.status-failed{ color:#dc2626; font-weight:700; white-space:nowrap; }
+
+.cs-ok{ color:#166534; font-weight:700; white-space:nowrap; }
+.cs-blocked{ color:#d97706; font-weight:700; white-space:nowrap; }
+
+/* Withdrawals table: 8 columns */
+.tx-table--withdrawals .tx-header,
+.tx-table--withdrawals .tx-row{
+  grid-template-columns:
+    64px
+    100px
+    56px
+    minmax(180px, 1fr)   /* address */
+    minmax(180px, 1fr)   /* txid */
+    110px                /* status */
+    140px                /* compliance */
+    160px;               /* datetime */
+}
+
+/* ===== Stage 10: withdraw confirm modal (match sketches) ===== */
+
+.wallet-modal--wide{
+  width: min(680px, calc(100% - 24px)); /* шире, чтобы всё выглядело как на макете */
+}
+
+.w2-grid{
+  margin-top: 6px;
+  display: grid;
+  gap: 12px;
+}
+
+.w2-row{
+  display: grid;
+  grid-template-columns: 160px 1fr;
+  gap: 12px;
+  align-items: center;
+}
+
+.w2-label{
+  font-weight: 700;
+  color: #111;
+}
+
+.w2-input-sm{
+  max-width: 220px; /* маленькое поле суммы как на эскизе */
+}
+
+.w2-fee{
+  margin-top: 16px;
+  font-weight: 700;
+}
+
+.w2-email{
+  margin-top: 18px;
+}
+
+.w2-email-label{
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+.w2-email-row{
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.w2-email-row .w2-email-select,
+.w2-email-row .w2-email-text{
+  flex: 1;
+  min-width: 200px;
+}
+
+.w2-email-select{
+  max-width: 520px;
+}
+
+.w2-get-code-btn{
+  white-space: nowrap;
+}
+
+.w2-email-select.hidden,
+.w2-email-text.hidden{
+  display: none;
+}
+
+.w2-code-title{
+  margin-top: 18px;
+  font-weight: 700;
+}
+
+.w2-code-row{
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: 1fr 190px;
+  gap: 12px;
+  align-items: center;
+}
+
+.w2-resend-btn{
+  white-space: nowrap;
+}
+
+.w2-resend-hint{
+  margin-top: 8px;
+  color: #6e6e6e;
+  font-size: 12px;
+}
+
+.w3-body{
+  padding: 24px 14px;
+  text-align: center;
+}
+
+.w3-text{
+  font-weight: 700;
+  font-size: 16px;
+  line-height: 1.35;
 }

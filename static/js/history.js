@@ -87,7 +87,20 @@
     });
 
     // default
-    setMain("trading");
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get("tab");
+    const sub = params.get("sub");
+
+    if (tab) {
+      setMain(tab);
+      if (sub) {
+        const g = root.querySelector(`[data-subgroup="${tab}"]`);
+        const btn = g && g.querySelector(`[data-sub="${sub}"]`);
+        if (g && btn) setSub(g, sub);
+      }
+    } else {
+      setMain("trading");
+    }
   }
 
   document.addEventListener("DOMContentLoaded", initHistoryTabs);

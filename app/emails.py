@@ -80,3 +80,18 @@ def send_email(to_email: str, subject: str, html_body: str) -> None:
 
     # Пока SMTP не используем на практике (как и договорено), но оставляем понятную ошибку
     raise RuntimeError(f"Unsupported EMAIL_PROVIDER: {provider}")
+
+
+def send_withdraw_code(to_email: str, lang: str, amount_gross_2dp: str, to_address: str, code: str) -> None:
+    subject = "Withdraw confirmation code" if lang == "en" else "Код подтверждения вывода"
+    html = render_email_template(
+        "emails/withdraw_code.html",
+        {
+            "title": "Wild Boar",
+            "lang": lang,
+            "amount_gross_2dp": amount_gross_2dp,
+            "to_address": to_address,
+            "code": code,
+        },
+    )
+    send_email(to_email, subject, html)
