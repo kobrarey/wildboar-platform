@@ -44,6 +44,9 @@ MESSAGES = {
         "portfolio_invest": "Invest",
         "compliance_blocked": "Operations are blocked due to sanctions screening.",
         "compliance_pending_check": "Operations are temporarily blocked: compliance check pending.",
+        "withdraw_invalid_address": "Invalid address",
+        "withdraw_amount_too_small": "Invalid amount or amount too small",
+        "withdraw_insufficient_balance": "Insufficient balance",
     },
     "ru": {
         "email_required": "Email обязателен",
@@ -87,6 +90,9 @@ MESSAGES = {
         "portfolio_invest": "Инвестировать",
         "compliance_blocked": "Операции заблокированы: выявлено совпадение по санкциям.",
         "compliance_pending_check": "Операции временно заблокированы: проверка комплаенса не завершена.",
+        "withdraw_invalid_address": "Некорректный адрес",
+        "withdraw_amount_too_small": "Некорректная сумма или сумма слишком мала",
+        "withdraw_insufficient_balance": "Недостаточно средств",
     },
 }
 

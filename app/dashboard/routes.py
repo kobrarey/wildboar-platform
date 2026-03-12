@@ -17,7 +17,7 @@ from app.web import templates
 from app.i18n import get_lang_from_request, t, SUPPORTED_LANGS, LANG_COOKIE_NAME
 from app.auth import get_current_user
 from app.portfolio import get_user_portfolio
-from app.models import User, UserWallet, WalletTransfer, WithdrawSession
+from app.models import User, UserWallet, WalletTransfer, WithdrawSession, SecurityCode
 from app.utils.wallet_check import validate_address_status
 from app.codes import create_code, verify_code
 from app.emails import send_withdraw_code
@@ -138,6 +138,10 @@ class WithdrawConfirmIn(BaseModel):
     code: str
 
 
+class WithdrawCancelIn(BaseModel):
+    token: str
+
+
 @router.post("/api/wallet/validate")
 def api_wallet_validate(
     payload: WalletValidateRequest,
@@ -180,42 +184,111 @@ def withdraw_request_code(
     lang = get_lang_from_request(request)
 
     addr_status = validate_address_status(payload.to_address)
-    if addr_status != "valid":
-        return JSONResponse({"status": "error", "message": "Invalid address"}, status_code=400)
+    if addr_status == "invalid":
+        return JSONResponse(
+            {"status": "error", "message": t(lang, "withdraw_invalid_address")},
+            status_code=400,
+        )
 
     try:
         amount_gross = parse_amount(payload.amount_gross)
     except Exception:
-        return JSONResponse({"status": "error", "message": "Invalid amount"}, status_code=400)
+        return JSONResponse(
+            {"status": "error", "message": t(lang, "withdraw_amount_too_small")},
+            status_code=400,
+        )
 
     fee = Decimal(settings.WITHDRAW_FEE_USDT)
     if amount_gross <= fee:
-        return JSONResponse({"status": "error", "message": "Amount must be > 1"}, status_code=400)
+        return JSONResponse(
+            {"status": "error", "message": t(lang, "withdraw_amount_too_small")},
+            status_code=400,
+        )
 
     wallet = (
         db.query(UserWallet)
-        .filter(UserWallet.user_id == user.id, UserWallet.blockchain == "BSC", UserWallet.is_active == True)
+        .filter(
+            UserWallet.user_id == user.id,
+            UserWallet.blockchain == "BSC",
+            UserWallet.is_active == True,
+        )
         .first()
     )
     if not wallet:
-        return JSONResponse({"status": "error", "message": "Wallet not found"}, status_code=400)
+        return JSONResponse(
+            {"status": "error", "message": "Wallet not found"},
+            status_code=400,
+        )
 
     available = Decimal(wallet.usdt_balance or 0) - Decimal(wallet.usdt_reserved or 0)
     if available < amount_gross:
-        return JSONResponse({"status": "error", "message": "Insufficient balance"}, status_code=400)
+        return JSONResponse(
+            {"status": "error", "message": t(lang, "withdraw_insufficient_balance")},
+            status_code=400,
+        )
 
-    # email slot validation
+    # email_slot validation
     if payload.email_slot == 1:
         if not user.is_email_verified or not user.email:
-            return JSONResponse({"status": "error", "message": t(lang, "email_not_verified")}, status_code=400)
+            return JSONResponse(
+                {"status": "error", "message": t(lang, "email_not_verified")},
+                status_code=400,
+            )
         to_email = user.email
     elif payload.email_slot == 2:
         if not user.is_backup_email_verified or not user.backup_email:
-            return JSONResponse({"status": "error", "message": t(lang, "email_not_verified")}, status_code=400)
+            return JSONResponse(
+                {"status": "error", "message": t(lang, "email_not_verified")},
+                status_code=400,
+            )
         to_email = user.backup_email
     else:
-        return JSONResponse({"status": "error", "message": t(lang, "unsupported_slot")}, status_code=400)
+        return JSONResponse(
+            {"status": "error", "message": t(lang, "unsupported_slot")},
+            status_code=400,
+        )
 
+    # 1) create code first
+    try:
+        code = create_code(user.id, "withdraw", db=db)
+    except ValueError as e:
+        return JSONResponse(
+            {"status": "error", "message": t(lang, str(e))},
+            status_code=400,
+        )
+
+    # 2) send email second
+    try:
+        send_withdraw_code(
+            to_email=to_email,
+            lang=lang,
+            amount_gross_2dp=fmt_2dp(amount_gross),
+            to_address=payload.to_address,
+            code=code,
+        )
+    except Exception:
+        # rollback the just-created withdraw code,
+        # otherwise cooldown blocks immediate retry
+        bad_code = (
+            db.query(SecurityCode)
+            .filter(
+                SecurityCode.user_id == user.id,
+                SecurityCode.purpose == "withdraw",
+                SecurityCode.is_used == False,
+            )
+            .order_by(SecurityCode.created_at.desc())
+            .first()
+        )
+        if bad_code:
+            db.delete(bad_code)
+            db.commit()
+
+        return JSONResponse(
+            {"status": "error", "message": t(lang, "send_email_failed")},
+            status_code=500,
+        )
+
+    # 3) only now create withdraw_session
     token = secrets.token_hex(32)
     now = utcnow()
     session = WithdrawSession(
@@ -231,20 +304,6 @@ def withdraw_request_code(
     )
     db.add(session)
     db.commit()
-
-    try:
-        code = create_code(user.id, "withdraw", db=db)
-        send_withdraw_code(
-            to_email=to_email,
-            lang=lang,
-            amount_gross_2dp=fmt_2dp(amount_gross),
-            to_address=payload.to_address,
-            code=code,
-        )
-    except ValueError as e:
-        return JSONResponse({"status": "error", "message": t(lang, str(e))}, status_code=400)
-    except Exception:
-        return JSONResponse({"status": "error", "message": t(lang, "send_email_failed")}, status_code=500)
 
     return {
         "status": "ok",
@@ -354,6 +413,35 @@ def withdraw_confirm(
     db.commit()
 
     return {"status": "processing", "redirect_url": "/history?tab=transfers&sub=withdrawals"}
+
+
+@router.post("/api/withdraw/cancel")
+def withdraw_cancel(
+    payload: WithdrawCancelIn,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    s = (
+        db.query(WithdrawSession)
+        .filter(
+            WithdrawSession.token == payload.token,
+            WithdrawSession.user_id == user.id,
+        )
+        .first()
+    )
+
+    if not s:
+        return {"status": "ok"}
+
+    if s.used_at is not None:
+        return {"status": "ok"}
+
+    if s.expires_at < utcnow():
+        return {"status": "ok"}
+
+    db.delete(s)
+    db.commit()
+    return {"status": "ok"}
 
 
 @router.get("/history")

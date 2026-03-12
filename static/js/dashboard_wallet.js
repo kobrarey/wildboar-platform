@@ -316,6 +316,7 @@
       let token = null;
       let currentSlot = null;
       let requestSeq = 0;
+      let confirmDone = false;
 
       function setError(msg) {
         if (!errEl) return;
@@ -483,9 +484,34 @@
         }
 
         // OK → закрыть confirm modal, открыть "выполняется"
+        confirmDone = true;
         closeModalLocal(confirmModal);
         openModalLocal(processingModal);
       }
+
+      async function handleConfirmModalClose() {
+        if (confirmDone) return;
+        if (token) {
+          try {
+            await postJSON("/api/withdraw/cancel", { token });
+          } catch (_) {}
+        }
+        token = null;
+        if (codeInput) codeInput.value = "";
+        if (resendBtn && typeof window.clearResendCooldown === "function") {
+          window.clearResendCooldown(resendBtn, L("Получить код повторно", "Resend code"));
+        } else if (resendBtn) {
+          resendBtn.disabled = true;
+        }
+        currentSlot = null;
+        setError("");
+        if (selEmail && selEmail.options.length) selEmail.selectedIndex = 0;
+        if (getCodeBtn) getCodeBtn.disabled = false;
+        if (confirmBtn) confirmBtn.disabled = true;
+        closeModalLocal(confirmModal);
+      }
+
+      confirmModal._withdrawCloseHandler = handleConfirmModalClose;
 
       // init UI
       if (confirmModal) openModalLocal(confirmModal);
@@ -510,6 +536,9 @@
         selEmail.addEventListener("change", () => {
           currentSlot = Number(selEmail.value);
           token = null;
+          if (codeInput) codeInput.value = "";
+          if (confirmBtn) confirmBtn.disabled = true;
+          setError(L("Нажмите «Получить код» для отправки на выбранную почту.", "Press «Get code» to send to the selected email."));
           if (resendBtn && typeof window.clearResendCooldown === "function") {
             window.clearResendCooldown(resendBtn, L("Получить код повторно", "Resend code"));
           } else if (resendBtn) {
@@ -527,9 +556,58 @@
       loadEmailOptions();
     }
 
+    function setupWithdrawConfirmCloseInterceptor() {
+      const confirmModal = document.getElementById("withdrawConfirmModal");
+      if (!confirmModal) return;
+
+      document.addEventListener(
+        "click",
+        (e) => {
+          const closeTarget = e.target.closest("[data-modal-close]");
+          if (!closeTarget) return;
+          const modal = closeTarget.closest(".modal");
+          if (modal !== confirmModal) return;
+          if (!confirmModal.classList.contains("is-open")) return;
+
+          e.stopImmediatePropagation();
+          const handler = confirmModal._withdrawCloseHandler;
+          if (typeof handler === "function") {
+            handler();
+          } else {
+            confirmModal.classList.remove("is-open");
+            confirmModal.setAttribute("aria-hidden", "true");
+            document.body.style.overflow = "";
+          }
+        },
+        true
+      );
+
+      document.addEventListener(
+        "keydown",
+        (e) => {
+          if (e.key !== "Escape") return;
+          if (!confirmModal.classList.contains("is-open")) return;
+          const opened = document.querySelector(".modal.is-open");
+          if (opened !== confirmModal) return;
+
+          e.stopImmediatePropagation();
+          const handler = confirmModal._withdrawCloseHandler;
+          if (typeof handler === "function") {
+            handler();
+          } else {
+            confirmModal.classList.remove("is-open");
+            confirmModal.setAttribute("aria-hidden", "true");
+            document.body.style.overflow = "";
+          }
+        },
+        true
+      );
+    }
+
     document.addEventListener("DOMContentLoaded", () => {
       initDepositModal();
       initWithdrawModal();
+      setupWithdrawConfirmCloseInterceptor();
     });
   })();
   

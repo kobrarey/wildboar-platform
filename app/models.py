@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import (
-    Column, Integer, BigInteger, String, Text, Boolean,
+    Column, Integer, BigInteger, SmallInteger, String, Text, Boolean,
     DateTime, Date, ForeignKey, Numeric,
     UniqueConstraint,
 )
@@ -42,6 +42,19 @@ class User(Base):
     )
     compliance_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     compliance_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class SecurityCode(Base):
+    __tablename__ = "security_codes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    purpose: Mapped[str] = mapped_column(String(32), nullable=False)
+    code: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    is_used: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    attempts: Mapped[int] = mapped_column(SmallInteger, nullable=False, default=0)
 
 
 class SessionModel(Base):

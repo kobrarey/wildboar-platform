@@ -155,6 +155,10 @@ def db_mark_failed(db, tr: WalletTransfer, msg: str):
     tr.error = (msg or "")[:800]
 
 
+def db_set_processing_error(db, tr: WalletTransfer, msg: str):
+    tr.error = (msg or "")[:800]
+
+
 def db_mark_success(db, tr: WalletTransfer, tx_time: datetime | None, payout_block: int | None):
     tr.status = "success"
     tr.confirmed_at = utcnow()
@@ -277,10 +281,16 @@ def process_one(tr_id: int):
                     "gasPrice": gas_price,
                     "nonce": nonce_fee,
                 }
-                txh = sign_and_send_raw(w3, fee_priv, tx)
-                tr.gas_tx_hash = txh
-                db.commit()
-                return  # receipt will be checked next loop
+                try:
+                    txh = sign_and_send_raw(w3, fee_priv, tx)
+                    tr.gas_tx_hash = txh
+                    tr.error = None
+                    db.commit()
+                    return
+                except Exception as e:
+                    db_set_processing_error(db, tr, f"gas_tx_send_error: {e}")
+                    db.commit()
+                    return
 
         # ---------- Step 2: payout (net) ----------
         if tr.tx_hash:
@@ -321,10 +331,16 @@ def process_one(tr_id: int):
                 "nonce": nonce_user,
                 "data": data,
             }
-            txh = sign_and_send_raw(w3, user_priv, tx)
-            tr.tx_hash = txh
-            db.commit()
-            return
+            try:
+                txh = sign_and_send_raw(w3, user_priv, tx)
+                tr.tx_hash = txh
+                tr.error = None
+                db.commit()
+                return
+            except Exception as e:
+                db_set_processing_error(db, tr, f"payout_tx_send_error: {e}")
+                db.commit()
+                return
 
         # ---------- Step 3: fee tx (1 USDT) ----------
         if tr.fee_tx_hash:
@@ -364,10 +380,16 @@ def process_one(tr_id: int):
                 "nonce": nonce_user,
                 "data": data,
             }
-            txh = sign_and_send_raw(w3, user_priv, tx)
-            tr.fee_tx_hash = txh
-            db.commit()
-            return
+            try:
+                txh = sign_and_send_raw(w3, user_priv, tx)
+                tr.fee_tx_hash = txh
+                tr.error = None
+                db.commit()
+                return
+            except Exception as e:
+                db_set_processing_error(db, tr, f"fee_tx_send_error: {e}")
+                db.commit()
+                return
 
         # ---------- Step 4: finalize ----------
         # payout receipt -> tx_time
