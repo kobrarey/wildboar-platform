@@ -430,17 +430,41 @@ def withdraw_cancel(
         .first()
     )
 
+    # Если сессии уже нет / истекла / использована — просто ok
     if not s:
         return {"status": "ok"}
-
     if s.used_at is not None:
         return {"status": "ok"}
-
     if s.expires_at < utcnow():
         return {"status": "ok"}
 
+    # Определяем email по slot
+    email_value = None
+    if s.email_slot == 1:
+        email_value = user.email
+    elif s.email_slot == 2:
+        email_value = user.backup_email
+
+    # Удаляем все активные withdraw-коды,
+    # чтобы не оставался cooldown-хвост
+    codes_q = db.query(SecurityCode).filter(
+        SecurityCode.user_id == user.id,
+        SecurityCode.purpose == "withdraw",
+        SecurityCode.is_used == False,
+        SecurityCode.expires_at > utcnow(),
+    )
+    # Если в SecurityCode есть поле email — фильтруем по нему
+    if hasattr(SecurityCode, "email") and email_value:
+        codes_q = codes_q.filter(SecurityCode.email == email_value)
+
+    active_codes = codes_q.all()
+    for c in active_codes:
+        db.delete(c)
+
+    # Удаляем саму withdraw_session
     db.delete(s)
     db.commit()
+
     return {"status": "ok"}
 
 

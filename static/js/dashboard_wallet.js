@@ -285,7 +285,7 @@
             document.body.style.overflow = "hidden";
           }
 
-          startWithdrawConfirmFlow({ to_address, amount_gross });
+          openWithdrawConfirmModal({ to_address, amount_gross });
         });
       }
   
@@ -294,33 +294,36 @@
       updateReceiveAndValidation();
     }
 
-    function startWithdrawConfirmFlow({ to_address, amount_gross }) {
+    const withdrawState = {
+      token: null,
+      toAddress: null,
+      amountGross: null,
+      amountNet: null,
+      emailSlot: null,
+      codeSent: false,
+      cooldownUntil: null,
+      requestSeq: 0,
+      confirmDone: false,
+      emailOptions: null,
+    };
+
+    function initWithdrawConfirmModal() {
       const confirmModal = document.getElementById("withdrawConfirmModal");
       const processingModal = document.getElementById("withdrawProcessingModal");
-
       const elAddr = document.getElementById("w2Address");
       const elAmt = document.getElementById("w2AmountNet");
-
       const selEmail = document.getElementById("w2EmailSelect");
       const elEmailText = document.getElementById("w2EmailText");
       const getCodeBtn = document.getElementById("w2GetCodeBtn");
-
       const codeInput = document.getElementById("w2Code");
       const resendBtn = document.getElementById("w2ResendBtn");
       const errEl = document.getElementById("w2Error");
       const confirmBtn = document.getElementById("w2ConfirmBtn");
 
-      const lang = (document.documentElement.lang || "ru").toLowerCase();
-      const L = (ru, en) => (lang === "en" ? en : ru);
-
-      let token = null;
-      let currentSlot = null;
-      let requestSeq = 0;
-      let confirmDone = false;
+      if (!confirmModal) return;
 
       function setError(msg) {
-        if (!errEl) return;
-        errEl.textContent = msg || "";
+        if (errEl) errEl.textContent = msg || "";
       }
 
       function openModalLocal(m) {
@@ -366,97 +369,56 @@
         return { ok: r.ok, data };
       }
 
-      function renderSummary(amountNet) {
-        if (elAddr) elAddr.value = to_address;
-        if (elAmt) elAmt.value = `${Number(amountNet).toFixed(2)} USDT`;
-      }
-
-      async function loadEmailOptions() {
-        setError("");
-        if (resendBtn) resendBtn.disabled = true;
-
-        const seq = ++requestSeq;
-
-        const { ok: okOpt, data: opt } = await getJSON("/api/withdraw/email-options");
-        if (seq !== requestSeq) return;
-
-        if (!okOpt || !opt || !Array.isArray(opt.options)) {
-          setError(L("Не удалось загрузить варианты почты.", "Failed to load email options."));
-          return;
-        }
-
-        const options = opt.options;
-        const def = opt.default_slot;
-
-        if (options.length >= 2) {
-          if (selEmail) {
-            selEmail.classList.remove("hidden");
-            selEmail.innerHTML = "";
-            options.forEach((o) => {
-              const op = document.createElement("option");
-              op.value = String(o.slot);
-              op.textContent = o.email || o.email_masked || `slot ${o.slot}`;
-              selEmail.appendChild(op);
-            });
-            currentSlot = currentSlot || def || options[0].slot;
-            selEmail.value = String(currentSlot);
-          }
-          if (elEmailText) elEmailText.classList.add("hidden");
-        } else {
-          if (selEmail) selEmail.classList.add("hidden");
-          if (elEmailText) {
-            elEmailText.classList.remove("hidden");
-            elEmailText.value = options[0]?.email || options[0]?.email_masked || "—";
-          }
-          currentSlot = def || (options[0] ? options[0].slot : 1);
-        }
-
-        if (getCodeBtn) getCodeBtn.disabled = false;
+      function renderSummary() {
+        if (elAddr && withdrawState.toAddress) elAddr.value = withdrawState.toAddress;
+        if (elAmt && withdrawState.amountNet != null) elAmt.value = `${Number(withdrawState.amountNet).toFixed(2)} USDT`;
       }
 
       async function requestCode() {
         setError("");
         if (getCodeBtn) getCodeBtn.disabled = true;
 
-        const amountGrossStr = Number(amount_gross).toFixed(2);
-        const slotToUse = Number(currentSlot || 1);
+        const amountGrossStr = Number(withdrawState.amountGross).toFixed(2);
+        const slotToUse = Number(withdrawState.emailSlot || 1);
 
         const { ok, data } = await postJSON("/api/withdraw/request-code", {
-          to_address,
+          to_address: withdrawState.toAddress,
           amount_gross: amountGrossStr,
           email_slot: slotToUse,
         });
 
         if (!ok || !data || data.status !== "ok") {
           if (getCodeBtn) getCodeBtn.disabled = false;
-          const msg = data && data.message;
+          const msg = data?.message;
           if (!msg || (!msg.includes("minute") && !msg.includes("минут") && !msg.includes("раз"))) {
             setError(msg || L("Не удалось отправить код.", "Failed to send code."));
           }
           return;
         }
 
-        token = data.token;
-        currentSlot = data.email_slot;
+        withdrawState.token = data.token;
+        withdrawState.emailSlot = data.email_slot;
+        withdrawState.codeSent = true;
 
-        renderSummary(Number(data.amount_net || (amount_gross - 1)));
+        withdrawState.amountNet = Number(data.amount_net ?? (withdrawState.amountGross - 1));
+        renderSummary();
         if (codeInput) codeInput.value = "";
         if (confirmBtn) confirmBtn.disabled = true;
 
-        if (resendBtn) startCooldownOnButton();
+        startCooldownOnButton();
       }
 
       async function resendCode() {
-        if (!token) return;
+        if (!withdrawState.token) return;
         if (resendBtn?.disabled) return;
         setError("");
         if (resendBtn) resendBtn.disabled = true;
 
-        const { ok, data } = await postJSON("/api/withdraw/resend-code", { token });
+        const { ok, data } = await postJSON("/api/withdraw/resend-code", { token: withdrawState.token });
 
         if (!ok || !data || data.status !== "ok") {
           if (resendBtn) resendBtn.disabled = false;
-          const msg = data && data.message;
+          const msg = data?.message;
           if (!msg || (!msg.includes("minute") && !msg.includes("минут") && !msg.includes("раз"))) {
             setError(msg || L("Не удалось отправить код повторно.", "Failed to resend code."));
           }
@@ -467,45 +429,49 @@
       }
 
       async function confirmWithdraw() {
-        if (!token) return;
+        if (!withdrawState.token) return;
         if (!isValidCode()) return;
 
         setError("");
-        confirmBtn.disabled = true;
+        if (confirmBtn) confirmBtn.disabled = true;
 
-        const code = codeInput.value.trim();
-        const { ok, data } = await postJSON("/api/withdraw/confirm", { token, code });
+        const code = codeInput?.value?.trim() || "";
+        const { ok, data } = await postJSON("/api/withdraw/confirm", { token: withdrawState.token, code });
 
-        confirmBtn.disabled = false;
+        if (confirmBtn) confirmBtn.disabled = false;
 
         if (!ok || !data || data.status === "error") {
-          setError((data && data.message) || L("Ошибка подтверждения.", "Confirmation error."));
+          setError((data?.message) || L("Ошибка подтверждения.", "Confirmation error."));
           return;
         }
 
-        // OK → закрыть confirm modal, открыть "выполняется"
-        confirmDone = true;
+        withdrawState.confirmDone = true;
         closeModalLocal(confirmModal);
         openModalLocal(processingModal);
       }
 
       async function handleConfirmModalClose() {
-        if (confirmDone) return;
-        if (token) {
+        if (withdrawState.confirmDone) return;
+
+        if (withdrawState.token) {
           try {
-            await postJSON("/api/withdraw/cancel", { token });
-          } catch (_) {}
+            await postJSON("/api/withdraw/cancel", { token: withdrawState.token });
+          } catch (e) {
+            console.warn("withdraw/cancel failed (network?), resetting UI anyway:", e);
+          }
         }
-        token = null;
+
+        withdrawState.token = null;
+        withdrawState.codeSent = false;
+        withdrawState.emailSlot = null;
         if (codeInput) codeInput.value = "";
         if (resendBtn && typeof window.clearResendCooldown === "function") {
           window.clearResendCooldown(resendBtn, L("Получить код повторно", "Resend code"));
         } else if (resendBtn) {
           resendBtn.disabled = true;
         }
-        currentSlot = null;
         setError("");
-        if (selEmail && selEmail.options.length) selEmail.selectedIndex = 0;
+        if (selEmail && selEmail.options?.length) selEmail.selectedIndex = 0;
         if (getCodeBtn) getCodeBtn.disabled = false;
         if (confirmBtn) confirmBtn.disabled = true;
         closeModalLocal(confirmModal);
@@ -513,15 +479,9 @@
 
       confirmModal._withdrawCloseHandler = handleConfirmModalClose;
 
-      // init UI
-      if (confirmModal) openModalLocal(confirmModal);
-      if (elAddr) elAddr.value = to_address;
-      renderSummary(Math.max(amount_gross - 1, 0));
-
-      // listeners
       if (codeInput) {
         codeInput.addEventListener("input", () => {
-          confirmBtn.disabled = !isValidCode();
+          if (confirmBtn) confirmBtn.disabled = !isValidCode();
         });
       }
       if (resendBtn) {
@@ -530,12 +490,14 @@
           resendCode();
         });
       }
-      if (confirmBtn) confirmBtn.addEventListener("click", confirmWithdraw);
-
+      if (confirmBtn) {
+        confirmBtn.addEventListener("click", confirmWithdraw);
+      }
       if (selEmail) {
         selEmail.addEventListener("change", () => {
-          currentSlot = Number(selEmail.value);
-          token = null;
+          withdrawState.emailSlot = Number(selEmail.value);
+          withdrawState.token = null;
+          withdrawState.codeSent = false;
           if (codeInput) codeInput.value = "";
           if (confirmBtn) confirmBtn.disabled = true;
           setError(L("Нажмите «Получить код» для отправки на выбранную почту.", "Press «Get code» to send to the selected email."));
@@ -547,13 +509,102 @@
           if (getCodeBtn) getCodeBtn.disabled = false;
         });
       }
-
       if (getCodeBtn) {
         getCodeBtn.addEventListener("click", requestCode);
       }
+    }
 
-      // старт: только загрузка email options, код НЕ отправляется автоматически
-      loadEmailOptions();
+    function openWithdrawConfirmModal({ to_address, amount_gross }) {
+      const confirmModal = document.getElementById("withdrawConfirmModal");
+      const processingModal = document.getElementById("withdrawProcessingModal");
+      const elAddr = document.getElementById("w2Address");
+      const elAmt = document.getElementById("w2AmountNet");
+      const codeInput = document.getElementById("w2Code");
+      const resendBtn = document.getElementById("w2ResendBtn");
+      const errEl = document.getElementById("w2Error");
+      const getCodeBtn = document.getElementById("w2GetCodeBtn");
+      const confirmBtn = document.getElementById("w2ConfirmBtn");
+      const selEmail = document.getElementById("w2EmailSelect");
+
+      withdrawState.token = null;
+      withdrawState.toAddress = to_address;
+      withdrawState.amountGross = amount_gross;
+      withdrawState.amountNet = Math.max(amount_gross - 1, 0);
+      withdrawState.emailSlot = null;
+      withdrawState.codeSent = false;
+      withdrawState.confirmDone = false;
+
+      if (codeInput) codeInput.value = "";
+      if (errEl) errEl.textContent = "";
+      if (resendBtn && typeof window.clearResendCooldown === "function") {
+        window.clearResendCooldown(resendBtn, L("Получить код повторно", "Resend code"));
+      } else if (resendBtn) {
+        resendBtn.disabled = true;
+      }
+      if (getCodeBtn) getCodeBtn.disabled = false;
+      if (confirmBtn) confirmBtn.disabled = true;
+
+      if (elAddr) elAddr.value = to_address;
+      if (elAmt) elAmt.value = `${withdrawState.amountNet.toFixed(2)} USDT`;
+
+      loadEmailOptionsForConfirm();
+
+      if (confirmModal) {
+        confirmModal.classList.add("is-open");
+        confirmModal.setAttribute("aria-hidden", "false");
+        document.body.style.overflow = "hidden";
+      }
+    }
+
+    async function loadEmailOptionsForConfirm() {
+      const selEmail = document.getElementById("w2EmailSelect");
+      const elEmailText = document.getElementById("w2EmailText");
+      const getCodeBtn = document.getElementById("w2GetCodeBtn");
+      const resendBtn = document.getElementById("w2ResendBtn");
+      const errEl = document.getElementById("w2Error");
+
+      if (errEl) errEl.textContent = "";
+      if (resendBtn) resendBtn.disabled = true;
+
+      const seq = ++withdrawState.requestSeq;
+
+      try {
+        const r = await fetch("/api/withdraw/email-options", { method: "GET", credentials: "same-origin" });
+        const opt = await r.json().catch(() => null);
+        if (seq !== withdrawState.requestSeq) return;
+
+        if (!r.ok || !opt || !Array.isArray(opt.options)) {
+          if (errEl) errEl.textContent = L("Не удалось загрузить варианты почты.", "Failed to load email options.");
+          return;
+        }
+
+        withdrawState.emailOptions = opt.options;
+        const def = opt.default_slot;
+        withdrawState.emailSlot = def ?? (opt.options[0]?.slot ?? 1);
+
+        if (opt.options.length >= 2 && selEmail) {
+          selEmail.classList.remove("hidden");
+          selEmail.innerHTML = "";
+          opt.options.forEach((o) => {
+            const op = document.createElement("option");
+            op.value = String(o.slot);
+            op.textContent = o.email || o.email_masked || `slot ${o.slot}`;
+            selEmail.appendChild(op);
+          });
+          selEmail.value = String(withdrawState.emailSlot);
+          if (elEmailText) elEmailText.classList.add("hidden");
+        } else {
+          if (selEmail) selEmail.classList.add("hidden");
+          if (elEmailText) {
+            elEmailText.classList.remove("hidden");
+            elEmailText.value = opt.options[0]?.email || opt.options[0]?.email_masked || "—";
+          }
+        }
+
+        if (getCodeBtn) getCodeBtn.disabled = false;
+      } catch (_) {
+        if (errEl) errEl.textContent = L("Не удалось загрузить варианты почты.", "Failed to load email options.");
+      }
     }
 
     function setupWithdrawConfirmCloseInterceptor() {
@@ -607,6 +658,7 @@
     document.addEventListener("DOMContentLoaded", () => {
       initDepositModal();
       initWithdrawModal();
+      initWithdrawConfirmModal();
       setupWithdrawConfirmCloseInterceptor();
     });
   })();
