@@ -75,10 +75,14 @@
         <span class="account-type-badge">
           {% if account_type == 'vip' %}
             VIP
-          {% elif account_type == 'employee' %}
-            {% if lang == 'en' %}Staff{% else %}Сотрудник{% endif %}
           {% elif account_type == 'manager' %}
             {% if lang == 'en' %}Manager{% else %}Руководитель{% endif %}
+          {% elif account_type == 'employee' %}
+            {% if lang == 'en' %}Staff{% else %}Сотрудник{% endif %}
+          {% elif account_type == 'employee2' %}
+            {% if lang == 'en' %}Staff 2{% else %}Сотрудник 2{% endif %}
+          {% elif account_type == 'ai_agent' %}
+            {% if lang == 'en' %}AI Agent{% else %}AI агент{% endif %}
           {% else %}
             {% if lang == 'en' %}Basic{% else %}Базовый{% endif %}
           {% endif %}
@@ -145,7 +149,15 @@
           <div class="card__body stablecoin-card">
             <div class="stablecoin-card__content">
               <div class="stablecoin-balance">
-                <span class="p-label">{{ portfolio.stable_symbol or 'USDT' }}</span>
+                <div class="fund-name-with-icon">
+                  <img
+                    class="asset-icon asset-icon--usdt"
+                    src="/static/img/funds/{{ stablecoin_icon_name|default('usdt.svg', true) }}"
+                    alt="USDT"
+                    loading="lazy"
+                  />
+                  <span>{{ portfolio.stable_symbol or 'USDT' }}</span>
+                </div>
                 <span class="stablecoin-value">
                   {{ '%.2f'|format((usdt_balance_total|default(portfolio.stable_balance|default(0), true))|float) }}
                 </span>
@@ -229,7 +241,17 @@
 
             {% for f in active_funds %}
             <div class="fund-row">
-              <span class="col-name">{{ f.name }}</span>
+              <span class="col-name">
+                <div class="fund-name-with-icon">
+                  <img
+                    class="asset-icon"
+                    src="/static/img/funds/{{ f.icon_name|default('fund-default.svg', true) }}"
+                    alt=""
+                    loading="lazy"
+                  />
+                  <span class="fund-name-text">{{ f.name }}</span>
+                </div>
+              </span>
               <span class="col-price">{{ '%.2f'|format(f.price or 0) }} USDT</span>
               <span class="col-qty">{{ '%.4f'|format(f.shares or 0) }}</span>
               <span class="col-value">{{ '%.2f'|format(f.value or 0) }} USDT</span>
@@ -263,7 +285,17 @@
 
             {% for f in index_funds %}
             <div class="fund-row">
-              <span class="col-name">{{ f.name }}</span>
+              <span class="col-name">
+                <div class="fund-name-with-icon">
+                  <img
+                    class="asset-icon"
+                    src="/static/img/funds/{{ f.icon_name|default('fund-default.svg', true) }}"
+                    alt=""
+                    loading="lazy"
+                  />
+                  <span class="fund-name-text">{{ f.name }}</span>
+                </div>
+              </span>
               <span class="col-price">{{ '%.2f'|format(f.price or 0) }} USDT</span>
               <span class="col-qty">{{ '%.4f'|format(f.shares or 0) }}</span>
               <span class="col-value">{{ '%.2f'|format(f.value or 0) }} USDT</span>
@@ -297,7 +329,17 @@
 
             {% for f in test_funds %}
             <div class="fund-row">
-              <span class="col-name">{{ f.name }}</span>
+              <span class="col-name">
+                <div class="fund-name-with-icon">
+                  <img
+                    class="asset-icon"
+                    src="/static/img/funds/{{ f.icon_name|default('fund-default.svg', true) }}"
+                    alt=""
+                    loading="lazy"
+                  />
+                  <span class="fund-name-text">{{ f.name }}</span>
+                </div>
+              </span>
               <span class="col-price">{{ '%.2f'|format(f.price or 0) }} USDT</span>
               <span class="col-qty">{{ '%.4f'|format(f.shares or 0) }}</span>
               <span class="col-value">{{ '%.2f'|format(f.value or 0) }} USDT</span>

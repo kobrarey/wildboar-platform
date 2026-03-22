@@ -81,6 +81,7 @@ def dashboard(
             "lang": lang,
             "account_type": user.account_type,
             "portfolio": portfolio,
+            "stablecoin_icon_name": portfolio.get("stablecoin_icon_name", "usdt.svg"),
             "user_usdt_address": user_usdt_address,
             "usdt_balance": usdt_balance,
             "deposit_qr_svg": deposit_qr_svg,

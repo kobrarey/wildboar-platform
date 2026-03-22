@@ -91,7 +91,8 @@ def run_check_once():
 
         if usd_val < thr:
             send_telegram(
-                f"⚠️ Fee wallet ({label}) BNB balance below ${thr} (≈ ${usd_val:.2f})."
+                f"⚠️ Fee wallet ({label}) BNB balance below ${thr} (≈ ${usd_val:.2f}).\n"
+                f"Address: {addr}"
             )
 
 

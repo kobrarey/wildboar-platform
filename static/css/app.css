@@ -833,7 +833,7 @@ body.sidebar-collapsed .sidebar__logout-icon{
 
 .stablecoin-balance {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
 }
 
@@ -892,6 +892,18 @@ body.sidebar-collapsed .sidebar__logout-icon{
 .fund-row{
   padding:12px 0;
   border-bottom:1px solid rgba(0,0,0,.06);
+}
+
+.fund-name-with-icon{
+  display:flex;
+  align-items:center;
+  gap:8px;
+}
+
+.fund-name-with-icon .asset-icon{
+  width:24px;
+  height:24px;
+  flex-shrink:0;
 }
 
 .col-price, .col-qty, .col-value {
@@ -1377,4 +1389,31 @@ body.sidebar-collapsed .sidebar__logout-icon{
   font-weight: 700;
   font-size: 16px;
   line-height: 1.35;
+}
+
+.asset-icon{
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  flex: 0 0 26px;
+  display: block;
+}
+
+.fund-name-with-icon{
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  line-height: 1;
+}
+
+.fund-name-text{
+  display: inline-block;
+  white-space: nowrap;
+}
+
+/* optional: чуть меньше в USDT блоке, если тесно */
+.asset-icon--usdt{
+  width: 24px;
+  height: 24px;
+  flex-basis: 24px;
 }

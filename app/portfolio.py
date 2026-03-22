@@ -10,6 +10,15 @@ from app.models import (
     User, Fund, FundNavMinute, UserFundPosition, UserPortfolioDaily, UserWallet
 )
 
+FUND_ICON_MAP = {
+    "defi_sniper": "fund-defi-sniper.svg",
+    "btc_fund": "fund-btc.svg",
+    "wb10": "fund-wb10.svg",
+    "wb_defi": "fund-wb-defi.svg",
+    "wb_web3": "fund-wb-web3.svg",
+    "wb_test": "fund-test.svg",
+}
+
 
 def get_user_portfolio(db: Session, user: User, lang: str) -> dict:
     # 1) USDT-баланс из user_wallets
@@ -97,6 +106,9 @@ def get_user_portfolio(db: Session, user: User, lang: str) -> dict:
 
         name = fund.name_ru if lang == "ru" else fund.name_en
 
+        fund_code = (fund.code or "").strip().lower()
+        icon_name = FUND_ICON_MAP.get(fund_code, "fund-default.svg")
+
         funds_payload.append(
             {
                 "id": fund.id,
@@ -106,6 +118,7 @@ def get_user_portfolio(db: Session, user: User, lang: str) -> dict:
                 "price": price,
                 "shares": shares,
                 "value": value,
+                "icon_name": icon_name,
             }
         )
 
@@ -135,6 +148,7 @@ def get_user_portfolio(db: Session, user: User, lang: str) -> dict:
         "daily_change_pct": daily_change_pct,
         "stable_balance": stable_balance,
         "stable_symbol": "USDT",
+        "stablecoin_icon_name": "usdt.svg",
         "usdt_balance_total": usdt_total,
         "usdt_balance_available": usdt_available,
         "funds": funds_payload,

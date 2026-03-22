@@ -77,13 +77,17 @@
         <div class="user-header">
           <span class="account-type-badge">
             {% if account_type == 'vip' %}
-              VIP
-            {% elif account_type == 'employee' %}
-              {% if lang == 'en' %}Staff{% else %}Сотрудник{% endif %}
+              {{ 'VIP' if lang == 'en' else 'VIP' }}
             {% elif account_type == 'manager' %}
-              {% if lang == 'en' %}Manager{% else %}Руководитель{% endif %}
+              {{ 'Manager' if lang == 'en' else 'Управляющий' }}
+            {% elif account_type == 'employee' %}
+              {{ 'Staff' if lang == 'en' else 'Сотрудник' }}
+            {% elif account_type == 'employee2' %}
+              {{ 'Staff 2' if lang == 'en' else 'Сотрудник 2' }}
+            {% elif account_type == 'ai_agent' %}
+              {{ 'AI Agent' if lang == 'en' else 'AI агент' }}
             {% else %}
-              {% if lang == 'en' %}Basic{% else %}Базовый{% endif %}
+              {{ 'Basic' if lang == 'en' else 'Базовый' }}
             {% endif %}
           </span>
 

@@ -2,12 +2,12 @@
 -- PostgreSQL database dump
 --
 
-\restrict Rry0J6ciHpuxA3ZZrRXkmf6sdFVpX9OSwcQDiXVwNSbLabgv3lVPamBC5VgJHQc
+\restrict 6n6XmL4r7hIISlGol6nWd6WFHVOoZQuXSe2d36z1nXYMIGkDJtIw00s4T8r69W1
 
 -- Dumped from database version 16.11
 -- Dumped by pg_dump version 16.11
 
--- Started on 2026-03-12 20:18:01
+-- Started on 2026-03-22 17:23:32
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -323,7 +323,7 @@ CREATE TABLE public.users (
     compliance_status character varying(32) DEFAULT 'ok'::character varying NOT NULL,
     compliance_reason text,
     compliance_updated_at timestamp with time zone,
-    CONSTRAINT users_account_type_check CHECK (((account_type)::text = ANY (ARRAY[('basic'::character varying)::text, ('vip'::character varying)::text, ('employee'::character varying)::text, ('manager'::character varying)::text]))),
+    CONSTRAINT users_account_type_check CHECK (((account_type)::text = ANY ((ARRAY['basic'::character varying, 'vip'::character varying, 'manager'::character varying, 'employee'::character varying, 'employee2'::character varying, 'ai_agent'::character varying])::text[]))),
     CONSTRAINT users_compliance_status_check CHECK (((compliance_status)::text = ANY (ARRAY[('ok'::character varying)::text, ('blocked'::character varying)::text, ('pending_check'::character varying)::text])))
 );
 
@@ -957,11 +957,11 @@ ALTER TABLE ONLY public.withdraw_sessions
     ADD CONSTRAINT withdraw_sessions_wallet_id_fkey FOREIGN KEY (wallet_id) REFERENCES public.user_wallets(id) ON DELETE CASCADE;
 
 
--- Completed on 2026-03-12 20:18:01
+-- Completed on 2026-03-22 17:23:32
 
 --
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Rry0J6ciHpuxA3ZZrRXkmf6sdFVpX9OSwcQDiXVwNSbLabgv3lVPamBC5VgJHQc
+\unrestrict 6n6XmL4r7hIISlGol6nWd6WFHVOoZQuXSe2d36z1nXYMIGkDJtIw00s4T8r69W1
 

@@ -29,6 +29,7 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
     is_email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     two_factor_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # basic | vip | manager | employee | employee2 | ai_agent
     account_type: Mapped[str] = mapped_column(String(16), nullable=False, default="basic")
 
     backup_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
