@@ -293,9 +293,9 @@
 {% set chg = f.change_24h_pct %}
 <a class="term-drawer__row"
    href="/terminal/{{ f.fund_code }}"
-             data-name="{{ (f.short_name|default(f.name|default(f.code, true), true))|lower }}">
+             data-name="{{ (f.short_name|default(f.fund_code, true))|lower }}">
             <img class="term-row-icon" src="/static/img/funds/{{ f.icon_name|default('fund-default.svg', true) }}" alt="" />
-            <div class="term-row-name">{{ f.short_name|default(f.name|default(f.code, true), true) }}</div>
+            <div class="term-row-name">{{ f.short_name|default(f.fund_code, true) }}</div>
             <div class="term-row-price">{{ fmt2(f.current_price_usdt) }} USDT</div>
             <div class="term-row-chg {{ 'pos' if (chg or 0) > 0 else ('neg' if (chg or 0) < 0 else '') }}">
               {% if chg is none %}-{% else %}{{ '%+.2f'|format(chg) }}%{% endif %}
