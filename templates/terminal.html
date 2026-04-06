@@ -1,0 +1,291 @@
+<!doctype html>
+<html lang="{{ 'en' if lang == 'en' else 'ru' }}">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WildBoar — {{ current_fund.short_name if current_fund and current_fund.short_name else 'Terminal' }}</title>
+
+  <link rel="stylesheet" href="/static/css/app.css?v=terminal_base1" />
+  <link rel="stylesheet" href="/static/css/terminal.css?v=terminal1" />
+
+  <script defer src="/static/js/app.js?v=5_2"></script>
+  <script defer src="/static/js/terminal.js?v=terminal1"></script>
+</head>
+
+<body class="page page--terminal" data-theme="{{ current_theme|default('light', true) }}">
+  {% macro fmt2(x) -%}{{ '%.2f'|format(x or 0) }}{%- endmacro %}
+  {% macro fmt4(x) -%}{{ '%.4f'|format(x or 0) }}{%- endmacro %}
+
+  <!-- Top row -->
+  <div class="term-top">
+    <div class="term-top__right">
+      {% if is_authenticated %}
+        <a class="term-pill" href="/dashboard">{{ 'Личный кабинет' if lang=='ru' else 'Personal account' }}</a>
+      {% else %}
+        <a class="term-pill" href="/">{{ 'Регистрация' if lang=='ru' else 'Register' }}</a>
+      {% endif %}
+
+      <button type="button" class="term-icon-btn" id="termThemeBtn" aria-label="theme"></button>
+
+      <div class="lang-switcher">
+        <button data-lang-toggle class="term-icon-btn" type="button" aria-label="language">🌐</button>
+        <div class="lang-dropdown hidden">
+          <button type="button" data-lang="ru">Русский</button>
+          <button type="button" data-lang="en">English</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Fund infobar -->
+  <div class="term-info">
+    <div class="term-info__left">
+      <button type="button" class="term-burger" id="termBurger" aria-label="menu">
+        <span></span><span></span><span></span>
+      </button>
+
+      <img class="term-fund-icon"
+           src="/static/img/funds/{{ current_fund.icon_name|default('fund-default.svg', true) }}"
+           alt="" />
+
+      <div class="term-fund-name">
+        {{ current_fund.short_name|default(current_fund.name|default('-', true), true) }}
+      </div>
+
+      <div class="term-price">
+        <span class="term-price__value">{{ fmt2(current_fund.price) }}</span>
+        <span class="term-price__ccy">USDT</span>
+      </div>
+    </div>
+
+    <div class="term-info__right">
+      {% set ch = current_fund.change_24h %}
+      <div class="term-metric">
+        <div class="term-metric__label">{{ 'изменение 24ч' if lang=='ru' else '24h change' }}</div>
+        <div class="term-metric__value {{ 'pos' if (ch or 0) > 0 else ('neg' if (ch or 0) < 0 else '') }}">
+          {% if ch is none %}-{% else %}{{ '%+.2f'|format(ch) }}%{% endif %}
+        </div>
+      </div>
+
+      <div class="term-metric">
+        <div class="term-metric__label">{{ '24ч Макс' if lang=='ru' else '24h High' }}</div>
+        <div class="term-metric__value">{{ fmt2(current_fund.high_24h) }}</div>
+      </div>
+
+      <div class="term-metric">
+        <div class="term-metric__label">{{ '24ч Мин' if lang=='ru' else '24h Low' }}</div>
+        <div class="term-metric__value">{{ fmt2(current_fund.low_24h) }}</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Main grid -->
+  <div class="term-grid">
+    <!-- Left: chart + bottom tables -->
+    <div class="term-left">
+      <div class="term-chart-box"></div>
+
+      <div class="term-bottom">
+        <div class="term-bottom__tabs">
+          <button type="button" class="term-subtab is-active" data-term-bottom="history">
+            {{ 'История торговли' if lang=='ru' else 'Trade history' }}
+          </button>
+          <button type="button" class="term-subtab" data-term-bottom="assets">
+            {{ 'Активы' if lang=='ru' else 'Assets' }}
+          </button>
+        </div>
+
+        <!-- history table -->
+        <div class="term-table" data-term-panel="history">
+          <div class="term-thead term-thead--history">
+            <div>{{ 'Название' if lang=='ru' else 'Name' }}</div>
+            <div>{{ 'Направление' if lang=='ru' else 'Side' }}</div>
+            <div class="t-center">{{ 'Стоимость' if lang=='ru' else 'Cost' }}</div>
+            <div class="t-center">{{ 'Цена' if lang=='ru' else 'Price' }}</div>
+            <div class="t-right">{{ 'Время операции' if lang=='ru' else 'Time' }}</div>
+          </div>
+
+          <div class="term-tbody" style="max-height: 190px;">
+            {% if trade_history and (trade_history|length) > 0 %}
+              {% for r in trade_history %}
+                <div class="term-tr term-tr--history">
+                  <div class="t-name">{{ r.name|default('-', true) }}</div>
+                  <div>{{ r.side|default('-', true) }}</div>
+                  <div class="t-center">{{ r.cost|default('-', true) }}</div>
+                  <div class="t-center">{{ r.price|default('-', true) }}</div>
+                  <div class="t-right">{{ r.time|default('-', true) }}</div>
+                </div>
+              {% endfor %}
+            {% else %}
+              <div class="term-empty">{{ 'Пока нет данных.' if lang=='ru' else 'No data yet.' }}</div>
+            {% endif %}
+          </div>
+        </div>
+
+        <!-- assets table -->
+        <div class="term-table hidden" data-term-panel="assets">
+          <div class="term-thead term-thead--assets">
+            <div>{{ 'Название' if lang=='ru' else 'Name' }}</div>
+            <div class="t-center">{{ 'Средняя точка входа' if lang=='ru' else 'Avg entry' }}</div>
+            <div class="t-center">{{ 'Текущая цена' if lang=='ru' else 'Current' }}</div>
+            <div class="t-center">{{ 'Количество паёв' if lang=='ru' else 'Shares' }}</div>
+            <div class="t-center">{{ 'Результат по позиции в %' if lang=='ru' else 'PnL %' }}</div>
+            <div class="t-right">{{ 'Результат по позиции в $' if lang=='ru' else 'PnL $' }}</div>
+          </div>
+
+          <div class="term-tbody" style="max-height: 190px;">
+            {% if asset_rows and (asset_rows|length) > 0 %}
+              {% for a in asset_rows %}
+                <div class="term-tr term-tr--assets">
+                  <div class="t-name">{{ a.name|default('-', true) }}</div>
+                  <div class="t-center">{{ a.avg_entry|default('-', true) }}</div>
+                  <div class="t-center">{{ a.current_price|default('-', true) }}</div>
+                  <div class="t-center">{{ a.shares|default('-', true) }}</div>
+                  <div class="t-center">{{ a.pnl_pct|default('-', true) }}</div>
+                  <div class="t-right">{{ a.pnl_usdt|default('-', true) }}</div>
+                </div>
+              {% endfor %}
+            {% else %}
+              <div class="term-empty">{{ 'Пока нет данных.' if lang=='ru' else 'No data yet.' }}</div>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Right: buy/redeem + fund info -->
+    <div class="term-right">
+      <div class="term-order"
+           data-avail-usdt="{{ form_state.available_usdt|default(0, true) }}"
+           data-avail-shares="{{ form_state.available_shares_current_fund|default(0, true) }}">
+        <div class="term-order__tabs">
+          <button type="button" class="order-tab is-active" data-term-side="buy">
+            {{ 'КУПИТЬ' if lang=='ru' else 'BUY' }}
+          </button>
+          <button type="button" class="order-tab order-tab--red" data-term-side="redeem">
+            {{ 'ПОГАСИТЬ' if lang=='ru' else 'REDEEM' }}
+          </button>
+        </div>
+
+        <!-- BUY -->
+        <div class="order-panel" data-term-side-panel="buy">
+          <div class="order-balance">
+            <div class="order-balance__label">{{ 'Доступный баланс' if lang=='ru' else 'Available balance' }}</div>
+            <div class="order-balance__value">
+              {{ fmt2(form_state.available_usdt) }} <span class="muted">USDT</span>
+              <a class="order-plus" href="/dashboard?open=deposit" title="{{ 'Пополнить' if lang=='ru' else 'Deposit' }}">+</a>
+            </div>
+          </div>
+
+          <div class="order-field">
+            <input id="buyAmount" class="order-input" type="text" placeholder="{{ 'Стоимость' if lang=='ru' else 'Amount' }}" />
+            <div class="order-suffix">USDT</div>
+          </div>
+
+          <div class="order-hint">{{ 'Сделка исполняется в течение суток' if lang=='ru' else 'The order is executed within 24 hours' }}</div>
+          <div class="order-error" id="buyError"></div>
+
+          <button type="button" class="order-btn order-btn--buy" id="buyBtn">
+            {{ 'КУПИТЬ' if lang=='ru' else 'BUY' }}
+          </button>
+          <div class="order-ok" id="buyOk"></div>
+        </div>
+
+        <!-- REDEEM -->
+        <div class="order-panel hidden" data-term-side-panel="redeem">
+          <div class="order-balance">
+            <div class="order-balance__label">{{ 'Доступный баланс' if lang=='ru' else 'Available balance' }}</div>
+            <div class="order-balance__value">
+              {{ fmt4(form_state.available_shares_current_fund) }} <span class="muted">{{ 'паёв' if lang=='ru' else 'shares' }}</span>
+            </div>
+          </div>
+
+          <div class="order-field">
+            <input id="redeemAmount" class="order-input" type="text" placeholder="{{ 'Количество' if lang=='ru' else 'Quantity' }}" />
+            <div class="order-suffix">{{ 'паёв' if lang=='ru' else 'shares' }}</div>
+          </div>
+
+          <div class="order-hint">{{ 'Сделка исполняется в течение суток' if lang=='ru' else 'The order is executed within 24 hours' }}</div>
+          <div class="order-error" id="redeemError"></div>
+
+          <button type="button" class="order-btn order-btn--redeem" id="redeemBtn">
+            {{ 'ПОГАСИТЬ' if lang=='ru' else 'REDEEM' }}
+          </button>
+          <div class="order-ok" id="redeemOk"></div>
+        </div>
+      </div>
+
+      <div class="term-fund-info">
+        <div class="term-fund-info__title">{{ fund_info.full_name|default('-', true) }}</div>
+
+        <div class="term-kv">
+          <div class="term-kv__row"><span>AUM</span>
+            <span>
+              {% if fund_info.aum_usdt is not none %}
+                {{ (fund_info.aum_usdt|round(0,'common'))|int }} USDT
+              {% else %}-{% endif %}
+            </span>
+          </div>
+
+          <div class="term-kv__row"><span>{{ 'Количество паёв в обращении' if lang=='ru' else 'Shares outstanding' }}</span>
+            <span>
+              {% if fund_info.shares_outstanding is not none %}
+                {{ (fund_info.shares_outstanding|round(0,'common'))|int }}
+              {% else %}-{% endif %}
+            </span>
+          </div>
+
+          <div class="term-kv__row"><span>{{ 'Дата запуска' if lang=='ru' else 'Launch date' }}</span>
+            <span>
+              {% if fund_info.launch_date %}{{ fund_info.launch_date.strftime('%d.%m.%Y') }}{% else %}-{% endif %}
+            </span>
+          </div>
+
+          <div class="term-kv__row"><span>{{ 'Бенчмарк' if lang=='ru' else 'Benchmark' }}</span>
+            <span>{{ fund_info.benchmark|default('-', true) }}</span>
+          </div>
+
+          <div class="term-kv__row"><span>{{ 'Комиссия за управление' if lang=='ru' else 'Management fee' }}</span>
+            <span>
+              {% if fund_info.management_fee_pct is not none %}{{ fmt2(fund_info.management_fee_pct) }}%{% else %}-{% endif %}
+            </span>
+          </div>
+
+          <div class="term-kv__row"><span>{{ 'Комиссия за успех' if lang=='ru' else 'Performance fee' }}</span>
+            <span>
+              {% if fund_info.performance_fee_pct is not none %}{{ fmt2(fund_info.performance_fee_pct) }}%{% else %}-{% endif %}
+            </span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Drawer -->
+  <div class="term-drawer" id="termDrawer" aria-hidden="true">
+    <div class="term-drawer__overlay" id="termDrawerOverlay"></div>
+    <div class="term-drawer__panel">
+      <div class="term-drawer__search">
+        <span class="term-search-ico">🔎</span>
+        <input id="fundSearch" type="text" placeholder="{{ 'Поиск' if lang=='ru' else 'Search' }}" />
+      </div>
+
+      <div class="term-drawer__list" id="fundList">
+        {% for f in fund_menu %}
+          {% set chg = f.change_24h %}
+          <a class="term-drawer__row"
+             href="/terminal/{{ f.code }}"
+             data-name="{{ (f.short_name|default(f.name|default(f.code, true), true))|lower }}">
+            <img class="term-row-icon" src="/static/img/funds/{{ f.icon_name|default('fund-default.svg', true) }}" alt="" />
+            <div class="term-row-name">{{ f.short_name|default(f.name|default(f.code, true), true) }}</div>
+            <div class="term-row-price">{{ fmt2(f.price) }} USDT</div>
+            <div class="term-row-chg {{ 'pos' if (chg or 0) > 0 else ('neg' if (chg or 0) < 0 else '') }}">
+              {% if chg is none %}-{% else %}{{ '%+.2f'|format(chg) }}%{% endif %}
+            </div>
+          </a>
+        {% endfor %}
+      </div>
+    </div>
+  </div>
+</body>
+</html>

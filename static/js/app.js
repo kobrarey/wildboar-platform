@@ -953,6 +953,15 @@
     // отключаем любые обработчики маски телефона (если были)
     const ph = document.getElementById("regPhone");
     if (ph) { ph.oninput = null; ph.onkeydown = null; ph.onkeyup = null; }
+
+    // auto-open deposit modal from terminal "+"
+    try {
+      const p = new URLSearchParams(window.location.search);
+      if (window.location.pathname === "/dashboard" && p.get("open") === "deposit") {
+        const btn = document.querySelector('[data-modal-open="depositModal"]');
+        if (btn) btn.click();
+      }
+    } catch (_) {}
   });
 })();
 

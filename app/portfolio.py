@@ -107,7 +107,7 @@ def get_user_portfolio(db: Session, user: User, lang: str) -> dict:
         name = fund.name_ru if lang == "ru" else fund.name_en
 
         fund_code = (fund.code or "").strip().lower()
-        icon_name = FUND_ICON_MAP.get(fund_code, "fund-default.svg")
+        icon_name = ((getattr(fund, "icon_name", None) or "").strip() or FUND_ICON_MAP.get(fund_code, "fund-default.svg"))
 
         funds_payload.append(
             {

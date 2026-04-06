@@ -214,8 +214,24 @@ class Fund(Base):
 
     id = Column(Integer, primary_key=True)
     code = Column(String(32), unique=True, nullable=False)
+
     name_ru = Column(String(100), nullable=False)
     name_en = Column(String(100), nullable=False)
+
+    short_name_ru = Column(String(100), nullable=True)
+    short_name_en = Column(String(100), nullable=True)
+
+    full_name_ru = Column(String(150), nullable=True)
+    full_name_en = Column(String(150), nullable=True)
+
+    benchmark_name_ru = Column(String(150), nullable=True)
+    benchmark_name_en = Column(String(150), nullable=True)
+
+    management_fee_pct = Column(Numeric(10, 4), nullable=True)
+    performance_fee_pct = Column(Numeric(10, 4), nullable=True)
+
+    icon_name = Column(String(120), nullable=True)
+
     category = Column(String(16), nullable=False)  # 'active', 'index', 'test'
     sort_order = Column(Integer, nullable=False, default=0)
     is_active = Column(Boolean, nullable=False, default=True)
@@ -233,6 +249,42 @@ class FundNavMinute(Base):
     shares_outstanding = Column(Numeric(30, 10), nullable=False)
 
 
+class FundOrder(Base):
+    __tablename__ = "fund_orders"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    side: Mapped[str] = mapped_column(String(16), nullable=False)  # buy | redeem
+
+    amount_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    shares: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    price_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=sa_text("'pending'"),
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class UserFundPosition(Base):
     __tablename__ = "user_fund_positions"
 
@@ -243,6 +295,38 @@ class UserFundPosition(Base):
 
     __table_args__ = (
         UniqueConstraint("user_id", "fund_id", name="user_fund_positions_unique"),
+    )
+
+
+class UserFundPositionStats(Base):
+    __tablename__ = "user_fund_position_stats"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    avg_entry_price_usdt: Mapped[Decimal] = mapped_column(
+        Numeric(30, 10),
+        nullable=False,
+        server_default=sa_text("0"),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("user_id", "fund_id", name="user_fund_position_stats_user_fund_uq"),
     )
 
 

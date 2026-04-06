@@ -256,9 +256,9 @@
               <span class="col-qty">{{ '%.4f'|format(f.shares or 0) }}</span>
               <span class="col-value">{{ '%.2f'|format(f.value or 0) }} USDT</span>
               <span class="col-action">
-                <button class="btn btn--primary btn--small" type="button" disabled aria-disabled="true">
+                <a class="btn btn--primary btn--small" href="/terminal/{{ f.code }}">
                   {{ 'Инвестировать' if lang == 'ru' else 'Invest' }}
-                </button>
+                </a>
               </span>
             </div>
             {% endfor %}
@@ -300,9 +300,9 @@
               <span class="col-qty">{{ '%.4f'|format(f.shares or 0) }}</span>
               <span class="col-value">{{ '%.2f'|format(f.value or 0) }} USDT</span>
               <span class="col-action">
-                <button class="btn btn--primary btn--small" type="button" disabled aria-disabled="true">
+                <a class="btn btn--primary btn--small" href="/terminal/{{ f.code }}">
                   {{ 'Инвестировать' if lang == 'ru' else 'Invest' }}
-                </button>
+                </a>
               </span>
             </div>
             {% endfor %}
@@ -344,9 +344,9 @@
               <span class="col-qty">{{ '%.4f'|format(f.shares or 0) }}</span>
               <span class="col-value">{{ '%.2f'|format(f.value or 0) }} USDT</span>
               <span class="col-action">
-                <button class="btn btn--primary btn--small" type="button" disabled aria-disabled="true">
+                <a class="btn btn--primary btn--small" href="/terminal/{{ f.code }}">
                   {{ 'Инвестировать' if lang == 'ru' else 'Invest' }}
-                </button>
+                </a>
               </span>
             </div>
             {% endfor %}
