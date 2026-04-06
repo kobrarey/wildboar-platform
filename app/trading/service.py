@@ -98,7 +98,10 @@ def get_first_active_fund_code(db: Session) -> str | None:
 def _get_fund_by_code(db: Session, fund_code: str) -> Fund | None:
     return (
         db.query(Fund)
-        .filter(func.lower(Fund.code) == (fund_code or "").strip().lower())
+        .filter(
+            Fund.is_active == True,
+            func.lower(Fund.code) == (fund_code or "").strip().lower(),
+        )
         .first()
     )
 
@@ -251,7 +254,11 @@ def _build_assets_block(db: Session, user: User | None, lang: str) -> list[dict]
     pos_by_fund = {row.fund_id: row for row in positions}
     stats_by_fund = {row.fund_id: row for row in stats}
 
-    fund_ids = set(pos_by_fund.keys()) | set(stats_by_fund.keys())
+    fund_ids = {
+        row.fund_id
+        for row in positions
+        if _to_decimal(row.shares) > 0
+    } | set(stats_by_fund.keys())
     if not fund_ids:
         return []
 

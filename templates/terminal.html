@@ -53,13 +53,13 @@
       </div>
 
       <div class="term-price">
-        <span class="term-price__value">{{ fmt2(current_fund.price) }}</span>
+        <span class="term-price__value">{{ fmt2(current_fund.current_price_usdt) }}</span>
         <span class="term-price__ccy">USDT</span>
       </div>
     </div>
 
     <div class="term-info__right">
-      {% set ch = current_fund.change_24h %}
+      {% set ch = current_fund.change_24h_pct %}
       <div class="term-metric">
         <div class="term-metric__label">{{ 'изменение 24ч' if lang=='ru' else '24h change' }}</div>
         <div class="term-metric__value {{ 'pos' if (ch or 0) > 0 else ('neg' if (ch or 0) < 0 else '') }}">
@@ -69,12 +69,16 @@
 
       <div class="term-metric">
         <div class="term-metric__label">{{ '24ч Макс' if lang=='ru' else '24h High' }}</div>
-        <div class="term-metric__value">{{ fmt2(current_fund.high_24h) }}</div>
+        <div class="term-metric__value">
+          {% if current_fund.day_high_usdt is none %}-{% else %}{{ fmt2(current_fund.day_high_usdt) }}{% endif %}
+        </div>
       </div>
 
       <div class="term-metric">
         <div class="term-metric__label">{{ '24ч Мин' if lang=='ru' else '24h Low' }}</div>
-        <div class="term-metric__value">{{ fmt2(current_fund.low_24h) }}</div>
+        <div class="term-metric__value">
+          {% if current_fund.day_low_usdt is none %}-{% else %}{{ fmt2(current_fund.day_low_usdt) }}{% endif %}
+        </div>
       </div>
     </div>
   </div>
@@ -110,10 +114,16 @@
               {% for r in trade_history %}
                 <div class="term-tr term-tr--history">
                   <div class="t-name">{{ r.name|default('-', true) }}</div>
-                  <div>{{ r.side|default('-', true) }}</div>
-                  <div class="t-center">{{ r.cost|default('-', true) }}</div>
-                  <div class="t-center">{{ r.price|default('-', true) }}</div>
-                  <div class="t-right">{{ r.time|default('-', true) }}</div>
+                  <div>{{ r.direction|default('-', true) }}</div>
+                  <div class="t-center">
+                    {% if r.amount_usdt is not none %}{{ fmt2(r.amount_usdt) }}{% else %}-{% endif %}
+                  </div>
+                  <div class="t-center">
+                    {% if r.price_usdt is not none %}{{ fmt2(r.price_usdt) }}{% else %}-{% endif %}
+                  </div>
+                  <div class="t-right">
+                    {% if r.created_at %}{{ r.created_at.strftime('%d.%m.%Y %H:%M:%S') }}{% else %}-{% endif %}
+                  </div>
                 </div>
               {% endfor %}
             {% else %}
@@ -138,11 +148,19 @@
               {% for a in asset_rows %}
                 <div class="term-tr term-tr--assets">
                   <div class="t-name">{{ a.name|default('-', true) }}</div>
-                  <div class="t-center">{{ a.avg_entry|default('-', true) }}</div>
-                  <div class="t-center">{{ a.current_price|default('-', true) }}</div>
-                  <div class="t-center">{{ a.shares|default('-', true) }}</div>
-                  <div class="t-center">{{ a.pnl_pct|default('-', true) }}</div>
-                  <div class="t-right">{{ a.pnl_usdt|default('-', true) }}</div>
+                  <div class="t-center">
+                    {% if a.avg_entry_price_usdt is not none %}{{ fmt2(a.avg_entry_price_usdt) }}{% else %}-{% endif %}
+                  </div>
+                  <div class="t-center">
+                    {% if a.current_price_usdt is not none %}{{ fmt2(a.current_price_usdt) }}{% else %}-{% endif %}
+                  </div>
+                  <div class="t-center">{{ fmt4(a.shares) }}</div>
+                  <div class="t-center">
+                    {% if a.position_result_pct is not none %}{{ '%+.2f'|format(a.position_result_pct) }}%{% else %}-{% endif %}
+                  </div>
+                  <div class="t-right">
+                    {% if a.position_result_usdt is not none %}{{ '%+.2f'|format(a.position_result_usdt) }}{% else %}-{% endif %}
+                  </div>
                 </div>
               {% endfor %}
             {% else %}
@@ -237,12 +255,12 @@
 
           <div class="term-kv__row"><span>{{ 'Дата запуска' if lang=='ru' else 'Launch date' }}</span>
             <span>
-              {% if fund_info.launch_date %}{{ fund_info.launch_date.strftime('%d.%m.%Y') }}{% else %}-{% endif %}
+              {% if fund_info.launch_date %}{{ fund_info.launch_date }}{% else %}-{% endif %}
             </span>
           </div>
 
           <div class="term-kv__row"><span>{{ 'Бенчмарк' if lang=='ru' else 'Benchmark' }}</span>
-            <span>{{ fund_info.benchmark|default('-', true) }}</span>
+            <span>{{ fund_info.benchmark_name|default('-', true) }}</span>
           </div>
 
           <div class="term-kv__row"><span>{{ 'Комиссия за управление' if lang=='ru' else 'Management fee' }}</span>
@@ -272,13 +290,13 @@
 
       <div class="term-drawer__list" id="fundList">
         {% for f in fund_menu %}
-          {% set chg = f.change_24h %}
-          <a class="term-drawer__row"
-             href="/terminal/{{ f.code }}"
+{% set chg = f.change_24h_pct %}
+<a class="term-drawer__row"
+   href="/terminal/{{ f.fund_code }}"
              data-name="{{ (f.short_name|default(f.name|default(f.code, true), true))|lower }}">
             <img class="term-row-icon" src="/static/img/funds/{{ f.icon_name|default('fund-default.svg', true) }}" alt="" />
             <div class="term-row-name">{{ f.short_name|default(f.name|default(f.code, true), true) }}</div>
-            <div class="term-row-price">{{ fmt2(f.price) }} USDT</div>
+            <div class="term-row-price">{{ fmt2(f.current_price_usdt) }} USDT</div>
             <div class="term-row-chg {{ 'pos' if (chg or 0) > 0 else ('neg' if (chg or 0) < 0 else '') }}">
               {% if chg is none %}-{% else %}{{ '%+.2f'|format(chg) }}%{% endif %}
             </div>
