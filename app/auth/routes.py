@@ -240,7 +240,7 @@ def login(
     request: Request,
     email: str = Form(...),
     password: str = Form(...),
-    lang: str = Form("ru"),
+    lang: str = Form("en"),
     db: Session = Depends(get_db),
 ):
     lang = get_lang_from_request(request)

@@ -4,7 +4,7 @@
   function qsa(sel, root = document) { return Array.from(root.querySelectorAll(sel)); }
   function setError(el, text) { if (el) el.textContent = text || ""; }
 
-  const LANG = (document.documentElement.getAttribute("lang") || "ru").toLowerCase();
+  const LANG = (document.documentElement.getAttribute("lang") || "en").toLowerCase();
   const isEn = LANG === "en";
   const MSG = {
     network_error: isEn ? "Network error. Please try again." : "Сетевая ошибка. Повторите попытку.",
@@ -588,7 +588,7 @@
 
     if (!emailEl || !sendBtn || !codeEl || !verifyBtn) return;
 
-    const lang = (document.documentElement.getAttribute("lang") || "ru").toLowerCase();
+    const lang = (document.documentElement.getAttribute("lang") || "en").toLowerCase();
     const isEn = lang === "en";
     const MSG = {
       enter_email: isEn ? "Enter email." : "Введите email.",
@@ -722,7 +722,7 @@
 
     if (!passEl || !pass2El || !btn || !errEl) return;
 
-    const lang = (document.documentElement.getAttribute("lang") || "ru").toLowerCase();
+    const lang = (document.documentElement.getAttribute("lang") || "en").toLowerCase();
     const isEn = lang === "en";
     const MSG_NP = {
       invalid_link: isEn ? "Invalid link (token missing)." : "Некорректная ссылка (token отсутствует).",

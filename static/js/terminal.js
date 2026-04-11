@@ -1,5 +1,5 @@
 (() => {
-  const lang = (document.documentElement.lang || "ru").toLowerCase();
+  const lang = (document.documentElement.lang || "en").toLowerCase();
   const L = (ru, en) => (lang === "en" ? en : ru);
 
   const qs = (s, r = document) => r.querySelector(s);
@@ -19,13 +19,13 @@
     }
 
     function render() {
-      const isDark = (body.dataset.theme || "light") === "dark";
+      const isDark = (body.dataset.theme || "dark") === "dark";
       // requirement: light => moon, dark => sun
       btn.textContent = isDark ? "☀️" : "🌙";
     }
 
     btn.addEventListener("click", () => {
-      const cur = body.dataset.theme || "light";
+      const cur = body.dataset.theme || "dark";
       const next = cur === "dark" ? "light" : "dark";
       body.dataset.theme = next;
       localStorage.setItem(KEY, next);
@@ -35,35 +35,40 @@
     render();
   }
 
-  // ---------------- drawer (fund menu) ----------------
-  function initDrawer() {
-    const drawer = qs("#termDrawer");
-    const overlay = qs("#termDrawerOverlay");
+  // ---------------- fund picker (popover over chart, Bybit-style bounds) ----------------
+  function initFundPopover() {
+    const popover = qs("#termFundPopover");
+    const backdrop = qs("#termFundPopoverBackdrop");
     const burger = qs("#termBurger");
     const search = qs("#fundSearch");
     const list = qs("#fundList");
-    if (!drawer || !overlay || !burger || !list) return;
+    if (!popover || !backdrop || !burger || !list) return;
 
-    const rows = qsa(".term-drawer__row", list);
+    const rows = qsa(".term-drawer__tr", list);
 
     function open() {
-      drawer.classList.add("is-open");
-      drawer.setAttribute("aria-hidden", "false");
-      document.body.style.overflow = "hidden";
+      popover.classList.add("is-open");
+      popover.setAttribute("aria-hidden", "false");
+      burger.setAttribute("aria-expanded", "true");
       setTimeout(() => search && search.focus(), 50);
     }
 
     function close() {
-      drawer.classList.remove("is-open");
-      drawer.setAttribute("aria-hidden", "true");
-      document.body.style.overflow = "";
+      popover.classList.remove("is-open");
+      popover.setAttribute("aria-hidden", "true");
+      burger.setAttribute("aria-expanded", "false");
     }
 
-    burger.addEventListener("click", open);
-    overlay.addEventListener("click", close);
+    function toggle() {
+      if (popover.classList.contains("is-open")) close();
+      else open();
+    }
+
+    burger.addEventListener("click", toggle);
+    backdrop.addEventListener("click", close);
 
     document.addEventListener("keydown", (e) => {
-      if (e.key === "Escape" && drawer.classList.contains("is-open")) close();
+      if (e.key === "Escape" && popover.classList.contains("is-open")) close();
     });
 
     if (search) {
@@ -107,6 +112,86 @@
     return !(parts[1] && parts[1].length > maxDecimals);
   }
 
+  /** Keeps only digits and one dot; fractional part at most maxDp chars. Preserves trailing "." while typing. */
+  function limitDecimalPlaces(raw, maxDp) {
+    let s = String(raw || "").replace(",", ".");
+    s = s.replace(/[^\d.]/g, "");
+    const firstDot = s.indexOf(".");
+    if (firstDot === -1) return s;
+    let intPart = s.slice(0, firstDot);
+    const fracRaw = s.slice(firstDot + 1).replace(/\./g, "");
+    const frac = fracRaw.slice(0, maxDp);
+    const trailingDotOnly = s.endsWith(".") && fracRaw.length === 0;
+    if (intPart === "" && (frac.length > 0 || trailingDotOnly)) intPart = "0";
+    if (trailingDotOnly) return intPart + ".";
+    return frac.length > 0 ? intPart + "." + frac : intPart;
+  }
+
+  function formatCappedAmount(maxValue, maxDp) {
+    const t = Number(maxValue).toFixed(maxDp);
+    if (!t.includes(".")) return t;
+    return t.replace(/\.0+$/, "");
+  }
+
+  /**
+   * Decimal places + at most maxIntDigits before "." + numeric cap at maxValue.
+   */
+  function limitOrderAmount(raw, maxDp, maxIntDigits, maxValue) {
+    let s = limitDecimalPlaces(raw, maxDp);
+    const trailingDot = s.endsWith(".");
+    let intPart;
+    let frac;
+    if (trailingDot) {
+      intPart = s.slice(0, -1);
+      frac = "";
+    } else {
+      const idx = s.indexOf(".");
+      if (idx === -1) {
+        intPart = s;
+        frac = undefined;
+      } else {
+        intPart = s.slice(0, idx);
+        frac = s.slice(idx + 1);
+      }
+    }
+    if (intPart.length > maxIntDigits) intPart = intPart.slice(0, maxIntDigits);
+    if (trailingDot) {
+      s = intPart + ".";
+    } else if (frac !== undefined && frac.length > 0) {
+      s = intPart + "." + frac;
+    } else if (frac !== undefined) {
+      s = intPart;
+    } else {
+      s = intPart;
+    }
+    const n = parseNum(s);
+    if (n !== null && n > maxValue) return formatCappedAmount(maxValue, maxDp);
+    return s;
+  }
+
+  function bindOrderAmountInput(el, maxDp, maxIntDigits, maxValue) {
+    if (!el) return;
+    const apply = () => {
+      const cur = el.value;
+      const next = limitOrderAmount(cur, maxDp, maxIntDigits, maxValue);
+      if (next === cur) return;
+      const pos = el.selectionStart ?? cur.length;
+      el.value = next;
+      const np = Math.min(pos, next.length);
+      el.setSelectionRange(np, np);
+    };
+    el.addEventListener("input", apply);
+    el.addEventListener("paste", (e) => {
+      e.preventDefault();
+      const t = (e.clipboardData || window.clipboardData).getData("text") || "";
+      const start = el.selectionStart ?? 0;
+      const end = el.selectionEnd ?? 0;
+      const merged = el.value.slice(0, start) + t + el.value.slice(end);
+      el.value = limitOrderAmount(merged, maxDp, maxIntDigits, maxValue);
+      el.setSelectionRange(el.value.length, el.value.length);
+    });
+  }
+
   function initOrderPanel() {
     const wrap = qs(".term-order");
     if (!wrap) return;
@@ -148,6 +233,14 @@
     tabRed && tabRed.addEventListener("click", () => setSide("redeem"));
     setSide("buy");
 
+    const BUY_MAX = 10_000_000;
+    const BUY_MAX_INT_DIGITS = 8;
+    const REDEEM_MAX = 1000;
+    const REDEEM_MAX_INT_DIGITS = 4;
+
+    bindOrderAmountInput(buyIn, 2, BUY_MAX_INT_DIGITS, BUY_MAX);
+    bindOrderAmountInput(redIn, 4, REDEEM_MAX_INT_DIGITS, REDEEM_MAX);
+
     function validateBuy() {
       if (!buyIn) return false;
       const raw = buyIn.value;
@@ -159,6 +252,9 @@
       if (n === null) return false;
       if (!decimalsOk(raw, 2)) return false;
       if (n <= 0) return false;
+      if (n > BUY_MAX) return false;
+      const intLen = String(raw || "").trim().replace(",", ".").split(".")[0].length;
+      if (intLen > BUY_MAX_INT_DIGITS) return false;
 
       if (n > availUSDT) {
         if (buyErr) buyErr.textContent = L("Сумма больше доступного баланса", "Amount exceeds available balance");
@@ -178,6 +274,9 @@
       if (n === null) return false;
       if (!decimalsOk(raw, 4)) return false;
       if (n <= 0) return false;
+      if (n > REDEEM_MAX) return false;
+      const intLenR = String(raw || "").trim().replace(",", ".").split(".")[0].length;
+      if (intLenR > REDEEM_MAX_INT_DIGITS) return false;
 
       if (n > availShares) {
         if (redErr) redErr.textContent = L("Количество больше доступного баланса", "Quantity exceeds available balance");
@@ -213,7 +312,7 @@
 
   document.addEventListener("DOMContentLoaded", () => {
     initTheme();
-    initDrawer();
+    initFundPopover();
     initBottomTabs();
     initOrderPanel();
   });

@@ -6,13 +6,13 @@
   <title>WildBoar — {{ current_fund.short_name if current_fund and current_fund.short_name else 'Terminal' }}</title>
 
   <link rel="stylesheet" href="/static/css/app.css?v=terminal_base1" />
-  <link rel="stylesheet" href="/static/css/terminal.css?v=terminal1" />
+  <link rel="stylesheet" href="/static/css/terminal.css?v=terminal6" />
 
   <script defer src="/static/js/app.js?v=5_2"></script>
-  <script defer src="/static/js/terminal.js?v=terminal1"></script>
+  <script defer src="/static/js/terminal.js?v=terminal4"></script>
 </head>
 
-<body class="page page--terminal" data-theme="{{ current_theme|default('light', true) }}">
+<body class="page page--terminal" data-theme="{{ current_theme|default('dark', true) }}">
   {% macro fmt2(x) -%}{{ '%.2f'|format(x or 0) }}{%- endmacro %}
   {% macro fmt4(x) -%}{{ '%.4f'|format(x or 0) }}{%- endmacro %}
 
@@ -40,7 +40,9 @@
   <!-- Fund infobar -->
   <div class="term-info">
     <div class="term-info__left">
-      <button type="button" class="term-burger" id="termBurger" aria-label="menu">
+      <button type="button" class="term-burger" id="termBurger"
+              aria-label="{{ 'Выбор фонда' if lang=='ru' else 'Select fund' }}"
+              aria-expanded="false" aria-controls="termFundPopover">
         <span></span><span></span><span></span>
       </button>
 
@@ -48,36 +50,38 @@
            src="/static/img/funds/{{ current_fund.icon_name|default('fund-default.svg', true) }}"
            alt="" />
 
-      <div class="term-fund-name">
-        {{ current_fund.short_name|default(current_fund.name|default('-', true), true) }}
+      <div class="term-info__fund-title-slot" style="min-width: {{ fund_title_min_width_ch }}ch">
+        <div class="term-fund-name">
+          {{ current_fund.short_name|default(current_fund.name|default('-', true), true) }}
+        </div>
       </div>
 
       <div class="term-price">
         <span class="term-price__value">{{ fmt2(current_fund.current_price_usdt) }}</span>
         <span class="term-price__ccy">USDT</span>
       </div>
-    </div>
 
-    <div class="term-info__right">
-      {% set ch = current_fund.change_24h_pct %}
-      <div class="term-metric">
-        <div class="term-metric__label">{{ 'изменение 24ч' if lang=='ru' else '24h change' }}</div>
-        <div class="term-metric__value {{ 'pos' if (ch or 0) > 0 else ('neg' if (ch or 0) < 0 else '') }}">
-          {% if ch is none %}-{% else %}{{ '%+.2f'|format(ch) }}%{% endif %}
+      <div class="term-info__metrics">
+        {% set ch = current_fund.change_24h_pct %}
+        <div class="term-metric">
+          <div class="term-metric__label">{{ 'изменение 24ч' if lang=='ru' else '24h change' }}</div>
+          <div class="term-metric__value {{ 'pos' if (ch or 0) > 0 else ('neg' if (ch or 0) < 0 else '') }}">
+            {% if ch is none %}-{% else %}{{ '%+.2f'|format(ch) }}%{% endif %}
+          </div>
         </div>
-      </div>
 
-      <div class="term-metric">
-        <div class="term-metric__label">{{ '24ч Макс' if lang=='ru' else '24h High' }}</div>
-        <div class="term-metric__value">
-          {% if current_fund.day_high_usdt is none %}-{% else %}{{ fmt2(current_fund.day_high_usdt) }}{% endif %}
+        <div class="term-metric">
+          <div class="term-metric__label">{{ '24ч Макс' if lang=='ru' else '24h High' }}</div>
+          <div class="term-metric__value">
+            {% if current_fund.day_high_usdt is none %}-{% else %}{{ fmt2(current_fund.day_high_usdt) }}{% endif %}
+          </div>
         </div>
-      </div>
 
-      <div class="term-metric">
-        <div class="term-metric__label">{{ '24ч Мин' if lang=='ru' else '24h Low' }}</div>
-        <div class="term-metric__value">
-          {% if current_fund.day_low_usdt is none %}-{% else %}{{ fmt2(current_fund.day_low_usdt) }}{% endif %}
+        <div class="term-metric">
+          <div class="term-metric__label">{{ '24ч Мин' if lang=='ru' else '24h Low' }}</div>
+          <div class="term-metric__value">
+            {% if current_fund.day_low_usdt is none %}-{% else %}{{ fmt2(current_fund.day_low_usdt) }}{% endif %}
+          </div>
         </div>
       </div>
     </div>
@@ -87,7 +91,49 @@
   <div class="term-grid">
     <!-- Left: chart + bottom tables -->
     <div class="term-left">
-      <div class="term-chart-box"></div>
+      <div class="term-chart-shell">
+        <div class="term-chart-box"></div>
+
+        <div class="term-fund-popover" id="termFundPopover" aria-hidden="true">
+          <button type="button" class="term-fund-popover__backdrop" id="termFundPopoverBackdrop"
+                  aria-label="{{ 'Закрыть' if lang=='ru' else 'Close' }}"></button>
+          <div class="term-fund-popover__sheet" role="dialog" aria-modal="true"
+               aria-label="{{ 'Выбор фонда' if lang=='ru' else 'Select fund' }}">
+            <div class="term-drawer__search">
+              <span class="term-search-ico" aria-hidden="true">🔎</span>
+              <input id="fundSearch" type="text" placeholder="{{ 'Поиск' if lang=='ru' else 'Search' }}" autocomplete="off" />
+            </div>
+
+            <div class="term-drawer__table" role="grid" aria-label="{{ 'Фонды' if lang=='ru' else 'Funds' }}">
+              <div class="term-drawer__thead" role="row">
+                <div class="term-drawer__th term-drawer__th--name" role="columnheader">{{ 'Название' if lang=='ru' else 'Name' }}</div>
+                <div class="term-drawer__th term-drawer__th--price" role="columnheader">{{ 'Цена' if lang=='ru' else 'Price' }}</div>
+                <div class="term-drawer__th term-drawer__th--chg" role="columnheader">{{ '24ч Изменение' if lang=='ru' else '24h change' }}</div>
+              </div>
+              <div class="term-drawer__tbody" id="fundList">
+                {% for f in fund_menu %}
+                  {% set chg = f.change_24h_pct %}
+                  <a class="term-drawer__tr{% if current_fund and f.fund_code == current_fund.fund_code %} is-active{% endif %}"
+                     role="row"
+                     href="/terminal/{{ f.fund_code }}"
+                     data-name="{{ (f.short_name|default(f.fund_code, true))|lower }}">
+                    <div class="term-drawer__td term-drawer__td--name" role="gridcell">
+                      <img class="term-drawer__coin" src="/static/img/funds/{{ f.icon_name|default('fund-default.svg', true) }}" alt="" />
+                      <span class="term-drawer__fund-name">{{ f.short_name|default(f.fund_code, true) }}</span>
+                    </div>
+                    <div class="term-drawer__td term-drawer__td--price" role="gridcell">
+                      <span class="term-drawer__price-num">{{ fmt2(f.current_price_usdt) }}</span><span class="term-drawer__price-unit"> USDT</span>
+                    </div>
+                    <div class="term-drawer__td term-drawer__td--chg {{ 'pos' if (chg or 0) > 0 else ('neg' if (chg or 0) < 0 else '') }}" role="gridcell">
+                      {% if chg is none %}<span class="term-drawer__chg-empty">—</span>{% else %}{{ '%+.2f'|format(chg) }}%{% endif %}
+                    </div>
+                  </a>
+                {% endfor %}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
 
       <div class="term-bottom">
         <div class="term-bottom__tabs">
@@ -109,7 +155,7 @@
             <div class="t-right">{{ 'Время операции' if lang=='ru' else 'Time' }}</div>
           </div>
 
-          <div class="term-tbody" style="max-height: 190px;">
+          <div class="term-tbody">
             {% if trade_history and (trade_history|length) > 0 %}
               {% for r in trade_history %}
                 <div class="term-tr term-tr--history">
@@ -143,7 +189,7 @@
             <div class="t-right">{{ 'Результат по позиции в $' if lang=='ru' else 'PnL $' }}</div>
           </div>
 
-          <div class="term-tbody" style="max-height: 190px;">
+          <div class="term-tbody">
             {% if asset_rows and (asset_rows|length) > 0 %}
               {% for a in asset_rows %}
                 <div class="term-tr term-tr--assets">
@@ -201,6 +247,7 @@
           </div>
 
           <div class="order-hint">{{ 'Сделка исполняется в течение суток' if lang=='ru' else 'The order is executed within 24 hours' }}</div>
+          <div class="order-limit-hint">{{ 'Максимальная сумма покупки в течение одного дня — 10,000,000 USDT' if lang=='ru' else 'Maximum purchase amount within one day: 10,000,000 USDT' }}</div>
           <div class="order-error" id="buyError"></div>
 
           <button type="button" class="order-btn order-btn--buy" id="buyBtn">
@@ -224,6 +271,7 @@
           </div>
 
           <div class="order-hint">{{ 'Сделка исполняется в течение суток' if lang=='ru' else 'The order is executed within 24 hours' }}</div>
+          <div class="order-limit-hint">{{ 'Максимальная сумма погашения в течение одного дня — 1,000 паёв' if lang=='ru' else 'Maximum redemption amount within one day: 1,000 shares' }}</div>
           <div class="order-error" id="redeemError"></div>
 
           <button type="button" class="order-btn order-btn--redeem" id="redeemBtn">
@@ -279,31 +327,5 @@
     </div>
   </div>
 
-  <!-- Drawer -->
-  <div class="term-drawer" id="termDrawer" aria-hidden="true">
-    <div class="term-drawer__overlay" id="termDrawerOverlay"></div>
-    <div class="term-drawer__panel">
-      <div class="term-drawer__search">
-        <span class="term-search-ico">🔎</span>
-        <input id="fundSearch" type="text" placeholder="{{ 'Поиск' if lang=='ru' else 'Search' }}" />
-      </div>
-
-      <div class="term-drawer__list" id="fundList">
-        {% for f in fund_menu %}
-{% set chg = f.change_24h_pct %}
-<a class="term-drawer__row"
-   href="/terminal/{{ f.fund_code }}"
-             data-name="{{ (f.short_name|default(f.fund_code, true))|lower }}">
-            <img class="term-row-icon" src="/static/img/funds/{{ f.icon_name|default('fund-default.svg', true) }}" alt="" />
-            <div class="term-row-name">{{ f.short_name|default(f.fund_code, true) }}</div>
-            <div class="term-row-price">{{ fmt2(f.current_price_usdt) }} USDT</div>
-            <div class="term-row-chg {{ 'pos' if (chg or 0) > 0 else ('neg' if (chg or 0) < 0 else '') }}">
-              {% if chg is none %}-{% else %}{{ '%+.2f'|format(chg) }}%{% endif %}
-            </div>
-          </a>
-        {% endfor %}
-      </div>
-    </div>
-  </div>
 </body>
 </html>

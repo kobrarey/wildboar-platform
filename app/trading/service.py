@@ -206,6 +206,23 @@ def _build_fund_menu(db: Session, lang: str) -> list[dict]:
     return items
 
 
+def _fund_title_min_width_ch(db: Session, lang: str) -> int:
+    """Width in `ch` for the fund title column so 24h metrics stay fixed when switching funds."""
+    funds = (
+        db.query(Fund)
+        .filter(Fund.is_active == True)
+        .all()
+    )
+    if not funds:
+        return 14
+    longest = 0
+    for fund in funds:
+        title = (_fund_short_name(fund, lang) or "").strip()
+        longest = max(longest, len(title))
+    # +2ch: bold title kerning / slightly wider glyphs vs. digit `ch`
+    return max(longest + 2, 8)
+
+
 def _build_trade_history(db: Session, user: User | None, lang: str) -> list[dict]:
     if not user:
         return []
@@ -365,6 +382,7 @@ def get_terminal_page_payload(
     return {
         "current_fund": market_snapshot,
         "fund_menu": fund_menu,
+        "fund_title_min_width_ch": _fund_title_min_width_ch(db, lang),
         "trade_history": trade_history,
         "asset_rows": asset_rows,
         "fund_info": fund_info,

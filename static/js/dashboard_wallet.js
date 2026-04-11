@@ -1,5 +1,5 @@
 (() => {
-    const lang = (document.documentElement.lang || "ru").toLowerCase();
+    const lang = (document.documentElement.lang || "en").toLowerCase();
     const L = (ru, en) => (lang === "en" ? en : ru);
   
     async function copyToClipboard(text) {

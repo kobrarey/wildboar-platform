@@ -68,6 +68,7 @@ def terminal_fund_page(
             "account_type": (user.account_type if user else None),
             "current_fund": payload["current_fund"],
             "fund_menu": payload["fund_menu"],
+            "fund_title_min_width_ch": payload["fund_title_min_width_ch"],
             "trade_history": payload["trade_history"],
             "asset_rows": payload["asset_rows"],
             "fund_info": payload["fund_info"],
