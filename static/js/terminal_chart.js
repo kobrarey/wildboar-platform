@@ -1,78 +1,91 @@
 (() => {
-  const cfgEl = document.getElementById("terminalChartConfig");
   const containerId = "tv_chart_container";
+  let widget = null;
+  let observer = null;
 
-  if (!cfgEl) return;
-
-  let rawConfig = {};
-  try {
-    rawConfig = JSON.parse(cfgEl.textContent || "{}");
-  } catch (_) {
-    rawConfig = {};
+  function getCfgEl() {
+    return document.getElementById("terminalChartConfig");
   }
 
-  const body = document.body;
-  const lang = (document.documentElement.lang || rawConfig.lang || "ru").toLowerCase();
-  const locale = lang === "en" ? "en" : "ru";
+  function getContainerEl() {
+    return document.getElementById(containerId);
+  }
 
-  const chartConfig = {
-    library_path: rawConfig.library_path || "/static/charting_library/",
-    bars_url:
-      rawConfig.bars_url ||
-      rawConfig.bars_endpoint ||
-      rawConfig.api_bars_url ||
-      rawConfig.chart_api_url ||
-      "/api/chart/bars",
-    symbol_code:
-      rawConfig.symbol_code ||
-      rawConfig.fund_code ||
-      rawConfig.current_fund_code ||
-      rawConfig.code ||
-      "unknown",
-    symbol_name:
-      rawConfig.symbol_name ||
-      rawConfig.short_name ||
-      rawConfig.name ||
-      rawConfig.fund_name ||
-      "Fund",
-    full_name:
-      rawConfig.full_name ||
-      rawConfig.description ||
-      rawConfig.symbol_name ||
-      rawConfig.short_name ||
-      rawConfig.name ||
-      "Fund",
-    description:
-      rawConfig.description ||
-      rawConfig.full_name ||
-      rawConfig.symbol_name ||
-      rawConfig.short_name ||
-      "Fund",
-    resolutions:
-      Array.isArray(rawConfig.resolutions) && rawConfig.resolutions.length
-        ? rawConfig.resolutions
-        : Array.isArray(rawConfig.supported_resolutions) && rawConfig.supported_resolutions.length
-        ? rawConfig.supported_resolutions
-        : ["1D"],
-    default_resolution:
-      rawConfig.default_resolution ||
-      rawConfig.default_interval ||
-      rawConfig.interval ||
-      "1D",
-    timezone: rawConfig.timezone || "Etc/UTC",
-    session: rawConfig.session || "24x7",
-    minmov: Number(rawConfig.minmov || 1),
-    pricescale: Number(rawConfig.pricescale || 100),
-    volume_precision: Number(rawConfig.volume_precision || 2),
-    has_intraday: rawConfig.has_intraday !== undefined ? !!rawConfig.has_intraday : true,
-    has_daily: rawConfig.has_daily !== undefined ? !!rawConfig.has_daily : true,
-    has_weekly_and_monthly: rawConfig.has_weekly_and_monthly !== undefined ? !!rawConfig.has_weekly_and_monthly : true,
-  };
+  function parseRawConfig() {
+    const cfgEl = getCfgEl();
+    if (!cfgEl) return null;
 
-  let widget = null;
+    try {
+      return JSON.parse(cfgEl.textContent || "{}");
+    } catch (err) {
+      console.error("[terminal_chart] Failed to parse terminalChartConfig:", err);
+      return null;
+    }
+  }
 
-  function getThemeName() {
-    return (body.dataset.theme || "light") === "dark" ? "Dark" : "Light";
+  function buildChartConfig(rawConfig) {
+    const body = document.body;
+    const lang = (document.documentElement.lang || rawConfig?.lang || "ru").toLowerCase();
+    const locale = lang === "en" ? "en" : "ru";
+
+    return {
+      locale,
+      theme: (body.dataset.theme || "light") === "dark" ? "Dark" : "Light",
+      library_path: rawConfig?.library_path || "/static/charting_library/",
+      bars_url:
+        rawConfig?.bars_url ||
+        rawConfig?.bars_endpoint ||
+        rawConfig?.api_bars_url ||
+        rawConfig?.chart_api_url ||
+        "/api/chart/bars",
+      symbol_code:
+        rawConfig?.symbol_code ||
+        rawConfig?.fund_code ||
+        rawConfig?.current_fund_code ||
+        rawConfig?.code ||
+        "unknown",
+      symbol_name:
+        rawConfig?.symbol_name ||
+        rawConfig?.short_name ||
+        rawConfig?.name ||
+        rawConfig?.fund_name ||
+        "Fund",
+      full_name:
+        rawConfig?.full_name ||
+        rawConfig?.description ||
+        rawConfig?.symbol_name ||
+        rawConfig?.short_name ||
+        rawConfig?.name ||
+        "Fund",
+      description:
+        rawConfig?.description ||
+        rawConfig?.full_name ||
+        rawConfig?.symbol_name ||
+        rawConfig?.short_name ||
+        "Fund",
+      resolutions:
+        Array.isArray(rawConfig?.resolutions) && rawConfig.resolutions.length
+          ? rawConfig.resolutions
+          : Array.isArray(rawConfig?.supported_resolutions) && rawConfig.supported_resolutions.length
+          ? rawConfig.supported_resolutions
+          : ["1D"],
+      default_resolution:
+        rawConfig?.default_resolution ||
+        rawConfig?.default_interval ||
+        rawConfig?.interval ||
+        "1D",
+      timezone: rawConfig?.timezone || "Etc/UTC",
+      session: rawConfig?.session || "24x7",
+      minmov: Number(rawConfig?.minmov || 1),
+      pricescale: Number(rawConfig?.pricescale || 100),
+      volume_precision: Number(rawConfig?.volume_precision || 2),
+      has_intraday: rawConfig?.has_intraday !== undefined ? !!rawConfig.has_intraday : true,
+      has_daily: rawConfig?.has_daily !== undefined ? !!rawConfig.has_daily : true,
+      has_weekly_and_monthly:
+        rawConfig?.has_weekly_and_monthly !== undefined
+          ? !!rawConfig.has_weekly_and_monthly
+          : true,
+    };
   }
 
   function normalizeBars(payload) {
@@ -141,7 +154,7 @@
       .sort((a, b) => a.time - b.time);
   }
 
-  function buildDatafeed() {
+  function buildDatafeed(chartConfig) {
     return {
       onReady: (cb) => {
         setTimeout(() => {
@@ -156,7 +169,7 @@
         }, 0);
       },
 
-      resolveSymbol: (symbolName, onResolve, onError) => {
+      resolveSymbol: (_symbolName, onResolve, onError) => {
         try {
           onResolve({
             ticker: chartConfig.symbol_code,
@@ -181,7 +194,7 @@
         }
       },
 
-      getBars: async (symbolInfo, resolution, periodParams, onHistoryCallback, onErrorCallback) => {
+      getBars: async (_symbolInfo, resolution, periodParams, onHistoryCallback, onErrorCallback) => {
         try {
           const from = periodParams?.from;
           const to = periodParams?.to;
@@ -194,7 +207,7 @@
           const resp = await fetch(url.toString(), {
             method: "GET",
             credentials: "same-origin",
-            headers: { "Accept": "application/json" },
+            headers: { Accept: "application/json" },
           });
 
           if (!resp.ok) {
@@ -216,11 +229,11 @@
         }
       },
 
-      subscribeBars: (_symbolInfo, _resolution, _onRealtimeCallback, _subscriberUID, _onResetCacheNeededCallback) => {
+      subscribeBars: () => {
         // Stage 13: stub only
       },
 
-      unsubscribeBars: (_subscriberUID) => {
+      unsubscribeBars: () => {
         // Stage 13: stub only
       },
     };
@@ -234,45 +247,62 @@
   }
 
   function createWidget() {
-    const container = document.getElementById(containerId);
-    if (!container) return;
-    if (typeof TradingView === "undefined" || typeof TradingView.widget !== "function") return;
+    const rawConfig = parseRawConfig();
+    const container = getContainerEl();
 
-    container.innerHTML = "";
-    removeWidget();
+    if (!rawConfig || !container) {
+      return false;
+    }
 
-    widget = new TradingView.widget({
-      container: containerId,
-      library_path: chartConfig.library_path,
-      datafeed: buildDatafeed(),
-      symbol: chartConfig.symbol_code,
-      interval: chartConfig.default_resolution,
-      locale,
-      timezone: chartConfig.timezone,
-      autosize: true,
-      fullscreen: false,
-      theme: getThemeName(),
+    if (typeof window.TradingView === "undefined" || typeof window.TradingView.widget !== "function") {
+      return false;
+    }
 
-      disabled_features: [
-        "header_symbol_search",
-        "symbol_search_hot_key",
-        "header_compare",
-        "compare_symbol",
-        "header_saveload",
-        "header_screenshot",
-        "display_market_status",
-        "go_to_date",
-        "timeframes_toolbar",
-        "show_hide_button_in_legend",
-        "edit_buttons_in_legend",
-        "context_menus",
-        "control_bar",
-        "use_localstorage_for_settings",
-      ],
-      enabled_features: [
-        "hide_left_toolbar_by_default",
-      ],
-    });
+    const chartConfig = buildChartConfig(rawConfig);
+
+    try {
+      container.innerHTML = "";
+      removeWidget();
+
+      widget = new window.TradingView.widget({
+        container_id: containerId,
+        container: getContainerEl(),
+        library_path: chartConfig.library_path,
+        datafeed: buildDatafeed(chartConfig),
+        symbol: chartConfig.symbol_code,
+        interval: chartConfig.default_resolution,
+        locale: chartConfig.locale,
+        timezone: chartConfig.timezone,
+        autosize: true,
+        fullscreen: false,
+        theme: chartConfig.theme,
+
+        disabled_features: [
+          "header_symbol_search",
+          "symbol_search_hot_key",
+          "header_compare",
+          "compare_symbol",
+          "header_saveload",
+          "header_screenshot",
+          "display_market_status",
+          "go_to_date",
+          "timeframes_toolbar",
+          "show_hide_button_in_legend",
+          "edit_buttons_in_legend",
+          "context_menus",
+          "control_bar",
+          "use_localstorage_for_settings",
+        ],
+        enabled_features: [
+          "hide_left_toolbar_by_default",
+        ],
+      });
+
+      return true;
+    } catch (err) {
+      console.error("[terminal_chart] createWidget failed:", err);
+      return false;
+    }
   }
 
   function debounce(fn, wait) {
@@ -283,21 +313,47 @@
     };
   }
 
-  const recreateChart = debounce(createWidget, 120);
+  function bootstrapChart(attempt = 0) {
+    const ok = createWidget();
+    if (ok) return;
 
-  document.addEventListener("DOMContentLoaded", () => {
-    createWidget();
+    if (attempt >= 50) {
+      console.error("[terminal_chart] Chart bootstrap failed after retries.");
+      return;
+    }
 
-    const observer = new MutationObserver((mutations) => {
-      for (const m of mutations) {
-        if (m.type === "attributes" && m.attributeName === "data-theme") {
-          recreateChart();
-          break;
+    setTimeout(() => bootstrapChart(attempt + 1), 150);
+  }
+
+  const recreateChart = debounce(() => bootstrapChart(0), 150);
+
+  function init() {
+    bootstrapChart(0);
+
+    if (!observer) {
+      observer = new MutationObserver((mutations) => {
+        for (const m of mutations) {
+          if (m.type === "attributes" && m.attributeName === "data-theme") {
+            recreateChart();
+            break;
+          }
         }
-      }
-    });
-    observer.observe(body, { attributes: true, attributeFilter: ["data-theme"] });
+      });
+
+      observer.observe(document.body, {
+        attributes: true,
+        attributeFilter: ["data-theme"],
+      });
+    }
 
     window.addEventListener("resize", recreateChart);
-  });
+  }
+
+  if (document.readyState === "loading") {
+    document.addEventListener("DOMContentLoaded", init, { once: true });
+  } else {
+    init();
+  }
+
+  window.addEventListener("load", () => bootstrapChart(0), { once: true });
 })();
