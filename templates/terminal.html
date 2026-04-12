@@ -12,9 +12,6 @@
   <script defer src="/static/js/terminal.js?v=terminal4"></script>
   <script defer src="/static/charting_library/charting_library.standalone.js"></script>
   <script defer src="/static/js/terminal_chart.js?v=stage13_1"></script>
-  <script type="application/json" id="terminalChartConfig">
-    {{ chart_config|tojson }}
-  </script>
 </head>
 
 <body class="page page--terminal" data-theme="{{ current_theme|default('dark', true) }}">
@@ -98,8 +95,29 @@
     <div class="term-left">
       <div class="term-chart-shell">
         <div class="term-chart-box">
-          <div id="tv_chart_container" class="tv-chart-container"></div>
+          <div id="tv_chart_container" class="term-chart-tv"></div>
         </div>
+
+        <script id="terminalChartConfig" type="application/json">
+          {{ {
+            "fund_code": chart_config.fund_code,
+            "symbol_code": chart_config.fund_code,
+            "symbol_name": chart_config.name,
+            "full_name": chart_config.description,
+            "description": chart_config.description,
+            "pricescale": chart_config.pricescale,
+            "resolutions": chart_config.supported_resolutions,
+            "default_resolution": chart_config.default_interval,
+            "bars_url": chart_config.bars_endpoint,
+            "config_url": chart_config.config_endpoint,
+            "timezone": chart_config.timezone,
+            "has_intraday": chart_config.has_intraday,
+            "has_daily": chart_config.has_data,
+            "has_weekly_and_monthly": chart_config.has_data,
+            "library_path": "/static/charting_library/",
+            "lang": lang
+          } | tojson }}
+        </script>
 
         <div class="term-fund-popover" id="termFundPopover" aria-hidden="true">
           <button type="button" class="term-fund-popover__backdrop" id="termFundPopoverBackdrop"

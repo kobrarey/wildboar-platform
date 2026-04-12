@@ -17,13 +17,48 @@
 
   const chartConfig = {
     library_path: rawConfig.library_path || "/static/charting_library/",
-    bars_url: rawConfig.bars_url || rawConfig.api_bars_url || rawConfig.chart_api_url || "/api/chart/bars",
-    symbol_code: rawConfig.symbol_code || rawConfig.fund_code || rawConfig.current_fund_code || rawConfig.code || "unknown",
-    symbol_name: rawConfig.symbol_name || rawConfig.short_name || rawConfig.name || rawConfig.fund_name || "Fund",
-    full_name: rawConfig.full_name || rawConfig.symbol_name || rawConfig.short_name || rawConfig.name || "Fund",
-    description: rawConfig.description || rawConfig.full_name || rawConfig.symbol_name || rawConfig.short_name || "Fund",
-    resolutions: Array.isArray(rawConfig.resolutions) && rawConfig.resolutions.length ? rawConfig.resolutions : ["1D"],
-    default_resolution: rawConfig.default_resolution || rawConfig.interval || "1D",
+    bars_url:
+      rawConfig.bars_url ||
+      rawConfig.bars_endpoint ||
+      rawConfig.api_bars_url ||
+      rawConfig.chart_api_url ||
+      "/api/chart/bars",
+    symbol_code:
+      rawConfig.symbol_code ||
+      rawConfig.fund_code ||
+      rawConfig.current_fund_code ||
+      rawConfig.code ||
+      "unknown",
+    symbol_name:
+      rawConfig.symbol_name ||
+      rawConfig.short_name ||
+      rawConfig.name ||
+      rawConfig.fund_name ||
+      "Fund",
+    full_name:
+      rawConfig.full_name ||
+      rawConfig.description ||
+      rawConfig.symbol_name ||
+      rawConfig.short_name ||
+      rawConfig.name ||
+      "Fund",
+    description:
+      rawConfig.description ||
+      rawConfig.full_name ||
+      rawConfig.symbol_name ||
+      rawConfig.short_name ||
+      "Fund",
+    resolutions:
+      Array.isArray(rawConfig.resolutions) && rawConfig.resolutions.length
+        ? rawConfig.resolutions
+        : Array.isArray(rawConfig.supported_resolutions) && rawConfig.supported_resolutions.length
+        ? rawConfig.supported_resolutions
+        : ["1D"],
+    default_resolution:
+      rawConfig.default_resolution ||
+      rawConfig.default_interval ||
+      rawConfig.interval ||
+      "1D",
     timezone: rawConfig.timezone || "Etc/UTC",
     session: rawConfig.session || "24x7",
     minmov: Number(rawConfig.minmov || 1),
@@ -41,6 +76,32 @@
   }
 
   function normalizeBars(payload) {
+    if (
+      payload &&
+      payload.s &&
+      Array.isArray(payload.t) &&
+      Array.isArray(payload.o) &&
+      Array.isArray(payload.h) &&
+      Array.isArray(payload.l) &&
+      Array.isArray(payload.c)
+    ) {
+      const out = [];
+      for (let i = 0; i < payload.t.length; i += 1) {
+        const tsNum = Number(payload.t[i]);
+        const timeMs = tsNum < 10000000000 ? tsNum * 1000 : tsNum;
+
+        out.push({
+          time: timeMs,
+          open: Number(payload.o[i]),
+          high: Number(payload.h[i]),
+          low: Number(payload.l[i]),
+          close: Number(payload.c[i]),
+          volume: payload.v && payload.v[i] != null ? Number(payload.v[i]) : 0,
+        });
+      }
+      return out.filter(Boolean).sort((a, b) => a.time - b.time);
+    }
+
     const source = Array.isArray(payload)
       ? payload
       : Array.isArray(payload?.bars)
@@ -126,8 +187,6 @@
           const to = periodParams?.to;
 
           const url = new URL(chartConfig.bars_url, window.location.origin);
-          url.searchParams.set("fund_code", chartConfig.symbol_code);
-          url.searchParams.set("symbol", chartConfig.symbol_code);
           url.searchParams.set("resolution", resolution);
           if (from != null) url.searchParams.set("from", String(from));
           if (to != null) url.searchParams.set("to", String(to));
