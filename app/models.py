@@ -249,6 +249,50 @@ class FundNavMinute(Base):
     shares_outstanding = Column(Numeric(30, 10), nullable=False)
 
 
+class FundChartDaily(Base):
+    __tablename__ = "fund_chart_daily"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ts_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    open: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+    high: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+    low: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+    close: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+    volume: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("fund_id", "ts_utc", name="fund_chart_daily_fund_ts_uq"),
+    )
+
+
+class FundChartMinute(Base):
+    __tablename__ = "fund_chart_minute"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    ts_utc: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    open: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+    high: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+    low: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+    close: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+    volume: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint("fund_id", "ts_utc", name="fund_chart_minute_fund_ts_uq"),
+    )
+
+
 class FundOrder(Base):
     __tablename__ = "fund_orders"
 

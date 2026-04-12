@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
 from starlette.requests import Request
@@ -7,6 +7,12 @@ from app.auth.deps import NotAuthenticated, get_current_user as auth_get_current
 from app.db import get_db
 from app.i18n import get_lang_from_request
 from app.web import templates
+from app.trading.chart_service import (
+    ChartNotFoundError,
+    ChartResolutionError,
+    get_chart_bars_payload,
+    get_chart_config_by_code,
+)
 from app.trading.service import (
     get_first_active_fund_code,
     get_terminal_page_payload,
@@ -73,5 +79,42 @@ def terminal_fund_page(
             "asset_rows": payload["asset_rows"],
             "fund_info": payload["fund_info"],
             "form_state": payload["form_state"],
+            "chart_config": payload["chart_config"],
         },
     )
+
+
+@router.get("/api/chart/config/{fund_code}")
+def chart_config_endpoint(
+    fund_code: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    lang = get_lang_from_request(request)
+
+    try:
+        return get_chart_config_by_code(db, fund_code, lang)
+    except ChartNotFoundError:
+        raise HTTPException(status_code=404, detail="Fund not found")
+
+
+@router.get("/api/chart/bars/{fund_code}")
+def chart_bars_endpoint(
+    fund_code: str,
+    resolution: str = Query(...),
+    from_ts: int = Query(..., alias="from"),
+    to_ts: int = Query(..., alias="to"),
+    db: Session = Depends(get_db),
+):
+    try:
+        return get_chart_bars_payload(
+            db=db,
+            fund_code=fund_code,
+            resolution=resolution,
+            from_ts=from_ts,
+            to_ts=to_ts,
+        )
+    except ChartNotFoundError:
+        raise HTTPException(status_code=404, detail="Fund not found")
+    except ChartResolutionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))

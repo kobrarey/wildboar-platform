@@ -6,10 +6,15 @@
   <title>WildBoar — {{ current_fund.short_name if current_fund and current_fund.short_name else 'Terminal' }}</title>
 
   <link rel="stylesheet" href="/static/css/app.css?v=terminal_base1" />
-  <link rel="stylesheet" href="/static/css/terminal.css?v=terminal6" />
+  <link rel="stylesheet" href="/static/css/terminal.css?v=terminal7" />
 
   <script defer src="/static/js/app.js?v=5_2"></script>
   <script defer src="/static/js/terminal.js?v=terminal4"></script>
+  <script defer src="/static/charting_library/charting_library.standalone.js"></script>
+  <script defer src="/static/js/terminal_chart.js?v=stage13_1"></script>
+  <script type="application/json" id="terminalChartConfig">
+    {{ chart_config|tojson }}
+  </script>
 </head>
 
 <body class="page page--terminal" data-theme="{{ current_theme|default('dark', true) }}">
@@ -92,7 +97,9 @@
     <!-- Left: chart + bottom tables -->
     <div class="term-left">
       <div class="term-chart-shell">
-        <div class="term-chart-box"></div>
+        <div class="term-chart-box">
+          <div id="tv_chart_container" class="tv-chart-container"></div>
+        </div>
 
         <div class="term-fund-popover" id="termFundPopover" aria-hidden="true">
           <button type="button" class="term-fund-popover__backdrop" id="termFundPopoverBackdrop"

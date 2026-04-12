@@ -16,6 +16,7 @@ from app.models import (
     UserFundPositionStats,
 )
 from app.portfolio import FUND_ICON_MAP, get_user_portfolio
+from app.trading.chart_service import build_chart_config_for_fund
 
 
 ZERO = Decimal("0")
@@ -355,6 +356,8 @@ def get_terminal_page_payload(
     if not fund:
         return None
 
+    chart_config = build_chart_config_for_fund(db, fund, lang)
+
     market_snapshot = _build_market_snapshot(db, fund, lang)
     fund_menu = _build_fund_menu(db, lang)
     trade_history = _build_trade_history(db, user, lang)
@@ -390,4 +393,5 @@ def get_terminal_page_payload(
             "available_usdt": available_usdt,
             "available_shares_current_fund": available_shares_current_fund,
         },
+        "chart_config": chart_config,
     }
