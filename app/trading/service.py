@@ -323,16 +323,9 @@ def _build_assets_block(db: Session, user: User | None, lang: str) -> list[dict]
 def _build_fund_info(db: Session, fund: Fund, lang: str) -> dict:
     latest_row = _get_latest_nav_row(db, fund.id)
 
-    first_row = (
-        db.query(FundNavMinute)
-        .filter(FundNavMinute.fund_id == fund.id)
-        .order_by(FundNavMinute.ts_utc.asc())
-        .first()
-    )
-
     launch_date = None
-    if first_row and first_row.ts_utc:
-        launch_date = first_row.ts_utc.strftime("%d.%m.%Y")
+    if getattr(fund, "launch_date", None):
+        launch_date = fund.launch_date.strftime("%d.%m.%Y")
 
     return {
         "fund_code": fund.code,

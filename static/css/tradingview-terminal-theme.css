@@ -1,0 +1,29 @@
+/* Loaded inside TradingView iframe via custom_css_url — align with terminal dark/light panels */
+
+html.theme-dark,
+html.theme-dark body {
+  --color-chart-page-bg: #0b1220;
+  --tv-color-platform-background: #0b1220;
+  --color-pane-bg: #111827;
+  --tv-color-pane-background: #111827;
+}
+
+html.theme-dark .chart-controls-bar,
+.theme-dark .chart-controls-bar {
+  background-color: #111827 !important;
+  border-top-color: rgba(148, 163, 184, 0.18) !important;
+}
+
+html.theme-light,
+html.theme-light body {
+  --color-chart-page-bg: #f3f3f3;
+  --tv-color-platform-background: #f3f3f3;
+  --color-pane-bg: #ffffff;
+  --tv-color-pane-background: #ffffff;
+}
+
+html.theme-light .chart-controls-bar,
+.theme-light .chart-controls-bar {
+  background-color: #ffffff !important;
+  border-top-color: rgba(15, 23, 42, 0.08) !important;
+}

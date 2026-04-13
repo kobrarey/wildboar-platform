@@ -1,157 +1,159 @@
 (() => {
-  const containerId = "tv_chart_container";
+  const CONTAINER_ID = "tv_chart_container";
+  const CFG_ID = "terminalChartConfig";
+  /** Must match .term-chart-shell --term-chart-px in terminal.css */
+  const CHART_PX = 520;
   let widget = null;
-  let observer = null;
 
-  function getCfgEl() {
-    return document.getElementById("terminalChartConfig");
+  function waitTwoFrames() {
+    return new Promise((resolve) => {
+      requestAnimationFrame(() => {
+        requestAnimationFrame(resolve);
+      });
+    });
   }
 
-  function getContainerEl() {
-    return document.getElementById(containerId);
+  function measureTerminalChart(containerEl) {
+    const shell = containerEl?.closest?.(".term-chart-shell");
+    const target = shell || containerEl;
+    const r = target?.getBoundingClientRect?.() || { width: 0, height: 0 };
+    const w = Math.max(200, Math.floor(r.width || containerEl?.clientWidth || 0));
+    const h = Math.max(CHART_PX, Math.floor(r.height || containerEl?.clientHeight || CHART_PX));
+    return { w, h };
   }
 
-  function parseRawConfig() {
-    const cfgEl = getCfgEl();
-    if (!cfgEl) return null;
+  function bumpWidgetSize() {
+    const c = getContainerElement();
+    if (!widget || !c || typeof widget.resize !== "function") return;
+    try {
+      widget.resize();
+    } catch (_) {
+      /* ignore */
+    }
+  }
+
+  function scheduleChartResizePasses() {
+    [0, 50, 150, 400, 1200].forEach((ms) => {
+      setTimeout(() => bumpWidgetSize(), ms);
+    });
+  }
+
+  function getConfigElement() {
+    return document.getElementById(CFG_ID);
+  }
+
+  function getContainerElement() {
+    return document.getElementById(CONTAINER_ID);
+  }
+
+  function parseConfig() {
+    const el = getConfigElement();
+    if (!el) {
+      console.error("[terminal_chart] terminalChartConfig element not found");
+      return null;
+    }
 
     try {
-      return JSON.parse(cfgEl.textContent || "{}");
+      return JSON.parse(el.textContent || "{}");
     } catch (err) {
-      console.error("[terminal_chart] Failed to parse terminalChartConfig:", err);
+      console.error("[terminal_chart] Failed to parse config JSON:", err);
       return null;
     }
   }
 
-  function buildChartConfig(rawConfig) {
-    const body = document.body;
-    const lang = (document.documentElement.lang || rawConfig?.lang || "ru").toLowerCase();
-    const locale = lang === "en" ? "en" : "ru";
+  function normalizeUdfBars(payload) {
+    if (
+      !payload ||
+      !payload.s ||
+      !Array.isArray(payload.t) ||
+      !Array.isArray(payload.o) ||
+      !Array.isArray(payload.h) ||
+      !Array.isArray(payload.l) ||
+      !Array.isArray(payload.c)
+    ) {
+      return [];
+    }
+
+    const bars = [];
+    for (let i = 0; i < payload.t.length; i += 1) {
+      const ts = Number(payload.t[i]);
+      if (!Number.isFinite(ts)) continue;
+
+      bars.push({
+        time: ts * 1000,
+        open: Number(payload.o[i]),
+        high: Number(payload.h[i]),
+        low: Number(payload.l[i]),
+        close: Number(payload.c[i]),
+        volume:
+          Array.isArray(payload.v) && payload.v[i] != null
+            ? Number(payload.v[i])
+            : 0,
+      });
+    }
+
+    return bars.sort((a, b) => a.time - b.time);
+  }
+
+  function buildOverrides(theme) {
+    if (theme === "dark") {
+      return {
+        "paneProperties.background": "#0b1220",
+        "paneProperties.backgroundType": "solid",
+        "paneProperties.backgroundGradientStartColor": "#0b1220",
+        "paneProperties.backgroundGradientEndColor": "#0b1220",
+        "paneProperties.vertGridProperties.color": "#1f2937",
+        "paneProperties.horzGridProperties.color": "#1f2937",
+        "scalesProperties.textColor": "#cbd5e1",
+        "scalesProperties.lineColor": "#334155",
+        "symbolWatermarkProperties.transparency": 90,
+      };
+    }
 
     return {
-      locale,
-      theme: (body.dataset.theme || "light") === "dark" ? "Dark" : "Light",
-      library_path: rawConfig?.library_path || "/static/charting_library/",
-      bars_url:
-        rawConfig?.bars_url ||
-        rawConfig?.bars_endpoint ||
-        rawConfig?.api_bars_url ||
-        rawConfig?.chart_api_url ||
-        "/api/chart/bars",
-      symbol_code:
-        rawConfig?.symbol_code ||
-        rawConfig?.fund_code ||
-        rawConfig?.current_fund_code ||
-        rawConfig?.code ||
-        "unknown",
-      symbol_name:
-        rawConfig?.symbol_name ||
-        rawConfig?.short_name ||
-        rawConfig?.name ||
-        rawConfig?.fund_name ||
-        "Fund",
-      full_name:
-        rawConfig?.full_name ||
-        rawConfig?.description ||
-        rawConfig?.symbol_name ||
-        rawConfig?.short_name ||
-        rawConfig?.name ||
-        "Fund",
-      description:
-        rawConfig?.description ||
-        rawConfig?.full_name ||
-        rawConfig?.symbol_name ||
-        rawConfig?.short_name ||
-        "Fund",
-      resolutions:
-        Array.isArray(rawConfig?.resolutions) && rawConfig.resolutions.length
-          ? rawConfig.resolutions
-          : Array.isArray(rawConfig?.supported_resolutions) && rawConfig.supported_resolutions.length
-          ? rawConfig.supported_resolutions
-          : ["1D"],
-      default_resolution:
-        rawConfig?.default_resolution ||
-        rawConfig?.default_interval ||
-        rawConfig?.interval ||
-        "1D",
-      timezone: rawConfig?.timezone || "Etc/UTC",
-      session: rawConfig?.session || "24x7",
-      minmov: Number(rawConfig?.minmov || 1),
-      pricescale: Number(rawConfig?.pricescale || 100),
-      volume_precision: Number(rawConfig?.volume_precision || 2),
-      has_intraday: rawConfig?.has_intraday !== undefined ? !!rawConfig.has_intraday : true,
-      has_daily: rawConfig?.has_daily !== undefined ? !!rawConfig.has_daily : true,
-      has_weekly_and_monthly:
-        rawConfig?.has_weekly_and_monthly !== undefined
-          ? !!rawConfig.has_weekly_and_monthly
-          : true,
+      "paneProperties.background": "#ffffff",
+      "paneProperties.backgroundType": "solid",
+      "paneProperties.backgroundGradientStartColor": "#ffffff",
+      "paneProperties.backgroundGradientEndColor": "#ffffff",
+      "paneProperties.vertGridProperties.color": "#e5e7eb",
+      "paneProperties.horzGridProperties.color": "#e5e7eb",
+      "scalesProperties.textColor": "#111827",
+      "scalesProperties.lineColor": "#d1d5db",
+      "symbolWatermarkProperties.transparency": 90,
     };
   }
 
-  function normalizeBars(payload) {
-    if (
-      payload &&
-      payload.s &&
-      Array.isArray(payload.t) &&
-      Array.isArray(payload.o) &&
-      Array.isArray(payload.h) &&
-      Array.isArray(payload.l) &&
-      Array.isArray(payload.c)
-    ) {
-      const out = [];
-      for (let i = 0; i < payload.t.length; i += 1) {
-        const tsNum = Number(payload.t[i]);
-        const timeMs = tsNum < 10000000000 ? tsNum * 1000 : tsNum;
+  function buildChartConfig(raw) {
+    const bodyTheme = (document.body?.dataset?.theme || "dark").toLowerCase();
+    const theme = bodyTheme === "light" ? "light" : "dark";
+    const lang = (document.documentElement.lang || raw.lang || "ru").toLowerCase();
+    const locale = lang === "en" ? "en" : "ru";
 
-        out.push({
-          time: timeMs,
-          open: Number(payload.o[i]),
-          high: Number(payload.h[i]),
-          low: Number(payload.l[i]),
-          close: Number(payload.c[i]),
-          volume: payload.v && payload.v[i] != null ? Number(payload.v[i]) : 0,
-        });
-      }
-      return out.filter(Boolean).sort((a, b) => a.time - b.time);
-    }
-
-    const source = Array.isArray(payload)
-      ? payload
-      : Array.isArray(payload?.bars)
-      ? payload.bars
-      : Array.isArray(payload?.data)
-      ? payload.data
-      : Array.isArray(payload?.items)
-      ? payload.items
-      : [];
-
-    return source
-      .map((row) => {
-        const ts = row.time ?? row.ts ?? row.t ?? row.timestamp ?? row.datetime;
-        const open = row.open ?? row.o;
-        const high = row.high ?? row.h;
-        const low = row.low ?? row.l;
-        const close = row.close ?? row.c;
-        const volume = row.volume ?? row.v ?? 0;
-
-        if (ts == null || open == null || high == null || low == null || close == null) {
-          return null;
-        }
-
-        const tsNum = Number(ts);
-        const timeMs = tsNum < 10000000000 ? tsNum * 1000 : tsNum;
-
-        return {
-          time: timeMs,
-          open: Number(open),
-          high: Number(high),
-          low: Number(low),
-          close: Number(close),
-          volume: Number(volume || 0),
-        };
-      })
-      .filter(Boolean)
-      .sort((a, b) => a.time - b.time);
+    return {
+      fund_code: raw.fund_code || raw.symbol_code || "unknown",
+      symbol: raw.symbol_code || raw.fund_code || "unknown",
+      name: raw.symbol_name || raw.name || raw.fund_code || "Fund",
+      description: raw.description || raw.full_name || raw.symbol_name || "Fund",
+      bars_url: raw.bars_url || raw.bars_endpoint || "/api/chart/bars/unknown",
+      resolutions:
+        Array.isArray(raw.resolutions) && raw.resolutions.length
+          ? raw.resolutions
+          : Array.isArray(raw.supported_resolutions) && raw.supported_resolutions.length
+          ? raw.supported_resolutions
+          : ["1D"],
+      interval:
+        raw.default_resolution ||
+        raw.default_interval ||
+        "1D",
+      timezone: raw.timezone || "Etc/UTC",
+      pricescale: Number(raw.pricescale || 100),
+      theme,
+      locale,
+      library_path: raw.library_path || "/static/charting_library/",
+      has_intraday: raw.has_intraday === true,
+      has_daily: raw.has_daily !== false,
+      has_weekly_and_monthly: raw.has_weekly_and_monthly !== false,
+    };
   }
 
   function buildDatafeed(chartConfig) {
@@ -159,39 +161,37 @@
       onReady: (cb) => {
         setTimeout(() => {
           cb({
-            supported_resolutions: chartConfig.resolutions,
             supports_search: false,
             supports_group_request: false,
             supports_marks: false,
             supports_timescale_marks: false,
-            supports_time: true,
+            supports_time: false,
+            supported_resolutions: chartConfig.resolutions,
           });
         }, 0);
       },
 
-      resolveSymbol: (_symbolName, onResolve, onError) => {
-        try {
-          onResolve({
-            ticker: chartConfig.symbol_code,
-            name: chartConfig.symbol_name,
-            description: chartConfig.description,
-            type: "crypto",
-            session: chartConfig.session,
-            timezone: chartConfig.timezone,
-            exchange: "WildBoar",
-            listed_exchange: "WildBoar",
-            minmov: chartConfig.minmov,
-            pricescale: chartConfig.pricescale,
-            has_intraday: chartConfig.has_intraday,
-            has_daily: chartConfig.has_daily,
-            has_weekly_and_monthly: chartConfig.has_weekly_and_monthly,
-            supported_resolutions: chartConfig.resolutions,
-            volume_precision: chartConfig.volume_precision,
-            data_status: "streaming",
-          });
-        } catch (err) {
-          onError(err?.message || "resolveSymbol error");
-        }
+      resolveSymbol: (_symbolName, onResolve, _onError) => {
+        const symbolInfo = {
+          name: chartConfig.symbol,
+          ticker: chartConfig.symbol,
+          description: chartConfig.description,
+          type: "crypto",
+          exchange: "WildBoar",
+          listed_exchange: "WildBoar",
+          session: "24x7",
+          timezone: chartConfig.timezone,
+          minmov: 1,
+          pricescale: chartConfig.pricescale,
+          has_intraday: chartConfig.has_intraday,
+          has_daily: chartConfig.has_daily,
+          has_weekly_and_monthly: chartConfig.has_weekly_and_monthly,
+          supported_resolutions: chartConfig.resolutions,
+          data_status: "streaming",
+          visible_plots_set: "ohlc",
+        };
+
+        setTimeout(() => onResolve(symbolInfo), 0);
       },
 
       getBars: async (_symbolInfo, resolution, periodParams, onHistoryCallback, onErrorCallback) => {
@@ -200,7 +200,7 @@
           const to = periodParams?.to;
 
           const url = new URL(chartConfig.bars_url, window.location.origin);
-          url.searchParams.set("resolution", resolution);
+          url.searchParams.set("resolution", String(resolution));
           if (from != null) url.searchParams.set("from", String(from));
           if (to != null) url.searchParams.set("to", String(to));
 
@@ -211,12 +211,20 @@
           });
 
           if (!resp.ok) {
+            console.error("[terminal_chart] bars HTTP error:", resp.status, url.toString());
             onErrorCallback(`HTTP ${resp.status}`);
             return;
           }
 
-          const payload = await resp.json().catch(() => null);
-          const bars = normalizeBars(payload);
+          const payload = await resp.json();
+          const bars = normalizeUdfBars(payload);
+
+          console.log("[terminal_chart] getBars", {
+            url: url.toString(),
+            resolution,
+            bars: bars.length,
+            status: payload?.s,
+          });
 
           if (!bars.length) {
             onHistoryCallback([], { noData: true });
@@ -225,17 +233,13 @@
 
           onHistoryCallback(bars, { noData: false });
         } catch (err) {
+          console.error("[terminal_chart] getBars failed:", err);
           onErrorCallback(err?.message || "getBars error");
         }
       },
 
-      subscribeBars: () => {
-        // Stage 13: stub only
-      },
-
-      unsubscribeBars: () => {
-        // Stage 13: stub only
-      },
+      subscribeBars: () => {},
+      unsubscribeBars: () => {},
     };
   }
 
@@ -246,42 +250,77 @@
     widget = null;
   }
 
-  function createWidget() {
-    const rawConfig = parseRawConfig();
-    const container = getContainerEl();
+  function waitForTradingView(maxAttempts = 60, delayMs = 150) {
+    return new Promise((resolve, reject) => {
+      let attempt = 0;
+
+      function check() {
+        const ok =
+          typeof window.TradingView !== "undefined" &&
+          typeof window.TradingView.widget === "function";
+
+        if (ok) {
+          resolve(window.TradingView);
+          return;
+        }
+
+        attempt += 1;
+        if (attempt >= maxAttempts) {
+          reject(new Error("TradingView.widget is not available"));
+          return;
+        }
+
+        setTimeout(check, delayMs);
+      }
+
+      check();
+    });
+  }
+
+  async function initChart() {
+    const rawConfig = parseConfig();
+    const container = getContainerElement();
 
     if (!rawConfig || !container) {
-      return false;
+      return;
     }
-
-    if (typeof window.TradingView === "undefined" || typeof window.TradingView.widget !== "function") {
-      return false;
-    }
-
-    const chartConfig = buildChartConfig(rawConfig);
 
     try {
-      container.innerHTML = "";
-      removeWidget();
+      const TradingView = await waitForTradingView();
+      const chartConfig = buildChartConfig(rawConfig);
 
-      widget = new window.TradingView.widget({
-        container_id: containerId,
-        container: getContainerEl(),
-        library_path: chartConfig.library_path,
+      removeWidget();
+      container.innerHTML = "";
+
+      await waitTwoFrames();
+
+      const { w, h } = measureTerminalChart(container);
+
+      console.log("[terminal_chart] initChart", chartConfig, { w, h });
+
+      widget = new TradingView.widget({
+        symbol: chartConfig.symbol,
+        interval: chartConfig.interval,
+        container,
         datafeed: buildDatafeed(chartConfig),
-        symbol: chartConfig.symbol_code,
-        interval: chartConfig.default_resolution,
+        library_path: chartConfig.library_path,
         locale: chartConfig.locale,
         timezone: chartConfig.timezone,
-        autosize: true,
-        fullscreen: false,
         theme: chartConfig.theme,
-
+        autosize: false,
+        width: w,
+        height: h,
+        fullscreen: false,
+        overrides: buildOverrides(chartConfig.theme),
+        loading_screen: {
+          backgroundColor: chartConfig.theme === "dark" ? "#0b1220" : "#ffffff",
+        },
+        toolbar_bg: chartConfig.theme === "dark" ? "#111827" : "#ffffff",
+        custom_css_url: `${window.location.origin}/static/css/tradingview-terminal-theme.css`,
         disabled_features: [
+          "use_localstorage_for_settings",
           "header_symbol_search",
-          "symbol_search_hot_key",
           "header_compare",
-          "compare_symbol",
           "header_saveload",
           "header_screenshot",
           "display_market_status",
@@ -291,69 +330,60 @@
           "edit_buttons_in_legend",
           "context_menus",
           "control_bar",
-          "use_localstorage_for_settings",
         ],
-        enabled_features: [
-          "hide_left_toolbar_by_default",
-        ],
+        load_last_chart: false,
       });
 
-      return true;
+      if (widget && typeof widget.onChartReady === "function") {
+        widget.onChartReady(() => {
+          console.log("[terminal_chart] chart ready");
+          requestAnimationFrame(() => {
+            bumpWidgetSize();
+            requestAnimationFrame(() => bumpWidgetSize());
+          });
+          scheduleChartResizePasses();
+        });
+      }
     } catch (err) {
-      console.error("[terminal_chart] createWidget failed:", err);
-      return false;
+      console.error("[terminal_chart] initChart failed:", err);
     }
   }
 
-  function debounce(fn, wait) {
-    let t = null;
-    return (...args) => {
-      clearTimeout(t);
-      t = setTimeout(() => fn(...args), wait);
-    };
-  }
+  let themeTimeout = null;
 
-  function bootstrapChart(attempt = 0) {
-    const ok = createWidget();
-    if (ok) return;
+  function bindThemeRebuild() {
+    const body = document.body;
+    if (!body) return;
 
-    if (attempt >= 50) {
-      console.error("[terminal_chart] Chart bootstrap failed after retries.");
-      return;
-    }
-
-    setTimeout(() => bootstrapChart(attempt + 1), 150);
-  }
-
-  const recreateChart = debounce(() => bootstrapChart(0), 150);
-
-  function init() {
-    bootstrapChart(0);
-
-    if (!observer) {
-      observer = new MutationObserver((mutations) => {
-        for (const m of mutations) {
-          if (m.type === "attributes" && m.attributeName === "data-theme") {
-            recreateChart();
-            break;
-          }
+    const mo = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        if (m.type === "attributes" && m.attributeName === "data-theme") {
+          clearTimeout(themeTimeout);
+          themeTimeout = setTimeout(() => {
+            initChart();
+          }, 150);
+          break;
         }
-      });
+      }
+    });
 
-      observer.observe(document.body, {
-        attributes: true,
-        attributeFilter: ["data-theme"],
-      });
-    }
+    mo.observe(body, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+  }
 
-    window.addEventListener("resize", recreateChart);
+  function start() {
+    initChart();
+    bindThemeRebuild();
+    window.addEventListener("resize", () => {
+      bumpWidgetSize();
+    });
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", init, { once: true });
+    document.addEventListener("DOMContentLoaded", start, { once: true });
   } else {
-    init();
+    start();
   }
-
-  window.addEventListener("load", () => bootstrapChart(0), { once: true });
 })();

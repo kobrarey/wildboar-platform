@@ -1,5 +1,22 @@
 /* Terminal-only styles (scoped via .page--terminal) */
 
+/*
+ * app.css sets html,body{height:100%}. Terminal uses class page--terminal ON <body> itself,
+ * so body:has(.page--terminal) never matched — document height stayed locked to one screen.
+ */
+html:has(body.page--terminal){
+  height: auto;
+  min-height: 100%;
+}
+
+body.page.page--terminal{
+  height: auto;
+  min-height: 100vh;
+  min-height: 100dvh;
+  overflow-x: hidden;
+  overflow-y: visible;
+}
+
 .page--terminal{
   /* canvas behind cards (gutters / grid gaps), Bybit-style light terminal */
   --t-bg: #f3f3f3;
@@ -15,6 +32,7 @@
   color: var(--t-text);
   min-height: 100vh;
   min-height: 100dvh;
+  height: auto;
   display: flex;
   flex-direction: column;
 }
@@ -165,22 +183,23 @@
 .pos{ color: var(--t-green); }
 .neg{ color: var(--t-red); }
 
-/* grid */
+/* grid — height from content so document can scroll (Bybit-style); chart keeps fixed band */
 .term-grid{
-  flex: 1;
-  min-height: 0;
-  display:grid;
+  flex: 0 0 auto;
+  display: grid;
   grid-template-columns: 1fr 380px;
-  grid-template-rows: 1fr;
+  grid-template-rows: auto;
+  align-items: start;
   gap: 14px;
-  padding: 14px 16px 14px;
+  padding: 14px 16px 24px;
 }
 
 .term-left{
-  display:flex;
-  flex-direction:column;
+  display: flex;
+  flex-direction: column;
   gap: 14px;
-  min-height: 0;
+  min-width: 0;
+  width: 100%;
 }
 .term-right{
   display:flex;
@@ -189,11 +208,17 @@
   min-height: 0;
 }
 
+/* Fixed chart band — height matches terminal_chart.js measureTerminalChart (CHART_PX) */
 .term-chart-shell{
+  --term-chart-px: 520px;
   position: relative;
+  flex: 0 0 auto;
   flex-shrink: 0;
-  height: 420px;
   width: 100%;
+  height: var(--term-chart-px);
+  min-height: var(--term-chart-px);
+  max-height: var(--term-chart-px);
+  box-sizing: border-box;
 }
 
 .term-chart-box{
@@ -206,8 +231,9 @@
 }
 
 .term-chart-tv{
-  width: 100%;
+  display: block;
   height: 100%;
+  width: 100%;
   min-height: 100%;
 }
 
@@ -219,8 +245,10 @@
 
 /* bottom block */
 .term-bottom{
-  flex: 1;
-  min-height: 0;
+  flex: 0 0 auto;
+  /* tall enough for ~4+ rows; overflow rows in .term-tbody; page scrolls past viewport */
+  min-height: 420px;
+  max-height: min(72vh, 680px);
   display: flex;
   flex-direction: column;
   border: 1px solid var(--t-border);
@@ -640,6 +668,6 @@
 @media (max-width: 1020px){
   .term-grid{
     grid-template-columns: 1fr;
-    grid-template-rows: minmax(0, 1fr) auto;
+    grid-template-rows: auto auto;
   }
 }

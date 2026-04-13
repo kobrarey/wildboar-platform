@@ -231,6 +231,7 @@ class Fund(Base):
     performance_fee_pct = Column(Numeric(10, 4), nullable=True)
 
     icon_name = Column(String(120), nullable=True)
+    launch_date = Column(Date, nullable=True)
 
     category = Column(String(16), nullable=False)  # 'active', 'index', 'test'
     sort_order = Column(Integer, nullable=False, default=0)

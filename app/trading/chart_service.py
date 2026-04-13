@@ -117,7 +117,7 @@ def build_chart_config_for_fund(db: Session, fund: Fund, lang: str) -> dict:
         "default_interval": default_interval,
         "has_data": bool(has_daily or has_minute),
         "has_intraday": bool(has_minute),
-        "timezone": "UTC",
+        "timezone": "Etc/UTC",
         "bars_endpoint": f"/api/chart/bars/{fund.code}",
         "config_endpoint": f"/api/chart/config/{fund.code}",
     }
