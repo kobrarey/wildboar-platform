@@ -183,16 +183,34 @@ class WalletTransfer(Base):
 class WithdrawSession(Base):
     __tablename__ = "withdraw_sessions"
 
-    token: Mapped[str] = mapped_column(String(80), primary_key=True)
-    user_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    wallet_id: Mapped[int] = mapped_column(BigInteger, ForeignKey("user_wallets.id", ondelete="CASCADE"), nullable=False)
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    token: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+
+    user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    wallet_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("user_wallets.id", ondelete="CASCADE"),
+        nullable=False,
+    )
 
     to_address: Mapped[str] = mapped_column(String(64), nullable=False)
     amount_gross: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False)
-    fee_usdt: Mapped[Decimal] = mapped_column(Numeric(38, 18), nullable=False, server_default=sa_text("1"))
-    email_slot: Mapped[int] = mapped_column(Integer, nullable=False)
+    fee_usdt: Mapped[Decimal] = mapped_column(
+        Numeric(38, 18),
+        nullable=False,
+        server_default=sa_text("1"),
+    )
+    email_slot: Mapped[int] = mapped_column(SmallInteger, nullable=False)
 
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, server_default=func.now())
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

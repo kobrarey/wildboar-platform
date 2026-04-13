@@ -2,12 +2,12 @@
 -- PostgreSQL database dump
 --
 
-\restrict 97ujGVn6ACExmQDyU9DMcws6Luh7msX3xtkGMgJ4B7ewflP0Subzf8IL3ZzaQzB
+\restrict RidW2BbICEOcMbwm1wsdHikJNGUvY5bA146ZouVMxrMdbFAglrwaica3h2XFtGS
 
 -- Dumped from database version 16.11
 -- Dumped by pg_dump version 16.11
 
--- Started on 2026-04-12 15:05:14
+-- Started on 2026-04-13 16:17:58
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -218,7 +218,8 @@ CREATE TABLE public.funds (
     benchmark_name_en character varying(150),
     management_fee_pct numeric(10,4),
     performance_fee_pct numeric(10,4),
-    icon_name character varying(100)
+    icon_name character varying(100),
+    launch_date date
 );
 
 
@@ -1295,11 +1296,11 @@ ALTER TABLE ONLY public.withdraw_sessions
     ADD CONSTRAINT withdraw_sessions_wallet_id_fkey FOREIGN KEY (wallet_id) REFERENCES public.user_wallets(id) ON DELETE CASCADE;
 
 
--- Completed on 2026-04-12 15:05:14
+-- Completed on 2026-04-13 16:17:58
 
 --
 -- PostgreSQL database dump complete
 --
 
-\unrestrict 97ujGVn6ACExmQDyU9DMcws6Luh7msX3xtkGMgJ4B7ewflP0Subzf8IL3ZzaQzB
+\unrestrict RidW2BbICEOcMbwm1wsdHikJNGUvY5bA146ZouVMxrMdbFAglrwaica3h2XFtGS
 
