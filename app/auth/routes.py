@@ -28,10 +28,9 @@ from app.auth import (
     is_entered_email_verified,
     send_login_2fa_code,
     create_session,
-    COOKIE_NAME,
-    SESSION_TTL_DAYS,
     _enforce_resend_cooldown,
 )
+from app.auth.cookies import set_auth_cookie, clear_auth_cookie
 
 router = APIRouter()
 
@@ -189,14 +188,7 @@ def register_confirm(request: Request, payload: RegisterConfirmIn, db: Session =
         return JSONResponse(status_code=500, content={"status": "error", "message": t(lang, "registration_failed")})
 
     resp = JSONResponse(content={"status": "ok", "redirect": "/dashboard"})
-    resp.set_cookie(
-        key=COOKIE_NAME,
-        value=session_id,
-        httponly=True,
-        samesite="lax",
-        secure=False,
-        path="/",
-    )
+    set_auth_cookie(resp, session_id)
     return resp
 
 
@@ -260,15 +252,7 @@ def login(
 
     session_id = create_session(db, user.id)
     resp = JSONResponse(content={"status": "ok", "redirect": "/dashboard"})
-    resp.set_cookie(
-        key=COOKIE_NAME,
-        value=session_id,
-        httponly=True,
-        secure=(request.url.scheme == "https"),
-        samesite="lax",
-        max_age=SESSION_TTL_DAYS * 24 * 60 * 60,
-        path="/",
-    )
+    set_auth_cookie(resp, session_id)
     return resp
 
 
@@ -331,27 +315,19 @@ def login_2fa(request: Request, payload: Login2FAIn, db: Session = Depends(get_d
 
     session_id = create_session(db, user.id)
     resp = JSONResponse(content={"status": "ok", "redirect": "/dashboard"})
-    resp.set_cookie(
-        key=COOKIE_NAME,
-        value=session_id,
-        httponly=True,
-        secure=(request.url.scheme == "https"),
-        samesite="lax",
-        max_age=SESSION_TTL_DAYS * 24 * 60 * 60,
-        path="/",
-    )
+    set_auth_cookie(resp, session_id)
     return resp
 
 
 @router.get("/logout")
 def logout(request: Request, db: Session = Depends(get_db)):
-    session_id = request.cookies.get(COOKIE_NAME)
+    session_id = request.cookies.get(settings.COOKIE_NAME)
     if session_id:
         db.query(SessionModel).filter(SessionModel.id == session_id).delete()
         db.commit()
 
     resp = RedirectResponse(url="/", status_code=302)
-    resp.delete_cookie(key=COOKIE_NAME, path="/")
+    clear_auth_cookie(resp)
     return resp
 
 
