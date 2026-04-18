@@ -1,0 +1,16 @@
+[Unit]
+Description=WildBoar Worker - Withdrawal Processor
+After=network.target
+
+[Service]
+Type=simple
+User=wildboar
+Group=wildboar
+WorkingDirectory=/opt/wildboar
+EnvironmentFile=/etc/wildboar/wildboar.env
+ExecStart=/opt/wildboar/.venv/bin/python -m workers.bsc_withdrawal_processor
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
