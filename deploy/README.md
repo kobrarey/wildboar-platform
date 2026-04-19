@@ -1,8 +1,14 @@
 # WildBoar deploy notes
 
+## Deploy path standard
+
+- code: `/opt/wildboar/current`
+- env: `/opt/wildboar/shared/.env`
+- venv: `/opt/wildboar/.venv`
+
 ## Env
 Server env file:
-`/etc/wildboar/wildboar.env`
+`/opt/wildboar/shared/.env`
 
 ## Systemd units
 Copy unit files from:
@@ -41,5 +47,8 @@ sudo systemctl reload nginx
 ```
 
 ## Web app
-Production start is handled by systemd:
-`uvicorn app.main:app --host 127.0.0.1 --port 8000 --proxy-headers --forwarded-allow-ips=127.0.0.1`
+Production start is handled by systemd.
+
+- code dir: `/opt/wildboar/current`
+- env file: `/opt/wildboar/shared/.env`
+- venv: `/opt/wildboar/.venv`
