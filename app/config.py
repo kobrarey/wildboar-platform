@@ -94,5 +94,13 @@ class Settings(BaseSettings):
     WBNB_ADDRESS: str = ""
     USDT_BSC_ADDRESS: str = ""
 
+    # --- stage 18.1: navcalc local config ---
+    BYBIT_NAV_HTTP_TIMEOUT_SEC: int = 30
+    BYBIT_NAV_RETRIES: int = 4
+    BYBIT_NAV_BACKOFF_SEC: Decimal = Decimal("0.8")
+    BYBIT_NAV_RECV_WINDOW_MS: int = 5000
+    BYBIT_NAV_EQUITY_TOL_PCT: Decimal = Decimal("0.5")
+    NAV_POLL_INTERVAL_SEC: int = 10
+
 
 settings = Settings()

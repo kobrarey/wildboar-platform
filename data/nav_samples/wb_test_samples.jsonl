@@ -1,0 +1,10 @@
+{"fund_code": "wb_test", "sample_ts": "2026-04-26T14:19:47.314928+00:00", "nav_usd": "700.61086129", "source": "bybit_v5", "sanity_check_passed": true}
+{"fund_code": "wb_test", "sample_ts": "2026-04-26T14:20:06.543726+00:00", "nav_usd": "700.47203324", "source": "bybit_v5", "sanity_check_passed": true}
+{"fund_code": "wb_test", "sample_ts": "2026-04-26T14:20:16.641605+00:00", "nav_usd": "701.75171080", "source": "bybit_v5", "sanity_check_passed": true}
+{"fund_code": "wb_test", "sample_ts": "2026-04-26T14:20:26.490923+00:00", "nav_usd": "701.90024134", "source": "bybit_v5", "sanity_check_passed": true}
+{"fund_code": "wb_test", "sample_ts": "2026-04-26T14:21:15.946522+00:00", "nav_usd": "702.31471043", "source": "bybit_v5", "sanity_check_passed": true}
+{"fund_code": "wb_test", "sample_ts": "2026-04-26T14:21:25.663007+00:00", "nav_usd": "702.53713184", "source": "bybit_v5", "sanity_check_passed": true}
+{"fund_code": "wb_test", "sample_ts": "2026-04-26T14:21:35.552162+00:00", "nav_usd": "702.42665644", "source": "bybit_v5", "sanity_check_passed": true}
+{"fund_code": "wb_test", "sample_ts": "2026-04-26T14:21:45.581094+00:00", "nav_usd": "702.21850197", "source": "bybit_v5", "sanity_check_passed": true}
+{"fund_code": "wb_test", "sample_ts": "2026-04-26T14:21:55.565689+00:00", "nav_usd": "702.26674098", "source": "bybit_v5", "sanity_check_passed": true}
+{"fund_code": "wb_test", "sample_ts": "2026-04-26T14:22:05.562771+00:00", "nav_usd": "702.21032449", "source": "bybit_v5", "sanity_check_passed": true}
