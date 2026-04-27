@@ -17,6 +17,7 @@ class FundNavConfig:
     bybit_api_key: str
     bybit_api_secret: str
     bybit_testnet: bool
+    shares_outstanding: Decimal | None
 
 
 @dataclass

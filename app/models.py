@@ -268,6 +268,38 @@ class FundNavMinute(Base):
     shares_outstanding = Column(Numeric(30, 10), nullable=False)
 
 
+class FundNavSample(Base):
+    __tablename__ = "fund_nav_samples"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    sample_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    nav_usdt: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+    source: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+        server_default=sa_text("'bybit_v5'"),
+    )
+    sanity_check_passed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=sa_text("TRUE"),
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("fund_id", "sample_ts", name="fund_nav_samples_fund_sample_ts_uq"),
+    )
+
+
 class FundChartDaily(Base):
     __tablename__ = "fund_chart_daily"
 

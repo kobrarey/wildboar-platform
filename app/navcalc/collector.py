@@ -1,145 +1,104 @@
 from __future__ import annotations
 
-import json
 import logging
 import time
-from dataclasses import asdict
 from datetime import datetime, timedelta, timezone
-from decimal import Decimal
-from pathlib import Path
 
 from app.config import settings
-from app.navcalc.exceptions import NavCalcError
+from app.db import SessionLocal
+from app.navcalc.db_writer import (
+    get_fund_by_code,
+    insert_nav_sample,
+    load_samples_for_minute,
+    write_completed_minute,
+)
+from app.navcalc.exceptions import NavCalcError, NavConfigError
+from app.navcalc.minute_builder import build_minute_candle, minute_floor
 from app.navcalc.portfolio_nav import compute_nav
-from app.navcalc.schemas import FundNavConfig, MinuteCandle, NavResult, NavSample
+from app.navcalc.schemas import FundNavConfig, NavSample
 
 
 log = logging.getLogger("navcalc.collector")
 
 
-def _utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+def _process_finished_minute(
+    *,
+    cfg: FundNavConfig,
+    fund_id: int,
+    minute_ts: datetime,
+) -> None:
+    with SessionLocal() as db:
+        samples = load_samples_for_minute(db, fund_id, minute_ts)
 
-
-def _minute_floor(dt: datetime) -> datetime:
-    return dt.astimezone(timezone.utc).replace(second=0, microsecond=0)
-
-
-def _json_default(value):
-    if isinstance(value, Decimal):
-        return str(value)
-    if hasattr(value, "isoformat"):
-        return value.isoformat()
-    raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
-
-
-def _append_jsonl(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(payload, ensure_ascii=False, default=_json_default) + "\n")
-
-
-def _nav_result_to_sample(result: NavResult) -> NavSample:
-    return NavSample(
-        fund_code=result.fund_code,
-        sample_ts=result.snapshot_ts,
-        nav_usd=result.nav_usd,
-        source=result.source,
-        sanity_check_passed=result.sanity_check_passed,
-    )
-
-
-class MinuteAccumulator:
-    def __init__(self, fund_code: str, minute_ts: datetime, expected_sample_count: int = 6) -> None:
-        self.fund_code = fund_code
-        self.minute_ts = _minute_floor(minute_ts)
-        self.expected_sample_count = expected_sample_count
-
-        self.open: Decimal | None = None
-        self.high: Decimal | None = None
-        self.low: Decimal | None = None
-        self.close: Decimal | None = None
-        self.sample_count = 0
-
-    def add(self, sample: NavSample) -> None:
-        nav = sample.nav_usd
-
-        if self.sample_count == 0:
-            self.open = nav
-            self.high = nav
-            self.low = nav
-            self.close = nav
-            self.sample_count = 1
-            return
-
-        assert self.high is not None
-        assert self.low is not None
-
-        self.high = max(self.high, nav)
-        self.low = min(self.low, nav)
-        self.close = nav
-        self.sample_count += 1
-
-    def build_candle(self) -> MinuteCandle | None:
-        if self.sample_count == 0:
-            return None
-
-        assert self.open is not None
-        assert self.high is not None
-        assert self.low is not None
-        assert self.close is not None
-
-        return MinuteCandle(
-            fund_code=self.fund_code,
-            minute_ts=self.minute_ts,
-            open=self.open,
-            high=self.high,
-            low=self.low,
-            close=self.close,
-            sample_count=self.sample_count,
-            expected_sample_count=self.expected_sample_count,
-            is_complete=(self.sample_count == self.expected_sample_count),
+        candle = build_minute_candle(
+            fund_code=cfg.fund_code,
+            minute_ts=minute_ts,
+            samples=samples,
         )
 
+        if candle is None:
+            log.warning(
+                "NAV sample gap detected fund=%s minute=%s",
+                cfg.fund_code,
+                minute_floor(minute_ts).isoformat(),
+            )
+            return
 
-def _write_sample(sample_path: Path, sample: NavSample) -> None:
-    _append_jsonl(sample_path, asdict(sample))
+        if cfg.shares_outstanding is None:
+            raise NavConfigError(
+                f"Fund '{cfg.fund_code}' has no shares_outstanding configured"
+            )
 
+        write_completed_minute(
+            db,
+            fund_id=fund_id,
+            nav_candle=candle,
+            shares_outstanding=cfg.shares_outstanding,
+        )
 
-def _write_candle(candle_path: Path, candle: MinuteCandle) -> None:
-    _append_jsonl(candle_path, asdict(candle))
-
-
-def _warn_gap_minutes(prev_minute: datetime, new_minute: datetime) -> None:
-    cursor = prev_minute + timedelta(minutes=1)
-    while cursor < new_minute:
-        log.warning("NAV sample gap detected: no successful samples for minute %s", cursor.isoformat())
-        cursor += timedelta(minutes=1)
+        log.info(
+            "Closed minute fund=%s minute=%s sample_count=%s is_complete=%s "
+            "nav_close=%s shares_outstanding=%s",
+            candle.fund_code,
+            candle.minute_ts.isoformat(),
+            candle.sample_count,
+            candle.is_complete,
+            candle.close,
+            cfg.shares_outstanding,
+        )
 
 
 def run_collector_forever(
     cfg: FundNavConfig,
     *,
     interval_sec: int | None = None,
-    data_dir: str | Path = "data/nav_samples",
 ) -> None:
     poll_interval = int(interval_sec or settings.NAV_POLL_INTERVAL_SEC)
     if poll_interval <= 0:
         raise ValueError("poll_interval must be positive")
 
-    data_dir = Path(data_dir)
-    sample_path = data_dir / f"{cfg.fund_code}_samples.jsonl"
-    candle_path = data_dir / f"{cfg.fund_code}_ohlc_1m.jsonl"
+    if cfg.shares_outstanding is None:
+        raise NavConfigError(
+            f"Fund '{cfg.fund_code}' is enabled but SHARES_OUTSTANDING is missing"
+        )
+
+    with SessionLocal() as db:
+        fund = get_fund_by_code(db, cfg.fund_code)
+
+    if fund is None:
+        raise NavConfigError(f"Fund '{cfg.fund_code}' not found in local DB")
+
+    fund_id = fund.id
 
     log.info(
-        "Starting NAV collector fund=%s interval=%ss sample_path=%s candle_path=%s",
+        "Starting NAV collector fund=%s fund_id=%s interval=%ss shares_outstanding=%s",
         cfg.fund_code,
+        fund_id,
         poll_interval,
-        sample_path,
-        candle_path,
+        cfg.shares_outstanding,
     )
 
-    current_acc: MinuteAccumulator | None = None
+    current_minute: datetime | None = None
     next_tick = time.monotonic()
 
     while True:
@@ -147,38 +106,21 @@ def run_collector_forever(
         if now_mono < next_tick:
             time.sleep(next_tick - now_mono)
 
-        started_at = time.monotonic()
-
         try:
             result = compute_nav(cfg)
-            sample = _nav_result_to_sample(result)
-            sample_minute = _minute_floor(sample.sample_ts)
 
-            _write_sample(sample_path, sample)
+            sample = NavSample(
+                fund_code=result.fund_code,
+                sample_ts=result.snapshot_ts,
+                nav_usd=result.nav_usd,
+                source=result.source,
+                sanity_check_passed=result.sanity_check_passed,
+            )
 
-            if current_acc is None:
-                current_acc = MinuteAccumulator(cfg.fund_code, sample_minute)
+            sample_minute = minute_floor(sample.sample_ts)
 
-            elif sample_minute > current_acc.minute_ts:
-                candle = current_acc.build_candle()
-                if candle is not None:
-                    _write_candle(candle_path, candle)
-                    log.info(
-                        "Closed candle fund=%s minute=%s o=%s h=%s l=%s c=%s sample_count=%s is_complete=%s",
-                        candle.fund_code,
-                        candle.minute_ts.isoformat(),
-                        candle.open,
-                        candle.high,
-                        candle.low,
-                        candle.close,
-                        candle.sample_count,
-                        candle.is_complete,
-                    )
-
-                _warn_gap_minutes(current_acc.minute_ts, sample_minute)
-                current_acc = MinuteAccumulator(cfg.fund_code, sample_minute)
-
-            current_acc.add(sample)
+            with SessionLocal() as db:
+                insert_nav_sample(db, fund_id, sample)
 
             log.info(
                 "Sample OK fund=%s ts=%s nav=%s",
@@ -186,6 +128,21 @@ def run_collector_forever(
                 sample.sample_ts.isoformat(),
                 sample.nav_usd,
             )
+
+            if current_minute is None:
+                current_minute = sample_minute
+
+            elif sample_minute > current_minute:
+                cursor = current_minute
+                while cursor < sample_minute:
+                    _process_finished_minute(
+                        cfg=cfg,
+                        fund_id=fund_id,
+                        minute_ts=cursor,
+                    )
+                    cursor += timedelta(minutes=1)
+
+                current_minute = sample_minute
 
         except NavCalcError as exc:
             log.error("Sample failed fund=%s: %s", cfg.fund_code, exc)

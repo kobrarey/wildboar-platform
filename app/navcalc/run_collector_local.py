@@ -7,13 +7,17 @@ import sys
 from app.config import settings
 from app.navcalc.collector import run_collector_forever
 from app.navcalc.exceptions import FundDisabledError, NavCalcError
-from app.navcalc.fund_registry import require_runnable_fund
+from app.navcalc.fund_registry import require_collector_fund
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--fund-code", required=True)
-    parser.add_argument("--interval-sec", type=int, default=int(settings.NAV_POLL_INTERVAL_SEC))
+    parser.add_argument(
+        "--interval-sec",
+        type=int,
+        default=int(settings.NAV_POLL_INTERVAL_SEC),
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -22,7 +26,7 @@ def main() -> int:
     )
 
     try:
-        cfg = require_runnable_fund(args.fund_code)
+        cfg = require_collector_fund(args.fund_code)
     except FundDisabledError as exc:
         print(f"[SKIP] {exc}")
         return 0
