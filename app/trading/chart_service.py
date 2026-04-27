@@ -364,3 +364,74 @@ def get_chart_bars_payload(
     filtered_rows = _filter_aggregated_range(aggregated_rows, from_dt, to_dt)
 
     return _bars_to_udf_payload(filtered_rows)
+
+
+def _fetch_latest_row(db: Session, model, fund_id: int):
+    return (
+        db.query(model)
+        .filter(model.fund_id == fund_id)
+        .order_by(model.ts_utc.desc())
+        .first()
+    )
+
+
+def _bucket_end(bucket_start: datetime, resolution: str) -> datetime:
+    bucket_start = bucket_start.astimezone(UTC)
+
+    if resolution == "1D":
+        return bucket_start + timedelta(days=1)
+
+    if resolution == "1W":
+        return bucket_start + timedelta(days=7)
+
+    if resolution == "1M":
+        return _next_month_start(bucket_start)
+
+    if resolution == "12M":
+        return _next_year_start(bucket_start)
+
+    if resolution in INTRADAY_RESOLUTIONS:
+        return bucket_start + timedelta(minutes=int(resolution))
+
+    return bucket_start
+
+
+def get_latest_chart_bar_payload(
+    db: Session,
+    fund_code: str,
+    resolution: str,
+) -> dict:
+    fund = _get_active_fund_by_code(db, fund_code)
+    if not fund:
+        raise ChartNotFoundError(f"Fund not found: {fund_code}")
+
+    norm_resolution = _normalize_resolution(resolution)
+    model = _get_source_model(norm_resolution)
+
+    latest_row = _fetch_latest_row(db, model, fund.id)
+    if latest_row is None:
+        return _bars_to_udf_payload([])
+
+    latest_dt = latest_row.ts_utc.astimezone(UTC)
+
+    if norm_resolution in ("1", "1D"):
+        return _bars_to_udf_payload([_row_to_dict(latest_row)])
+
+    bucket_start = _bucket_start(latest_dt, norm_resolution)
+    bucket_end = _bucket_end(bucket_start, norm_resolution)
+
+    raw_rows = _fetch_rows(
+        db=db,
+        model=model,
+        fund_id=fund.id,
+        from_dt=bucket_start,
+        to_dt=bucket_end,
+    )
+
+    normalized_rows = [_row_to_dict(row) for row in raw_rows]
+    aggregated_rows = _aggregate_rows(normalized_rows, norm_resolution)
+
+    if not aggregated_rows:
+        return _bars_to_udf_payload([])
+
+    return _bars_to_udf_payload([aggregated_rows[-1]])

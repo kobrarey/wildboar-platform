@@ -2,70 +2,36 @@ from __future__ import annotations
 
 import logging
 import time
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from app.config import settings
 from app.db import SessionLocal
-from app.navcalc.db_writer import (
-    get_fund_by_code,
-    insert_nav_sample,
-    load_samples_for_minute,
-    write_completed_minute,
-)
+from app.navcalc.db_writer import get_fund_by_code, upsert_minute_state
 from app.navcalc.exceptions import NavCalcError, NavConfigError
-from app.navcalc.minute_builder import build_minute_candle, minute_floor
+from app.navcalc.minute_builder import minute_floor, open_new_minute_state, update_minute_state
 from app.navcalc.portfolio_nav import compute_nav
-from app.navcalc.schemas import FundNavConfig, NavSample
+from app.navcalc.schemas import FundNavConfig, MinuteState
 
 
 log = logging.getLogger("navcalc.collector")
 
 
-def _process_finished_minute(
+def _log_gap_minutes(
     *,
-    cfg: FundNavConfig,
-    fund_id: int,
-    minute_ts: datetime,
+    fund_code: str,
+    from_minute: datetime,
+    to_minute: datetime,
 ) -> None:
-    with SessionLocal() as db:
-        samples = load_samples_for_minute(db, fund_id, minute_ts)
+    cursor = minute_floor(from_minute) + timedelta(minutes=1)
+    target = minute_floor(to_minute)
 
-        candle = build_minute_candle(
-            fund_code=cfg.fund_code,
-            minute_ts=minute_ts,
-            samples=samples,
+    while cursor < target:
+        log.warning(
+            "NAV sample gap detected fund=%s minute=%s",
+            fund_code,
+            cursor.isoformat(),
         )
-
-        if candle is None:
-            log.warning(
-                "NAV sample gap detected fund=%s minute=%s",
-                cfg.fund_code,
-                minute_floor(minute_ts).isoformat(),
-            )
-            return
-
-        if cfg.shares_outstanding is None:
-            raise NavConfigError(
-                f"Fund '{cfg.fund_code}' has no shares_outstanding configured"
-            )
-
-        write_completed_minute(
-            db,
-            fund_id=fund_id,
-            nav_candle=candle,
-            shares_outstanding=cfg.shares_outstanding,
-        )
-
-        log.info(
-            "Closed minute fund=%s minute=%s sample_count=%s is_complete=%s "
-            "nav_close=%s shares_outstanding=%s",
-            candle.fund_code,
-            candle.minute_ts.isoformat(),
-            candle.sample_count,
-            candle.is_complete,
-            candle.close,
-            cfg.shares_outstanding,
-        )
+        cursor += timedelta(minutes=1)
 
 
 def run_collector_forever(
@@ -80,6 +46,11 @@ def run_collector_forever(
     if cfg.shares_outstanding is None:
         raise NavConfigError(
             f"Fund '{cfg.fund_code}' is enabled but SHARES_OUTSTANDING is missing"
+        )
+
+    if cfg.shares_outstanding <= 0:
+        raise NavConfigError(
+            f"Fund '{cfg.fund_code}' has non-positive SHARES_OUTSTANDING: {cfg.shares_outstanding}"
         )
 
     with SessionLocal() as db:
@@ -98,7 +69,8 @@ def run_collector_forever(
         cfg.shares_outstanding,
     )
 
-    current_minute: datetime | None = None
+    current_state: MinuteState | None = None
+    prev_close_nav = None
     next_tick = time.monotonic()
 
     while True:
@@ -108,41 +80,73 @@ def run_collector_forever(
 
         try:
             result = compute_nav(cfg)
+            sample_ts = result.snapshot_ts
+            sample_nav = result.nav_usd
+            sample_minute = minute_floor(sample_ts)
 
-            sample = NavSample(
-                fund_code=result.fund_code,
-                sample_ts=result.snapshot_ts,
-                nav_usd=result.nav_usd,
-                source=result.source,
-                sanity_check_passed=result.sanity_check_passed,
-            )
+            if current_state is None:
+                current_state = open_new_minute_state(
+                    fund_code=cfg.fund_code,
+                    minute_ts=sample_minute,
+                    current_sample_nav=sample_nav,
+                    sample_ts=sample_ts,
+                    shares_outstanding=cfg.shares_outstanding,
+                    prev_close_nav=None,
+                )
 
-            sample_minute = minute_floor(sample.sample_ts)
+            elif sample_minute == current_state.minute_ts:
+                current_state = update_minute_state(
+                    current_state,
+                    current_sample_nav=sample_nav,
+                    sample_ts=sample_ts,
+                )
+
+            elif sample_minute > current_state.minute_ts:
+                prev_close_nav = current_state.close_nav
+
+                _log_gap_minutes(
+                    fund_code=cfg.fund_code,
+                    from_minute=current_state.minute_ts,
+                    to_minute=sample_minute,
+                )
+
+                current_state = open_new_minute_state(
+                    fund_code=cfg.fund_code,
+                    minute_ts=sample_minute,
+                    current_sample_nav=sample_nav,
+                    sample_ts=sample_ts,
+                    shares_outstanding=cfg.shares_outstanding,
+                    prev_close_nav=prev_close_nav,
+                )
+
+            else:
+                log.warning(
+                    "Out-of-order NAV sample ignored fund=%s sample_ts=%s current_minute=%s",
+                    cfg.fund_code,
+                    sample_ts.isoformat(),
+                    current_state.minute_ts.isoformat() if current_state else None,
+                )
+                next_tick += poll_interval
+                continue
 
             with SessionLocal() as db:
-                insert_nav_sample(db, fund_id, sample)
+                upsert_minute_state(
+                    db,
+                    fund_id=fund_id,
+                    state=current_state,
+                )
 
             log.info(
-                "Sample OK fund=%s ts=%s nav=%s",
-                sample.fund_code,
-                sample.sample_ts.isoformat(),
-                sample.nav_usd,
+                "Minute upsert fund=%s minute=%s sample_ts=%s open=%s high=%s low=%s close=%s sample_count=%s",
+                cfg.fund_code,
+                current_state.minute_ts.isoformat(),
+                sample_ts.isoformat(),
+                current_state.open_nav,
+                current_state.high_nav,
+                current_state.low_nav,
+                current_state.close_nav,
+                current_state.sample_count,
             )
-
-            if current_minute is None:
-                current_minute = sample_minute
-
-            elif sample_minute > current_minute:
-                cursor = current_minute
-                while cursor < sample_minute:
-                    _process_finished_minute(
-                        cfg=cfg,
-                        fund_id=fund_id,
-                        minute_ts=cursor,
-                    )
-                    cursor += timedelta(minutes=1)
-
-                current_minute = sample_minute
 
         except NavCalcError as exc:
             log.error("Sample failed fund=%s: %s", cfg.fund_code, exc)

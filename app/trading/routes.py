@@ -12,6 +12,7 @@ from app.trading.chart_service import (
     ChartResolutionError,
     get_chart_bars_payload,
     get_chart_config_by_code,
+    get_latest_chart_bar_payload,
 )
 from app.trading.service import (
     get_first_active_fund_code,
@@ -113,6 +114,24 @@ def chart_bars_endpoint(
             resolution=resolution,
             from_ts=from_ts,
             to_ts=to_ts,
+        )
+    except ChartNotFoundError:
+        raise HTTPException(status_code=404, detail="Fund not found")
+    except ChartResolutionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/api/chart/latest-bar/{fund_code}")
+def chart_latest_bar_endpoint(
+    fund_code: str,
+    resolution: str = Query(...),
+    db: Session = Depends(get_db),
+):
+    try:
+        return get_latest_chart_bar_payload(
+            db=db,
+            fund_code=fund_code,
+            resolution=resolution,
         )
     except ChartNotFoundError:
         raise HTTPException(status_code=404, detail="Fund not found")

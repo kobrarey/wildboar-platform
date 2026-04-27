@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.models import Fund, FundChartMinute, FundNavMinute, FundNavSample
-from app.navcalc.schemas import MinuteCandle, NavSample
+from app.models import Fund, FundChartMinute, FundNavMinute
+from app.navcalc.schemas import MinuteState
 
 
 def _minute_floor(dt: datetime) -> datetime:
@@ -18,42 +18,6 @@ def _minute_floor(dt: datetime) -> datetime:
 def get_fund_by_code(db: Session, fund_code: str) -> Fund | None:
     stmt = select(Fund).where(Fund.code == fund_code)
     return db.execute(stmt).scalar_one_or_none()
-
-
-def insert_nav_sample(db: Session, fund_id: int, sample: NavSample) -> None:
-    stmt = (
-        pg_insert(FundNavSample.__table__)
-        .values(
-            fund_id=fund_id,
-            sample_ts=sample.sample_ts,
-            nav_usdt=sample.nav_usd,
-            source=sample.source,
-            sanity_check_passed=sample.sanity_check_passed,
-        )
-        .on_conflict_do_nothing(
-            index_elements=["fund_id", "sample_ts"],
-        )
-    )
-    db.execute(stmt)
-    db.commit()
-
-
-def load_samples_for_minute(
-    db: Session,
-    fund_id: int,
-    minute_ts: datetime,
-) -> list[FundNavSample]:
-    minute_ts = _minute_floor(minute_ts)
-    minute_end = minute_ts + timedelta(minutes=1)
-
-    stmt = (
-        select(FundNavSample)
-        .where(FundNavSample.fund_id == fund_id)
-        .where(FundNavSample.sample_ts >= minute_ts)
-        .where(FundNavSample.sample_ts < minute_end)
-        .order_by(FundNavSample.sample_ts.asc())
-    )
-    return list(db.execute(stmt).scalars().all())
 
 
 def upsert_nav_minute(
@@ -120,30 +84,29 @@ def upsert_chart_minute(
     db.commit()
 
 
-def write_completed_minute(
+def upsert_minute_state(
     db: Session,
     *,
     fund_id: int,
-    nav_candle: MinuteCandle,
-    shares_outstanding: Decimal,
+    state: MinuteState,
 ) -> None:
     upsert_nav_minute(
         db,
         fund_id=fund_id,
-        minute_ts=nav_candle.minute_ts,
-        nav_close_usdt=nav_candle.close,
-        shares_outstanding=shares_outstanding,
+        minute_ts=state.minute_ts,
+        nav_close_usdt=state.close_nav,
+        shares_outstanding=state.shares_outstanding,
     )
 
-    open_price = nav_candle.open / shares_outstanding
-    high_price = nav_candle.high / shares_outstanding
-    low_price = nav_candle.low / shares_outstanding
-    close_price = nav_candle.close / shares_outstanding
+    open_price = state.open_nav / state.shares_outstanding
+    high_price = state.high_nav / state.shares_outstanding
+    low_price = state.low_nav / state.shares_outstanding
+    close_price = state.close_nav / state.shares_outstanding
 
     upsert_chart_minute(
         db,
         fund_id=fund_id,
-        minute_ts=nav_candle.minute_ts,
+        minute_ts=state.minute_ts,
         open_price=open_price,
         high_price=high_price,
         low_price=low_price,

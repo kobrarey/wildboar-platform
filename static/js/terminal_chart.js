@@ -1,9 +1,13 @@
 (() => {
   const CONTAINER_ID = "tv_chart_container";
   const CFG_ID = "terminalChartConfig";
-  /** Must match .term-chart-shell --term-chart-px in terminal.css */
+  /** Must match .term-chart-shell height logic in terminal.css */
   const CHART_PX = 520;
+  const LIVE_POLL_MS = 10000;
+
   let widget = null;
+  const activeSubscriptions = new Map();
+  const lastBarCache = new Map();
 
   function waitTwoFrames() {
     return new Promise((resolve) => {
@@ -128,13 +132,15 @@
     const theme = bodyTheme === "light" ? "light" : "dark";
     const lang = (document.documentElement.lang || raw.lang || "ru").toLowerCase();
     const locale = lang === "en" ? "en" : "ru";
+    const fundCode = raw.fund_code || raw.symbol_code || "unknown";
 
     return {
-      fund_code: raw.fund_code || raw.symbol_code || "unknown",
+      fund_code: fundCode,
       symbol: raw.symbol_code || raw.fund_code || "unknown",
       name: raw.symbol_name || raw.name || raw.fund_code || "Fund",
       description: raw.description || raw.full_name || raw.symbol_name || "Fund",
-      bars_url: raw.bars_url || raw.bars_endpoint || "/api/chart/bars/unknown",
+      bars_url: raw.bars_url || raw.bars_endpoint || `/api/chart/bars/${fundCode}`,
+      latest_bar_url: raw.latest_bar_url || raw.latest_endpoint || `/api/chart/latest-bar/${fundCode}`,
       resolutions:
         Array.isArray(raw.resolutions) && raw.resolutions.length
           ? raw.resolutions
@@ -154,6 +160,24 @@
       has_daily: raw.has_daily !== false,
       has_weekly_and_monthly: raw.has_weekly_and_monthly !== false,
     };
+  }
+
+  function cacheKey(symbol, resolution) {
+    return `${symbol}::${resolution}`;
+  }
+
+  function clearSubscription(subscriberUID) {
+    const existing = activeSubscriptions.get(subscriberUID);
+    if (!existing) return;
+    if (existing.intervalId) clearInterval(existing.intervalId);
+    activeSubscriptions.delete(subscriberUID);
+  }
+
+  function clearAllSubscriptions() {
+    activeSubscriptions.forEach((sub, uid) => {
+      if (sub.intervalId) clearInterval(sub.intervalId);
+      activeSubscriptions.delete(uid);
+    });
   }
 
   function buildDatafeed(chartConfig) {
@@ -226,6 +250,10 @@
             status: payload?.s,
           });
 
+          if (bars.length) {
+            lastBarCache.set(cacheKey(chartConfig.symbol, resolution), bars[bars.length - 1]);
+          }
+
           if (!bars.length) {
             onHistoryCallback([], { noData: true });
             return;
@@ -238,12 +266,67 @@
         }
       },
 
-      subscribeBars: () => {},
-      unsubscribeBars: () => {},
+      subscribeBars: (symbolInfo, resolution, onRealtimeCallback, subscriberUID, _onResetCacheNeededCallback) => {
+        clearSubscription(subscriberUID);
+
+        const symbol = symbolInfo?.ticker || symbolInfo?.name || chartConfig.symbol;
+        const key = cacheKey(symbol, resolution);
+
+        const pollLatestBar = async () => {
+          const subscription = activeSubscriptions.get(subscriberUID);
+          if (!subscription) return;
+
+          try {
+            const url = new URL(chartConfig.latest_bar_url, window.location.origin);
+            url.searchParams.set("resolution", String(resolution));
+
+            const resp = await fetch(url.toString(), {
+              method: "GET",
+              credentials: "same-origin",
+              headers: { Accept: "application/json" },
+            });
+
+            if (!resp.ok) {
+              console.warn("[terminal_chart] latest-bar HTTP error:", resp.status, url.toString());
+              return;
+            }
+
+            const payload = await resp.json();
+            const bars = normalizeUdfBars(payload);
+            if (!bars.length) return;
+
+            const latestBar = bars[bars.length - 1];
+            const prevBar = subscription.lastBar || lastBarCache.get(key) || null;
+
+            if (!prevBar || latestBar.time >= prevBar.time) {
+              subscription.lastBar = latestBar;
+              lastBarCache.set(key, latestBar);
+              onRealtimeCallback({ ...latestBar });
+            }
+          } catch (err) {
+            console.warn("[terminal_chart] latest-bar poll failed:", err);
+          }
+        };
+
+        activeSubscriptions.set(subscriberUID, {
+          symbol,
+          resolution,
+          intervalId: window.setInterval(pollLatestBar, LIVE_POLL_MS),
+          lastBar: lastBarCache.get(key) || null,
+        });
+
+        pollLatestBar();
+      },
+
+      unsubscribeBars: (subscriberUID) => {
+        clearSubscription(subscriberUID);
+      },
     };
   }
 
   function removeWidget() {
+    clearAllSubscriptions();
+
     if (widget && typeof widget.remove === "function") {
       widget.remove();
     }

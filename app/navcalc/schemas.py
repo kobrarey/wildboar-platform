@@ -34,15 +34,6 @@ class NavResult:
 
 
 @dataclass
-class NavSample:
-    fund_code: str
-    sample_ts: datetime
-    nav_usd: Decimal
-    source: str
-    sanity_check_passed: bool
-
-
-@dataclass
 class MinuteCandle:
     fund_code: str
     minute_ts: datetime
@@ -53,3 +44,16 @@ class MinuteCandle:
     sample_count: int
     expected_sample_count: int
     is_complete: bool
+
+
+@dataclass
+class MinuteState:
+    fund_code: str
+    minute_ts: datetime
+    open_nav: Decimal
+    high_nav: Decimal
+    low_nav: Decimal
+    close_nav: Decimal
+    last_sample_ts: datetime
+    sample_count: int
+    shares_outstanding: Decimal
