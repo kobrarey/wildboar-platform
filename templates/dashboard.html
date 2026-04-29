@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>WildBoar — {{ 'Personal account' if lang == 'en' else 'Личный кабинет' }}</title>
-  <link rel="stylesheet" href="/static/css/app.css?v=portfolio7" />
+  <link rel="stylesheet" href="/static/css/app.css?v=portfolio8" />
   <script defer src="/static/js/app.js?v=5_2"></script>
   <script defer src="/static/js/dashboard_wallet.js"></script>
 </head>
@@ -408,6 +408,12 @@
               <div class="copy-status" id="depositCopyStatus" aria-live="polite"></div>
             </div>
           </div>
+        </div>
+
+        <div class="warning-text" style="margin-top: 10px;">
+          {{ 'Пополняйте USDT только в сети BSC (BEP20). Иначе ваши средства будут потеряны.'
+             if lang == 'ru'
+             else 'Deposit USDT only on the BSC (BEP20) network. Otherwise your funds may be lost.' }}
         </div>
       </div>
     </div>

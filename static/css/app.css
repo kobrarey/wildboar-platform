@@ -1040,7 +1040,7 @@ body.sidebar-collapsed .sidebar__logout-icon{
 
 .warning-text{
   font-size: 12px;
-  color: var(--wb-muted);
+  color: #dc2626;
   line-height: 1.35;
 }
 
