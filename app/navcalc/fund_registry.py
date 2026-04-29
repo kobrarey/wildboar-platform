@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-from decimal import Decimal, InvalidOperation
 
 from app.navcalc.exceptions import FundDisabledError, NavConfigError
 from app.navcalc.schemas import FundNavConfig
@@ -24,16 +23,6 @@ def _env_bool(name: str, default: bool) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "y", "on"}
 
 
-def _env_decimal(name: str) -> Decimal | None:
-    raw = os.getenv(name)
-    if raw is None or raw.strip() == "":
-        return None
-    try:
-        return Decimal(raw.strip())
-    except (InvalidOperation, ValueError) as exc:
-        raise NavConfigError(f"Invalid decimal value in {name}: {raw}") from exc
-
-
 def _prefix(fund_code: str) -> str:
     return f"FUND_{fund_code.upper()}"
 
@@ -54,8 +43,6 @@ def build_fund_config(fund_code: str) -> FundNavConfig:
     api_secret = (os.getenv(f"{prefix}_BYBIT_API_SECRET") or "").strip()
     testnet = _env_bool(f"{prefix}_BYBIT_TESTNET", False)
 
-    shares_outstanding = _env_decimal(f"{prefix}_SHARES_OUTSTANDING")
-
     return FundNavConfig(
         fund_code=code,
         provider="bybit",
@@ -66,7 +53,6 @@ def build_fund_config(fund_code: str) -> FundNavConfig:
         bybit_api_key=api_key,
         bybit_api_secret=api_secret,
         bybit_testnet=testnet,
-        shares_outstanding=shares_outstanding,
     )
 
 
@@ -87,22 +73,6 @@ def require_runnable_fund(fund_code: str) -> FundNavConfig:
     if not cfg.bybit_api_key or not cfg.bybit_api_secret:
         raise NavConfigError(
             f"Fund '{cfg.fund_code}' is enabled but Bybit API credentials are missing"
-        )
-
-    return cfg
-
-
-def require_collector_fund(fund_code: str) -> FundNavConfig:
-    cfg = require_runnable_fund(fund_code)
-
-    if cfg.shares_outstanding is None:
-        raise NavConfigError(
-            f"Fund '{cfg.fund_code}' is enabled but SHARES_OUTSTANDING is missing"
-        )
-
-    if cfg.shares_outstanding <= 0:
-        raise NavConfigError(
-            f"Fund '{cfg.fund_code}' has non-positive SHARES_OUTSTANDING: {cfg.shares_outstanding}"
         )
 
     return cfg

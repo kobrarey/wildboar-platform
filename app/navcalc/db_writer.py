@@ -20,6 +20,20 @@ def get_fund_by_code(db: Session, fund_code: str) -> Fund | None:
     return db.execute(stmt).scalar_one_or_none()
 
 
+def get_fund_shares_outstanding_current(
+    db: Session,
+    *,
+    fund_id: int,
+) -> Decimal | None:
+    stmt = select(Fund.shares_outstanding_current).where(Fund.id == fund_id)
+    value = db.execute(stmt).scalar_one_or_none()
+
+    if value is None:
+        return None
+
+    return Decimal(str(value))
+
+
 def upsert_nav_minute(
     db: Session,
     *,

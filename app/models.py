@@ -250,6 +250,11 @@ class Fund(Base):
 
     icon_name = Column(String(120), nullable=True)
     launch_date = Column(Date, nullable=True)
+    shares_outstanding_current = Column(
+        Numeric(30, 10),
+        nullable=False,
+        server_default=sa_text("0"),
+    )
 
     category = Column(String(16), nullable=False)  # 'active', 'index', 'test'
     sort_order = Column(Integer, nullable=False, default=0)
