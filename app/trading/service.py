@@ -388,3 +388,30 @@ def get_terminal_page_payload(
         },
         "chart_config": chart_config,
     }
+
+
+def get_terminal_live_payload(
+    db: Session,
+    lang: str,
+    fund_code: str,
+) -> dict | None:
+    fund = _get_fund_by_code(db, fund_code)
+    if not fund:
+        return None
+
+    market_snapshot = _build_market_snapshot(db, fund, lang)
+    fund_info = _build_fund_info(db, fund, lang)
+
+    return {
+        "fund_code": fund.code,
+        "current_fund": {
+            "current_price_usdt": market_snapshot["current_price_usdt"],
+            "change_24h_pct": market_snapshot["change_24h_pct"],
+            "day_high_usdt": market_snapshot["day_high_usdt"],
+            "day_low_usdt": market_snapshot["day_low_usdt"],
+        },
+        "fund_info": {
+            "aum_usdt": fund_info["aum_usdt"],
+            "shares_outstanding": fund_info["shares_outstanding"],
+        },
+    }

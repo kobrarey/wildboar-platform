@@ -16,6 +16,7 @@ from app.trading.chart_service import (
 )
 from app.trading.service import (
     get_first_active_fund_code,
+    get_terminal_live_payload,
     get_terminal_page_payload,
 )
 
@@ -137,3 +138,22 @@ def chart_latest_bar_endpoint(
         raise HTTPException(status_code=404, detail="Fund not found")
     except ChartResolutionError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/api/terminal/live/{fund_code}")
+def terminal_live_endpoint(
+    fund_code: str,
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    lang = get_lang_from_request(request)
+
+    payload = get_terminal_live_payload(
+        db=db,
+        lang=lang,
+        fund_code=fund_code,
+    )
+    if not payload:
+        raise HTTPException(status_code=404, detail="Fund not found")
+
+    return payload

@@ -9,9 +9,9 @@
   <link rel="stylesheet" href="/static/css/terminal.css?v=terminal13" />
 
   <script defer src="/static/js/app.js?v=5_2"></script>
-  <script defer src="/static/js/terminal.js?v=terminal4"></script>
+  <script defer src="/static/js/terminal.js?v=terminal_live2"></script>
   <script defer src="/static/charting_library/charting_library.standalone.js"></script>
-  <script defer src="/static/js/terminal_chart.js?v=stage13_4"></script>
+  <script defer src="/static/js/terminal_chart.js?v=stage13_5"></script>
 </head>
 
 <body class="page page--terminal" data-theme="{{ current_theme|default('dark', true) }}">
@@ -59,7 +59,7 @@
       </div>
 
       <div class="term-price">
-        <span class="term-price__value">{{ fmt2(current_fund.current_price_usdt) }}</span>
+        <span class="term-price__value" data-live-current-price>{{ fmt2(current_fund.current_price_usdt) }}</span>
         <span class="term-price__ccy">USDT</span>
       </div>
 
@@ -67,21 +67,21 @@
         {% set ch = current_fund.change_24h_pct %}
         <div class="term-metric">
           <div class="term-metric__label">{{ 'изменение 24ч' if lang=='ru' else '24h change' }}</div>
-          <div class="term-metric__value {{ 'pos' if (ch or 0) > 0 else ('neg' if (ch or 0) < 0 else '') }}">
+          <div class="term-metric__value {{ 'pos' if (ch or 0) > 0 else ('neg' if (ch or 0) < 0 else '') }}" data-live-change-24h>
             {% if ch is none %}-{% else %}{{ '%+.2f'|format(ch) }}%{% endif %}
           </div>
         </div>
 
         <div class="term-metric">
           <div class="term-metric__label">{{ '24ч Макс' if lang=='ru' else '24h High' }}</div>
-          <div class="term-metric__value">
+          <div class="term-metric__value" data-live-day-high>
             {% if current_fund.day_high_usdt is none %}-{% else %}{{ fmt2(current_fund.day_high_usdt) }}{% endif %}
           </div>
         </div>
 
         <div class="term-metric">
           <div class="term-metric__label">{{ '24ч Мин' if lang=='ru' else '24h Low' }}</div>
-          <div class="term-metric__value">
+          <div class="term-metric__value" data-live-day-low>
             {% if current_fund.day_low_usdt is none %}-{% else %}{{ fmt2(current_fund.day_low_usdt) }}{% endif %}
           </div>
         </div>
@@ -311,7 +311,7 @@
 
         <div class="term-kv">
           <div class="term-kv__row"><span>AUM</span>
-            <span>
+            <span data-live-aum>
               {% if fund_info.aum_usdt is not none %}
                 {{ (fund_info.aum_usdt|round(0,'common'))|int }} USDT
               {% else %}-{% endif %}
@@ -319,7 +319,7 @@
           </div>
 
           <div class="term-kv__row"><span>{{ 'Количество паёв в обращении' if lang=='ru' else 'Shares outstanding' }}</span>
-            <span>
+            <span data-live-shares-outstanding>
               {% if fund_info.shares_outstanding is not none %}
                 {{ (fund_info.shares_outstanding|round(0,'common'))|int }}
               {% else %}-{% endif %}

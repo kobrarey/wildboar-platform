@@ -291,6 +291,13 @@
               return;
             }
 
+            // Sync top summary (price / 24h change / AUM / shares) with the chart cadence.
+            window.dispatchEvent(
+              new CustomEvent("wb:chart-bar-poll", {
+                detail: { fund_code: chartConfig.fund_code },
+              }),
+            );
+
             const payload = await resp.json();
             const bars = normalizeUdfBars(payload);
             if (!bars.length) return;

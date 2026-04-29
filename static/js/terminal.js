@@ -310,10 +310,117 @@
     }
   }
 
+  // ---------------- live terminal summary ----------------
+  function format2(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "-";
+    return n.toFixed(2);
+  }
+
+  function format0(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "-";
+    return String(Math.round(n));
+  }
+
+  function setSignedPct(el, value) {
+    if (!el) return;
+
+    const n = Number(value);
+    el.classList.remove("pos", "neg");
+
+    if (!Number.isFinite(n)) {
+      el.textContent = "-";
+      return;
+    }
+
+    if (n > 0) el.classList.add("pos");
+    if (n < 0) el.classList.add("neg");
+
+    const sign = n > 0 ? "+" : "";
+    el.textContent = `${sign}${n.toFixed(2)}%`;
+  }
+
+  function getCurrentFundCode() {
+    const cfgEl = document.getElementById("terminalChartConfig");
+    if (!cfgEl) return null;
+
+    try {
+      const cfg = JSON.parse(cfgEl.textContent || "{}");
+      return cfg.fund_code || cfg.symbol_code || null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function applyTerminalLivePayload(payload) {
+    if (!payload) return;
+
+    const current = payload.current_fund || {};
+    const info = payload.fund_info || {};
+
+    const priceEl = qs("[data-live-current-price]");
+    const chEl = qs("[data-live-change-24h]");
+    const highEl = qs("[data-live-day-high]");
+    const lowEl = qs("[data-live-day-low]");
+    const aumEl = qs("[data-live-aum]");
+    const sharesEl = qs("[data-live-shares-outstanding]");
+
+    if (priceEl) priceEl.textContent = format2(current.current_price_usdt);
+    setSignedPct(chEl, current.change_24h_pct);
+
+    if (highEl) highEl.textContent = current.day_high_usdt == null ? "-" : format2(current.day_high_usdt);
+    if (lowEl) lowEl.textContent = current.day_low_usdt == null ? "-" : format2(current.day_low_usdt);
+
+    if (aumEl) {
+      aumEl.textContent = info.aum_usdt == null ? "-" : `${format0(info.aum_usdt)} USDT`;
+    }
+
+    if (sharesEl) {
+      sharesEl.textContent = info.shares_outstanding == null ? "-" : format0(info.shares_outstanding);
+    }
+  }
+
+  function initTerminalLiveSummary() {
+    const fundCode = getCurrentFundCode();
+    if (!fundCode) return;
+
+    let lastPollTs = 0;
+
+    const poll = async () => {
+      lastPollTs = Date.now();
+      try {
+        const url = `/api/terminal/live/${encodeURIComponent(fundCode)}`;
+        const resp = await fetch(url, {
+          method: "GET",
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+        });
+
+        if (!resp.ok) return;
+
+        const payload = await resp.json();
+        applyTerminalLivePayload(payload);
+      } catch (_) {
+        /* keep terminal silent on transient polling errors */
+      }
+    };
+
+    // Initial fetch + sync with chart polls so the top summary moves together with the chart price.
+    poll();
+    window.addEventListener("wb:chart-bar-poll", poll);
+
+    // Fallback for funds without chart data: keep polling on our own clock if no chart events arrive.
+    window.setInterval(() => {
+      if (Date.now() - lastPollTs >= 10000) poll();
+    }, 10000);
+  }
+
   document.addEventListener("DOMContentLoaded", () => {
     initTheme();
     initFundPopover();
     initBottomTabs();
     initOrderPanel();
+    initTerminalLiveSummary();
   });
 })();
