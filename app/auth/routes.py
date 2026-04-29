@@ -28,9 +28,10 @@ from app.auth import (
     is_entered_email_verified,
     send_login_2fa_code,
     create_session,
-    _enforce_resend_cooldown,
 )
 from app.auth.cookies import set_auth_cookie, clear_auth_cookie
+from app.auth.deps import NotAuthenticated, get_current_user as deps_get_current_user
+from app.auth.code_action_cooldown import enforce_code_action_cooldown
 
 router = APIRouter()
 
@@ -53,8 +54,28 @@ async def _payload(request: Request) -> dict:
     return dict(form)
 
 
+def _get_active_user_or_none(request: Request, db: Session) -> User | None:
+    try:
+        return deps_get_current_user(request, db)
+    except NotAuthenticated:
+        return None
+
+
+def _form_bool(value) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _cooldown_key(action: str, *parts) -> str:
+    safe_parts = [str(p or "").strip().lower() for p in parts]
+    return ":".join([action.strip().lower(), *safe_parts])
+
+
 @router.get("/")
-def home(request: Request):
+def home(request: Request, db: Session = Depends(get_db)):
+    user = _get_active_user_or_none(request, db)
+    if user:
+        return RedirectResponse(url="/dashboard", status_code=303)
+
     lang = get_lang_from_request(request)
     return templates.TemplateResponse("index.html", {"request": request, "lang": lang})
 
@@ -62,15 +83,20 @@ def home(request: Request):
 @router.post("/register")
 def register(
     request: Request,
-    email: str = Form(...),
-    first_name: str = Form(...),
-    last_name: str = Form(...),
+    email: str = Form(""),
+    first_name: str = Form(""),
+    last_name: str = Form(""),
     phone: str | None = Form(None),
-    password: str = Form(...),
+    password: str = Form(""),
+    non_us_citizen_confirmed: str | None = Form(None),
     db: Session = Depends(get_db),
 ):
     lang = get_lang_from_request(request)
     is_en = (lang or "").strip().lower() == "en"
+
+    active_user = _get_active_user_or_none(request, db)
+    if active_user:
+        return JSONResponse(content={"status": "ok", "redirect": "/dashboard"})
 
     email = normalize_email(email)
     pwd = (password or "").strip()
@@ -83,6 +109,12 @@ def register(
     err = validate_password(pwd, lang)
     if err:
         return JSONResponse(status_code=400, content={"status": "error", "message": err})
+
+    if not _form_bool(non_us_citizen_confirmed):
+        return JSONResponse(
+            status_code=400,
+            content={"status": "error", "message": t(lang, "non_us_citizen_required")},
+        )
 
     existing = (
         db.query(User)
@@ -100,12 +132,18 @@ def register(
         existing.password_hash = hash_password(pwd)
         existing.is_active = True
         existing.is_email_verified = False
+        existing.non_us_citizen_confirmed = True
+        existing.non_us_citizen_confirmed_at = utcnow()
 
         db.add(existing)
         db.commit()
         db.refresh(existing)
 
         try:
+            enforce_code_action_cooldown(
+                _cooldown_key("register_initial", existing.email)
+            )
+
             code = get_active_code(existing.id, "registration", db) or create_code(existing.id, "registration", db=db)
 
             html = render_email_template(
@@ -122,6 +160,13 @@ def register(
 
         return JSONResponse(content={"status": "ok", "next": "enter_code", "email": existing.email})
 
+    try:
+        enforce_code_action_cooldown(
+            _cooldown_key("register_initial", email)
+        )
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"status": "error", "message": t(lang, str(e))})
+
     user = User(
         created_at=utcnow(),
         email=email,
@@ -131,6 +176,8 @@ def register(
         password_hash=hash_password(pwd),
         is_active=True,
         is_email_verified=False,
+        non_us_citizen_confirmed=True,
+        non_us_citizen_confirmed_at=utcnow(),
     )
 
     db.add(user)
@@ -208,7 +255,9 @@ async def register_resend_code(request: Request, db: Session = Depends(get_db)):
         return JSONResponse({"status": "ok"}, status_code=200)
 
     try:
-        _enforce_resend_cooldown(user.id, "registration")
+        enforce_code_action_cooldown(
+            _cooldown_key("register_resend", user.id, email)
+        )
 
         code = get_active_code(user.id, "registration", db) or create_code(user.id, "registration", db=db)
 
@@ -244,6 +293,13 @@ def login(
         return PlainTextResponse(t(lang, "incorrect_email_or_password"), status_code=401)
 
     if user.two_factor_enabled:
+        try:
+            enforce_code_action_cooldown(
+                _cooldown_key("login_initial", user.id, normalize_email(raw_email))
+            )
+        except ValueError as e:
+            return JSONResponse({"status": "error", "message": t(lang, str(e))}, status_code=400)
+
         ok, err = send_login_2fa_code(db, user, raw_email, lang)
         if not ok:
             return JSONResponse({"status": "error", "message": err}, status_code=400)
@@ -275,6 +331,13 @@ async def login_2fa_resend(request: Request, db: Session = Depends(get_db)):
         return JSONResponse({"status": "ok"}, status_code=200)
     if not is_entered_email_verified(user, entered_email):
         return JSONResponse({"status": "ok"}, status_code=200)
+
+    try:
+        enforce_code_action_cooldown(
+            _cooldown_key("login_resend", user.id, entered_email)
+        )
+    except ValueError as e:
+        return PlainTextResponse(t(lang, str(e)), status_code=400)
 
     try:
         code = create_code(user.id, "login_2fa", db=db)
@@ -366,6 +429,13 @@ async def forgot_send_code(request: Request, db: Session = Depends(get_db)):
             },
             status_code=400,
         )
+
+    try:
+        enforce_code_action_cooldown(
+            _cooldown_key("forgot_initial", email_norm)
+        )
+    except ValueError as e:
+        return JSONResponse({"status": "error", "message": t(lang, str(e))}, status_code=400)
 
     try:
         code = create_code(user.id, "reset", db=db)

@@ -16,13 +16,19 @@ from app.db import get_db
 from app.web import templates
 from app.i18n import get_lang_from_request, t, SUPPORTED_LANGS, LANG_COOKIE_NAME
 from app.auth import get_current_user
+from app.auth.code_action_cooldown import enforce_code_action_cooldown
 from app.portfolio import get_user_portfolio
 from app.models import User, UserWallet, WalletTransfer, WithdrawSession, SecurityCode
 from app.utils.wallet_check import validate_address_status
-from app.codes import create_code, verify_code
+from app.codes import create_code, verify_code, get_active_code
 from app.emails import send_withdraw_code
 
 router = APIRouter()
+
+
+def _cooldown_key(action: str, *parts) -> str:
+    safe_parts = [str(p or "").strip().lower() for p in parts]
+    return ":".join([action.strip().lower(), *safe_parts])
 
 
 def utcnow():
@@ -249,9 +255,19 @@ def withdraw_request_code(
             status_code=400,
         )
 
-    # 1) create code first
     try:
-        code = create_code(user.id, "withdraw", db=db)
+        enforce_code_action_cooldown(
+            _cooldown_key("withdraw_initial", user.id, payload.email_slot, payload.to_address)
+        )
+    except ValueError as e:
+        return JSONResponse(
+            {"status": "error", "message": t(lang, str(e))},
+            status_code=400,
+        )
+
+    # 1) create or reuse active code first
+    try:
+        code = get_active_code(user.id, "withdraw", db) or create_code(user.id, "withdraw", db=db)
     except ValueError as e:
         return JSONResponse(
             {"status": "error", "message": t(lang, str(e))},
@@ -339,7 +355,17 @@ def withdraw_resend_code(
         to_email = user.backup_email
 
     try:
-        code = create_code(user.id, "withdraw", db=db)
+        enforce_code_action_cooldown(
+            _cooldown_key("withdraw_resend", user.id, s.email_slot, s.token)
+        )
+    except ValueError as e:
+        return JSONResponse(
+            {"status": "error", "message": t(lang, str(e))},
+            status_code=400,
+        )
+
+    try:
+        code = get_active_code(user.id, "withdraw", db) or create_code(user.id, "withdraw", db=db)
         send_withdraw_code(
             to_email=to_email,
             lang=lang,

@@ -24,8 +24,14 @@ from app.auth import (
     get_slot_email,
 )
 from app.auth.deps import COOKIE_NAME
+from app.auth.code_action_cooldown import enforce_code_action_cooldown
 
 router = APIRouter(prefix="/settings", tags=["settings"])
+
+
+def _cooldown_key(action: str, *parts) -> str:
+    safe_parts = [str(p or "").strip().lower() for p in parts]
+    return ":".join([action.strip().lower(), *safe_parts])
 
 
 class PasswordChangeRequest(BaseModel):
@@ -88,6 +94,16 @@ def emails_send_code(
 
     if not ensure_email_available_for_use(db, email_norm, user.id):
         return JSONResponse({"status": "error", "message": t(lang, "email_already_used")}, status_code=400)
+
+    try:
+        enforce_code_action_cooldown(
+            _cooldown_key("email_slot_send", user.id, slot, email_norm)
+        )
+    except ValueError as e:
+        return JSONResponse(
+            {"status": "error", "message": t(lang, str(e))},
+            status_code=400,
+        )
 
     if slot == 1:
         user.email = email_norm
@@ -239,6 +255,16 @@ def send_password_change_code(
         return JSONResponse({"status": "error", "message": t(lang, "email_slot_empty")}, status_code=400)
     if not is_verified:
         return JSONResponse({"status": "error", "message": t(lang, "email_not_verified")}, status_code=400)
+
+    try:
+        enforce_code_action_cooldown(
+            _cooldown_key("password_change_initial", user.id, slot)
+        )
+    except ValueError as e:
+        return JSONResponse(
+            {"status": "error", "message": t(lang, str(e))},
+            status_code=400,
+        )
 
     try:
         code = create_code(user.id, "password_change", db=db)

@@ -32,6 +32,16 @@ class User(Base):
     # basic | vip | manager | employee | employee2 | ai_agent
     account_type: Mapped[str] = mapped_column(String(16), nullable=False, default="basic")
 
+    non_us_citizen_confirmed: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=sa_text("FALSE"),
+    )
+    non_us_citizen_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     backup_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_backup_email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
