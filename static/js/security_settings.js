@@ -4,6 +4,53 @@ document.addEventListener("DOMContentLoaded", () => {
   initEmailsManager();
 });
 
+function lockBtn(btn) {
+  if (!btn) return false;
+  if (typeof window.lockActionButton === "function") {
+    return window.lockActionButton(btn);
+  }
+  if (btn.dataset.pending === "1") return false;
+  btn.dataset.pending = "1";
+  btn.disabled = true;
+  return true;
+}
+
+function unlockBtn(btn) {
+  if (!btn) return;
+  if (typeof window.unlockActionButton === "function") {
+    window.unlockActionButton(btn);
+    return;
+  }
+  delete btn.dataset.pending;
+  btn.disabled = false;
+}
+
+function startBtnCooldown(btn, seconds, label) {
+  if (!btn) return;
+  if (typeof window.startResendCooldown === "function") {
+    window.startResendCooldown(btn, seconds, label);
+    return;
+  }
+
+  let left = seconds;
+  btn.disabled = true;
+  btn.textContent = label || btn.textContent;
+
+  const baseText = btn.textContent;
+  const id = setInterval(() => {
+    left -= 1;
+    if (left <= 0) {
+      clearInterval(id);
+      btn.disabled = false;
+      btn.textContent = baseText;
+    } else {
+      btn.textContent = document.documentElement.lang === "en"
+        ? `Retry in ${left}s`
+        : `Повторно через ${left}с`;
+    }
+  }, 1000);
+}
+
 function initAccordions() {
   const accordions = document.querySelectorAll("[data-accordion]");
   accordions.forEach((acc) => {
@@ -115,7 +162,7 @@ function initPasswordChange() {
 
     const slot = parseInt(slotEl.value, 10) || 1;
 
-    sendCodeBtn.disabled = true;
+    if (!lockBtn(sendCodeBtn)) return;
 
     try {
       const resp = await fetch("/settings/security/send-code", {
@@ -144,7 +191,7 @@ function initPasswordChange() {
         }
         // показываем текст как "красную" ошибку под полями пароля
         setError(msgText);
-        sendCodeBtn.disabled = false;
+        unlockBtn(sendCodeBtn);
         return;
       }
 
@@ -153,16 +200,24 @@ function initPasswordChange() {
       confirmBtn.disabled = false;
       setMsg(isEn ? "Code sent. Please enter the code from email." : "Код отправлен. Введите код из письма.");
       codeInput.focus();
+
+      unlockBtn(sendCodeBtn);
+      startBtnCooldown(
+        sendCodeBtn,
+        60,
+        isEn ? "Get code by email" : "Получить код на почту"
+      );
     } catch (e) {
       console.error(e);
       setMsg(isEn ? "Network error" : "Ошибка сети");
-      sendCodeBtn.disabled = false;
+      unlockBtn(sendCodeBtn);
     }
   });
 
   // повторная отправка кода для смены пароля
   resendBtn?.addEventListener("click", async () => {
     if (resendBtn.disabled) return;
+    if (!lockBtn(resendBtn)) return;
 
     setMsg("");
     setError("");
@@ -175,7 +230,6 @@ function initPasswordChange() {
     const slot = parseInt(slotEl.value, 10) || 1;
 
     const originalText = resendBtn.textContent;
-    resendBtn.disabled = true;
     resendBtn.textContent = isEn ? "Sending..." : "Отправляем...";
 
     try {
@@ -190,21 +244,12 @@ function initPasswordChange() {
       });
 
       if (resp.ok) {
-        if (typeof window.startResendCooldown === "function") {
-          window.startResendCooldown(resendBtn, 60);
-        } else {
-          let left = 60;
-          const id = setInterval(() => {
-            left -= 1;
-            if (left <= 0) {
-              clearInterval(id);
-              resendBtn.disabled = false;
-              resendBtn.textContent = originalText;
-            } else {
-              resendBtn.textContent = isEn ? `Retry in ${left}s` : `Повторно через ${left}с`;
-            }
-          }, 1000);
-        }
+        unlockBtn(resendBtn);
+        startBtnCooldown(
+          resendBtn,
+          60,
+          isEn ? "Send code again" : "Отправить код ещё раз"
+        );
         setMsg(isEn ? "Code sent. Please enter the code from email." : "Код отправлен. Введите код из письма.");
         return;
       }
@@ -222,17 +267,11 @@ function initPasswordChange() {
         // не JSON — оставляем как есть
       }
       setMsg(msgText);
+      unlockBtn(resendBtn);
     } catch (e) {
       console.error(e);
       setMsg(isEn ? "Network error" : "Ошибка сети");
-    } finally {
-      // если таймер не был запущен — вернём кнопку в исходное состояние
-      if (!resendBtn.disabled && resendBtn.textContent !== originalText) {
-        // таймер уже работает, не трогаем
-      } else if (!window.startResendCooldown) {
-        resendBtn.disabled = false;
-        resendBtn.textContent = originalText;
-      }
+      unlockBtn(resendBtn);
     }
   });
 
@@ -251,7 +290,7 @@ function initPasswordChange() {
       return;
     }
 
-    confirmBtn.disabled = true;
+    if (!lockBtn(confirmBtn)) return;
 
     try {
       const resp = await fetch("/settings/security/change-password", {
@@ -267,7 +306,7 @@ function initPasswordChange() {
       if (!resp.ok) {
         const errText = await resp.text();
         setMsg(errText || `HTTP ${resp.status}`);
-        confirmBtn.disabled = false;
+        unlockBtn(confirmBtn);
         return;
       }
 
@@ -296,7 +335,7 @@ function initPasswordChange() {
     } catch (e) {
       console.error(e);
       setMsg(isEn ? "Network error" : "Ошибка сети");
-      confirmBtn.disabled = false;
+      unlockBtn(confirmBtn);
     }
   });
 
@@ -439,6 +478,7 @@ function initEmailsManager() {
 
     btnConfirm?.addEventListener("click", async () => {
       if (btnConfirm.disabled) return;
+      if (!lockBtn(btnConfirm)) return;
 
       setErr("");
       setMsg("");
@@ -451,10 +491,9 @@ function initEmailsManager() {
       if (!codeVisible) {
         if (!email) {
           setErr(isEn ? "Enter email" : "Введите e-mail");
+          unlockBtn(btnConfirm);
           return;
         }
-
-        btnConfirm.disabled = true;
 
         try {
           const resp = await fetch("/settings/security/emails/send-code", {
@@ -478,7 +517,7 @@ function initEmailsManager() {
               }
             }
             setErr(msg);
-            btnConfirm.disabled = false;
+            unlockBtn(btnConfirm);
             return;
           }
 
@@ -486,11 +525,11 @@ function initEmailsManager() {
           if (codeBlock) codeBlock.classList.remove("hidden");
           setMsg(isEn ? "Code sent. Enter the code from email." : "Код отправлен. Введите код из письма.");
           if (codeInput) codeInput.focus();
-          btnConfirm.disabled = false;
+          unlockBtn(btnConfirm);
         } catch (e) {
           console.error(e);
           setErr(isEn ? "Network error" : "Ошибка сети");
-          btnConfirm.disabled = false;
+          unlockBtn(btnConfirm);
         }
 
         return;
@@ -500,10 +539,9 @@ function initEmailsManager() {
       const code = (codeInput && codeInput.value ? codeInput.value : "").trim();
       if (!isSixDigits(code)) {
         setErr(isEn ? "Enter a 6-digit code" : "Введите 6-значный код");
+        unlockBtn(btnConfirm);
         return;
       }
-
-      btnConfirm.disabled = true;
 
       try {
         const resp = await fetch("/settings/security/emails/confirm", {
@@ -516,7 +554,7 @@ function initEmailsManager() {
         if (!resp.ok) {
           const errText = await resp.text();
           setErr(errText || `HTTP ${resp.status}`);
-          btnConfirm.disabled = false;
+          unlockBtn(btnConfirm);
           return;
         }
 
@@ -533,23 +571,23 @@ function initEmailsManager() {
       } catch (e) {
         console.error(e);
         setErr(isEn ? "Network error" : "Ошибка сети");
-        btnConfirm.disabled = false;
+        unlockBtn(btnConfirm);
       }
     });
 
     btnDelete?.addEventListener("click", async () => {
       if (btnDelete.disabled) return;
+      if (!lockBtn(btnDelete)) return;
 
       // если это единственная почта — вместо запроса показываем предупреждение
       if (btnDelete.dataset.onlyEmail === "1") {
+        unlockBtn(btnDelete);
         openLastEmailWarning();
         return;
       }
 
       setErr("");
       setMsg("");
-
-      btnDelete.disabled = true;
 
       try {
         const resp = await fetch("/settings/security/emails/delete", {
@@ -562,7 +600,7 @@ function initEmailsManager() {
         if (!resp.ok) {
           const errText = await resp.text();
           setErr(errText || `HTTP ${resp.status}`);
-          btnDelete.disabled = false;
+          unlockBtn(btnDelete);
           return;
         }
 
@@ -578,13 +616,14 @@ function initEmailsManager() {
       } catch (e) {
         console.error(e);
         setErr(isEn ? "Network error" : "Ошибка сети");
-        btnDelete.disabled = false;
+        unlockBtn(btnDelete);
       }
     });
 
     // Отдельная кнопка повторной отправки кода
     resendBtn?.addEventListener("click", async () => {
       if (resendBtn.disabled) return;
+      if (!lockBtn(resendBtn)) return;
 
       setErr("");
       setMsg("");
@@ -592,12 +631,12 @@ function initEmailsManager() {
       const email = getEmail();
       if (!email) {
         setErr(isEn ? "Enter email" : "Введите e-mail");
+        unlockBtn(resendBtn);
         return;
       }
 
       // визуально показать, что что-то происходит
       const originalText = resendBtn.textContent;
-      resendBtn.disabled = true;
       resendBtn.textContent = isEn ? "Sending..." : "Отправляем...";
 
       try {
@@ -609,23 +648,12 @@ function initEmailsManager() {
         });
 
         if (resp.ok) {
-          // запустим таймер, если глобальный helper доступен,
-          // иначе — простой локальный кулдаун
-          if (typeof window.startResendCooldown === "function") {
-            window.startResendCooldown(resendBtn, 60);
-          } else {
-            let left = 60;
-            const id = setInterval(() => {
-              left -= 1;
-              if (left <= 0) {
-                clearInterval(id);
-                resendBtn.disabled = false;
-                resendBtn.textContent = originalText;
-              } else {
-                resendBtn.textContent = isEn ? `Retry in ${left}s` : `Повторно через ${left}с`;
-              }
-            }, 1000);
-          }
+          unlockBtn(resendBtn);
+          startBtnCooldown(
+            resendBtn,
+            60,
+            isEn ? "Send code again" : "Отправить код ещё раз"
+          );
           setMsg(isEn ? "Code sent. Enter the code from email." : "Код отправлен. Введите код из письма.");
           return;
         }
@@ -643,17 +671,11 @@ function initEmailsManager() {
           }
         }
         setErr(msg);
+        unlockBtn(resendBtn);
       } catch (e) {
         console.error(e);
         setErr(isEn ? "Network error" : "Ошибка сети");
-      } finally {
-        // если не запустили глобальный/локальный таймер (ошибка) — вернём кнопку в нормальное состояние
-        if (!resendBtn.disabled || resendBtn.textContent !== originalText) {
-          // если таймер уже сменил текст/состояние — не трогаем
-        } else {
-          resendBtn.disabled = false;
-          resendBtn.textContent = originalText;
-        }
+        unlockBtn(resendBtn);
       }
     });
   });

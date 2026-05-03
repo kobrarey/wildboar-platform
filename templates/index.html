@@ -178,7 +178,23 @@
           <label class="check">
             <input class="check__input" type="checkbox" id="termsCheck" />
             <span class="check__box" aria-hidden="true"></span>
-            <span class="check__label">{{ 'I have read and accept the terms *' if lang == 'en' else 'Прочитал и принимаю условия *' }}</span>
+            <span class="check__label">
+              {{ 'I have read and accept the terms *' if lang == 'en' else 'Прочитал и принимаю условия *' }}
+            </span>
+          </label>
+
+          <label class="check">
+            <input
+              class="check__input"
+              type="checkbox"
+              id="nonUsCitizenCheck"
+              name="non_us_citizen_confirmed"
+              value="true"
+            />
+            <span class="check__box" aria-hidden="true"></span>
+            <span class="check__label">
+              {{ 'I confirm that I am not a citizen of the United States *' if lang == 'en' else 'Я подтверждаю, что не являюсь гражданином США *' }}
+            </span>
           </label>
         </div>
 

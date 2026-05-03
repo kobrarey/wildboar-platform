@@ -1,7 +1,52 @@
 (() => {
     const lang = (document.documentElement.lang || "en").toLowerCase();
     const L = (ru, en) => (lang === "en" ? en : ru);
-  
+
+    function lockBtn(btn) {
+      if (!btn) return false;
+      if (typeof window.lockActionButton === "function") {
+        return window.lockActionButton(btn);
+      }
+      if (btn.dataset.pending === "1") return false;
+      btn.dataset.pending = "1";
+      btn.disabled = true;
+      return true;
+    }
+
+    function unlockBtn(btn) {
+      if (!btn) return;
+      if (typeof window.unlockActionButton === "function") {
+        window.unlockActionButton(btn);
+        return;
+      }
+      delete btn.dataset.pending;
+      btn.disabled = false;
+    }
+
+    function startBtnCooldown(btn, seconds, label) {
+      if (!btn) return;
+      if (typeof window.startResendCooldown === "function") {
+        window.startResendCooldown(btn, seconds, label);
+        return;
+      }
+
+      const baseText = label || btn.textContent;
+      let left = seconds;
+      btn.disabled = true;
+      btn.textContent = lang === "en" ? `Retry in ${left}s` : `Повторно через ${left}с`;
+
+      const id = setInterval(() => {
+        left -= 1;
+        if (left <= 0) {
+          clearInterval(id);
+          btn.disabled = false;
+          btn.textContent = baseText;
+          return;
+        }
+        btn.textContent = lang === "en" ? `Retry in ${left}s` : `Повторно через ${left}с`;
+      }, 1000);
+    }
+
     async function copyToClipboard(text) {
       try {
         if (navigator.clipboard && window.isSecureContext) {
@@ -305,6 +350,7 @@
       requestSeq: 0,
       confirmDone: false,
       emailOptions: null,
+      cancelPending: false,
     };
 
     function initWithdrawConfirmModal() {
@@ -376,105 +422,151 @@
 
       async function requestCode() {
         setError("");
-        if (getCodeBtn) getCodeBtn.disabled = true;
+
+        if (!lockBtn(getCodeBtn)) return;
 
         const amountGrossStr = Number(withdrawState.amountGross).toFixed(2);
         const slotToUse = Number(withdrawState.emailSlot || 1);
 
-        const { ok, data } = await postJSON("/api/withdraw/request-code", {
-          to_address: withdrawState.toAddress,
-          amount_gross: amountGrossStr,
-          email_slot: slotToUse,
-        });
+        try {
+          const { ok, data } = await postJSON("/api/withdraw/request-code", {
+            to_address: withdrawState.toAddress,
+            amount_gross: amountGrossStr,
+            email_slot: slotToUse,
+          });
 
-        if (!ok || !data || data.status !== "ok") {
-          if (getCodeBtn) getCodeBtn.disabled = false;
-          const msg = data?.message;
-          if (!msg || (!msg.includes("minute") && !msg.includes("минут") && !msg.includes("раз"))) {
-            setError(msg || L("Не удалось отправить код.", "Failed to send code."));
+          if (!ok || !data || data.status !== "ok") {
+            unlockBtn(getCodeBtn);
+            const msg = data?.message;
+            if (!msg || (!msg.includes("minute") && !msg.includes("минут") && !msg.includes("раз"))) {
+              setError(msg || L("Не удалось отправить код.", "Failed to send code."));
+            }
+            return;
           }
-          return;
+
+          withdrawState.token = data.token;
+          withdrawState.emailSlot = data.email_slot;
+          withdrawState.codeSent = true;
+
+          withdrawState.amountNet = Number(data.amount_net ?? (withdrawState.amountGross - 1));
+          renderSummary();
+
+          if (codeInput) codeInput.value = "";
+          if (confirmBtn) confirmBtn.disabled = true;
+
+          unlockBtn(getCodeBtn);
+          startBtnCooldown(getCodeBtn, 60, L("Получить код", "Get code"));
+
+          // Отдельный независимый cooldown для resend-кнопки.
+          startCooldownOnButton();
+        } catch (e) {
+          console.error(e);
+          setError(L("Ошибка сети", "Network error"));
+          unlockBtn(getCodeBtn);
         }
-
-        withdrawState.token = data.token;
-        withdrawState.emailSlot = data.email_slot;
-        withdrawState.codeSent = true;
-
-        withdrawState.amountNet = Number(data.amount_net ?? (withdrawState.amountGross - 1));
-        renderSummary();
-        if (codeInput) codeInput.value = "";
-        if (confirmBtn) confirmBtn.disabled = true;
-
-        startCooldownOnButton();
       }
 
       async function resendCode() {
         if (!withdrawState.token) return;
         if (resendBtn?.disabled) return;
+        if (!lockBtn(resendBtn)) return;
+
         setError("");
-        if (resendBtn) resendBtn.disabled = true;
 
-        const { ok, data } = await postJSON("/api/withdraw/resend-code", { token: withdrawState.token });
+        try {
+          const { ok, data } = await postJSON("/api/withdraw/resend-code", {
+            token: withdrawState.token,
+          });
 
-        if (!ok || !data || data.status !== "ok") {
-          if (resendBtn) resendBtn.disabled = false;
-          const msg = data?.message;
-          if (!msg || (!msg.includes("minute") && !msg.includes("минут") && !msg.includes("раз"))) {
-            setError(msg || L("Не удалось отправить код повторно.", "Failed to resend code."));
+          if (!ok || !data || data.status !== "ok") {
+            unlockBtn(resendBtn);
+            const msg = data?.message;
+            if (!msg || (!msg.includes("minute") && !msg.includes("минут") && !msg.includes("раз"))) {
+              setError(msg || L("Не удалось отправить код повторно.", "Failed to resend code."));
+            }
+            return;
           }
-          return;
-        }
 
-        startCooldownOnButton();
+          unlockBtn(resendBtn);
+          startBtnCooldown(resendBtn, 60, L("Получить код повторно", "Resend code"));
+        } catch (e) {
+          console.error(e);
+          setError(L("Ошибка сети", "Network error"));
+          unlockBtn(resendBtn);
+        }
       }
 
       async function confirmWithdraw() {
         if (!withdrawState.token) return;
         if (!isValidCode()) return;
+        if (!lockBtn(confirmBtn)) return;
 
         setError("");
-        if (confirmBtn) confirmBtn.disabled = true;
 
         const code = codeInput?.value?.trim() || "";
-        const { ok, data } = await postJSON("/api/withdraw/confirm", { token: withdrawState.token, code });
 
-        if (confirmBtn) confirmBtn.disabled = false;
+        try {
+          const { ok, data } = await postJSON("/api/withdraw/confirm", {
+            token: withdrawState.token,
+            code,
+          });
 
-        if (!ok || !data || data.status === "error") {
-          setError((data?.message) || L("Ошибка подтверждения.", "Confirmation error."));
-          return;
+          if (!ok || !data || data.status === "error") {
+            setError((data?.message) || L("Ошибка подтверждения.", "Confirmation error."));
+            unlockBtn(confirmBtn);
+            return;
+          }
+
+          withdrawState.confirmDone = true;
+          closeModalLocal(confirmModal);
+          openModalLocal(processingModal);
+        } catch (e) {
+          console.error(e);
+          setError(L("Ошибка сети", "Network error"));
+          unlockBtn(confirmBtn);
         }
-
-        withdrawState.confirmDone = true;
-        closeModalLocal(confirmModal);
-        openModalLocal(processingModal);
       }
 
       async function handleConfirmModalClose() {
         if (withdrawState.confirmDone) return;
+        if (withdrawState.cancelPending) return;
 
-        if (withdrawState.token) {
-          try {
-            await postJSON("/api/withdraw/cancel", { token: withdrawState.token });
-          } catch (e) {
-            console.warn("withdraw/cancel failed (network?), resetting UI anyway:", e);
+        withdrawState.cancelPending = true;
+
+        try {
+          if (withdrawState.token) {
+            try {
+              await postJSON("/api/withdraw/cancel", { token: withdrawState.token });
+            } catch (e) {
+              console.warn("withdraw/cancel failed (network?), resetting UI anyway:", e);
+            }
           }
-        }
+        } finally {
+          withdrawState.token = null;
+          withdrawState.codeSent = false;
+          withdrawState.emailSlot = null;
 
-        withdrawState.token = null;
-        withdrawState.codeSent = false;
-        withdrawState.emailSlot = null;
-        if (codeInput) codeInput.value = "";
-        if (resendBtn && typeof window.clearResendCooldown === "function") {
-          window.clearResendCooldown(resendBtn, L("Получить код повторно", "Resend code"));
-        } else if (resendBtn) {
-          resendBtn.disabled = true;
+          if (codeInput) codeInput.value = "";
+
+          if (resendBtn && typeof window.clearResendCooldown === "function") {
+            window.clearResendCooldown(resendBtn, L("Получить код повторно", "Resend code"));
+          } else if (resendBtn) {
+            resendBtn.disabled = true;
+          }
+
+          setError("");
+
+          if (selEmail && selEmail.options?.length) {
+            selEmail.selectedIndex = 0;
+          }
+
+          if (getCodeBtn) getCodeBtn.disabled = false;
+          if (confirmBtn) confirmBtn.disabled = true;
+
+          closeModalLocal(confirmModal);
+
+          withdrawState.cancelPending = false;
         }
-        setError("");
-        if (selEmail && selEmail.options?.length) selEmail.selectedIndex = 0;
-        if (getCodeBtn) getCodeBtn.disabled = false;
-        if (confirmBtn) confirmBtn.disabled = true;
-        closeModalLocal(confirmModal);
       }
 
       confirmModal._withdrawCloseHandler = handleConfirmModalClose;
@@ -533,6 +625,7 @@
       withdrawState.emailSlot = null;
       withdrawState.codeSent = false;
       withdrawState.confirmDone = false;
+      withdrawState.cancelPending = false;
 
       if (codeInput) codeInput.value = "";
       if (errEl) errEl.textContent = "";

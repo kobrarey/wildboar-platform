@@ -16,6 +16,9 @@
     code_sent_to: (email) => (isEn ? `We sent the code to: ${email}` : `Мы отправили код на почту: ${email}`),
     fill_required: isEn ? "Please fill in all required fields." : "Заполните обязательные поля.",
     accept_terms: isEn ? "Please accept the terms." : "Подтвердите принятие условий.",
+    confirm_non_us_citizen: isEn
+      ? "Please confirm that you are not a citizen of the United States."
+      : "Подтвердите, что вы не являетесь гражданином США.",
     password_rules_prefix: isEn ? "Password requirements not met: " : "Не выполнены условия пароля: ",
     registration_error: isEn ? "Registration error." : "Ошибка регистрации.",
     enter_6digit: isEn ? "Enter 6-digit code." : "Введите 6-значный код.",
@@ -88,11 +91,54 @@
   window.startResendCooldown = startResendCooldown;
   window.clearResendCooldown = clearResendCooldown;
 
+  const _pendingButtons = new WeakMap();
+
+  function lockActionButton(btn, pendingText = null) {
+    if (!btn) return false;
+    if (_pendingButtons.has(btn)) return false;
+
+    _pendingButtons.set(btn, {
+      text: btn.textContent,
+      disabled: btn.disabled,
+    });
+
+    btn.disabled = true;
+    if (pendingText != null) btn.textContent = pendingText;
+    return true;
+  }
+
+  function unlockActionButton(btn, opts = {}) {
+    if (!btn) return;
+
+    const state = _pendingButtons.get(btn);
+    if (!state) return;
+
+    _pendingButtons.delete(btn);
+
+    if (opts.restoreText !== false) {
+      btn.textContent = state.text;
+    }
+
+    if (opts.enable !== false) {
+      btn.disabled = false;
+    }
+  }
+
+  function isActionButtonLocked(btn) {
+    return !!btn && _pendingButtons.has(btn);
+  }
+
+  window.lockActionButton = lockActionButton;
+  window.unlockActionButton = unlockActionButton;
+  window.isActionButtonLocked = isActionButtonLocked;
+
   async function postResend(endpoint, email, errEl, btn) {
     if (!email) {
       setError(errEl, MSG.email_not_found);
-      return;
+      return false;
     }
+
+    if (!lockActionButton(btn)) return false;
 
     try {
       const resp = await fetch(endpoint, {
@@ -103,14 +149,14 @@
       });
 
       if (resp.ok) {
-        // запуск таймера только если сервер принял запрос и отправил/принял код
+        unlockActionButton(btn);
         startResendCooldown(btn, 60);
-        return;
+        return true;
       }
 
       const raw = await resp.text().catch(() => "");
       let msg = raw || MSG.error_http(resp.status);
-      // пробуем вытащить message из JSON {"status": "...", "message": "..."}
+
       if (raw) {
         try {
           const data = JSON.parse(raw);
@@ -121,11 +167,15 @@
           // raw был не JSON — оставляем как есть
         }
       }
+
       setError(errEl, msg);
-      return;
+      unlockActionButton(btn);
+      return false;
 
     } catch {
       setError(errEl, MSG.network_error);
+      unlockActionButton(btn);
+      return false;
     }
   }
 
@@ -192,6 +242,7 @@
 
     const rulesList = document.getElementById("passwordRules");
     const terms     = document.getElementById("termsCheck");
+    const nonUsCheck = document.getElementById("nonUsCitizenCheck");
     const submitBtn = document.getElementById("registerSubmit");
     const errorEl   = document.getElementById("registerError");
 
@@ -217,7 +268,7 @@
     function validate() {
       const state = getPasswordRules(password?.value || "");
       updateRulesUI(rulesList, state);
-      const ok = !!terms?.checked && requiredOk() && allRulesOk(state);
+      const ok = !!terms?.checked && !!nonUsCheck?.checked && requiredOk() && allRulesOk(state);
       const missingRules = Object.keys(state).filter((k) => !state[k]);
       return { ok, missingRules };
     }
@@ -259,6 +310,11 @@
       refreshButton();
     });
 
+    nonUsCheck?.addEventListener("change", () => {
+      setError(errorEl, "");
+      refreshButton();
+    });
+
     // intercept submit => /register returns JSON now
     form.addEventListener("submit", async (e) => {
       e.preventDefault();
@@ -271,12 +327,15 @@
         const parts = [];
         if (!requiredOk()) parts.push(MSG.fill_required);
         if (!terms?.checked) parts.push(MSG.accept_terms);
+        if (!nonUsCheck?.checked) parts.push(MSG.confirm_non_us_citizen);
         if (v.missingRules.length) {
           parts.push(MSG.password_rules_prefix + v.missingRules.map(k => RULE_META[k]).join(", "));
         }
         setError(errorEl, parts.join(" "));
         return;
       }
+
+      if (!lockActionButton(submitBtn)) return;
 
       try {
         const resp = await fetch("/register", {
@@ -302,6 +361,7 @@
             payload?.detail ||
             MSG.registration_error;
           setError(errorEl, msg);
+          unlockActionButton(submitBtn);
           return;
         }
 
@@ -311,6 +371,7 @@
 
         if (payload?.status === "ok" && next === "enter_code") {
           showStep2(em);
+          unlockActionButton(submitBtn);
           return;
         }
 
@@ -323,9 +384,11 @@
 
         // если ничего не пришло — просто покажем step2
         showStep2(em);
+        unlockActionButton(submitBtn);
 
       } catch {
         setError(errorEl, MSG.network_error);
+        unlockActionButton(submitBtn);
       }
     });
 
@@ -358,6 +421,8 @@
         return;
       }
 
+      if (!lockActionButton(confirmBtn)) return;
+
       try {
         const resp = await fetch("/register/confirm", {
           method: "POST",
@@ -378,6 +443,7 @@
             payload?.detail ||
             MSG.invalid_code;
           setError(confirmErr, msg);
+          unlockActionButton(confirmBtn);
           return;
         }
 
@@ -386,6 +452,7 @@
 
       } catch {
         setError(confirmErr, MSG.network_error);
+        unlockActionButton(confirmBtn);
       }
     });
 
@@ -415,6 +482,7 @@
     // Inputs inside Step 1
     const emailInput = qs('input[name="email"]', form);
     const passInput  = qs('input[name="password"]', form);
+    const submitBtn = form.querySelector('#loginStep1 button[type="submit"]');
 
     // Step 2 elements (2FA)
     const step2 = document.getElementById("loginStep2");
@@ -483,6 +551,8 @@
         return;
       }
 
+      if (!lockActionButton(submitBtn)) return;
+
       try {
         const resp = await fetch("/login", {
           method: "POST",
@@ -503,6 +573,7 @@
 
         if (!resp.ok) {
           setError(errorEl, payloadToMessage(payload, MSG.login_error_http(resp.status)));
+          unlockActionButton(submitBtn);
           return;
         }
 
@@ -516,12 +587,15 @@
         // 2) {status:"2fa_required"}
         if (payload?.status === "2fa_required") {
           showStep2(email);
+          unlockActionButton(submitBtn);
           return;
         }
 
         setError(errorEl, MSG.invalid_server_response);
+        unlockActionButton(submitBtn);
       } catch {
         setError(errorEl, MSG.network_error);
+        unlockActionButton(submitBtn);
       }
     });
 
@@ -534,6 +608,8 @@
 
       if (!email) { setError(confirmErr, MSG.email_not_found_confirm); return; }
       if (!/^\d{6}$/.test(code)) { setError(confirmErr, MSG.enter_6digit); return; }
+
+      if (!lockActionButton(confirmBtn)) return;
 
       try {
         const resp = await fetch("/login/2fa", {
@@ -550,6 +626,7 @@
 
         if (!resp.ok) {
           setError(confirmErr, payloadToMessage(payload, MSG.error_http(resp.status)));
+          unlockActionButton(confirmBtn);
           return;
         }
 
@@ -559,8 +636,10 @@
         }
 
         setError(confirmErr, MSG.invalid_server_response);
+        unlockActionButton(confirmBtn);
       } catch {
         setError(confirmErr, MSG.network_error);
+        unlockActionButton(confirmBtn);
       }
     });
 
@@ -620,6 +699,8 @@
         return;
       }
 
+      if (!lockActionButton(sendBtn)) return;
+
       try {
         const resp = await fetch("/forgot/send-code", {
           method: "POST",
@@ -631,6 +712,8 @@
         // По контракту: всегда 200 {"status":"ok"} (даже если email не существует)
         if (resp.ok) {
           if (infoEl) infoEl.textContent = MSG.code_sent;
+          unlockActionButton(sendBtn);
+          startResendCooldown(sendBtn, 60, isEn ? "Get code" : "Получить код");
           return;
         }
 
@@ -648,8 +731,10 @@
           }
         }
         setError(errEl, msg);
+        unlockActionButton(sendBtn);
       } catch {
         setError(errEl, MSG.network);
+        unlockActionButton(sendBtn);
       }
     });
 
@@ -676,6 +761,8 @@
       if (!email) { setError(errEl, MSG.enter_email); return; }
       if (!/^\d{6}$/.test(code)) { setError(errEl, MSG.enter_6digit); return; }
 
+      if (!lockActionButton(verifyBtn)) return;
+
       try {
         const resp = await fetch("/forgot/verify", {
           method: "POST",
@@ -692,19 +779,23 @@
             return;
           }
           setError(errEl, MSG.invalid_response);
+          unlockActionButton(verifyBtn);
           return;
         }
 
         // ошибки: HTTP 400 текстом
         if (resp.status === 400) {
           setError(errEl, await resp.text());
+          unlockActionButton(verifyBtn);
           return;
         }
 
         const txt = await resp.text().catch(() => "");
         setError(errEl, txt || MSG.error_http(resp.status));
+        unlockActionButton(verifyBtn);
       } catch {
         setError(errEl, MSG.network);
+        unlockActionButton(verifyBtn);
       }
     });
 
@@ -778,6 +869,8 @@
       if (!allRulesOk(getPasswordRules(v.p1))) { setError(errEl, MSG_NP.password_req); return; }
       if (v.p1 !== v.p2) { setError(errEl, MSG_NP.passwords_match); return; }
 
+      if (!lockActionButton(btn)) return;
+
       try {
         const resp = await fetch("/forgot/new-password", {
           method: "POST",
@@ -795,13 +888,16 @@
 
         if (resp.status === 400) {
           setError(errEl, await resp.text());
+          unlockActionButton(btn);
           return;
         }
 
         const txt = await resp.text().catch(() => "");
         setError(errEl, txt || MSG_NP.error_http(resp.status));
+        unlockActionButton(btn);
       } catch {
         setError(errEl, MSG_NP.network);
+        unlockActionButton(btn);
       }
     });
 
