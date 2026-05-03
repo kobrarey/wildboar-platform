@@ -408,6 +408,9 @@ async def forgot_send_code(request: Request, db: Session = Depends(get_db)):
     raw_email = data.get("email") or ""
     email_norm = normalize_email(raw_email)
 
+    action = str(data.get("action") or "").strip().lower()
+    cooldown_action = "forgot_resend" if action == "resend" else "forgot_initial"
+
     user = get_user_by_any_email(db, raw_email)
     if not user or not user.is_active:
         return JSONResponse({"status": "ok", "message": t(lang, "code_sent_if_exists")}, status_code=200)
@@ -432,7 +435,7 @@ async def forgot_send_code(request: Request, db: Session = Depends(get_db)):
 
     try:
         enforce_code_action_cooldown(
-            _cooldown_key("forgot_initial", email_norm)
+            _cooldown_key(cooldown_action, email_norm)
         )
     except ValueError as e:
         return JSONResponse({"status": "error", "message": t(lang, str(e))}, status_code=400)

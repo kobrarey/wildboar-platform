@@ -132,7 +132,7 @@
   window.unlockActionButton = unlockActionButton;
   window.isActionButtonLocked = isActionButtonLocked;
 
-  async function postResend(endpoint, email, errEl, btn) {
+  async function postResend(endpoint, email, errEl, btn, extraPayload = null) {
     if (!email) {
       setError(errEl, MSG.email_not_found);
       return false;
@@ -140,11 +140,16 @@
 
     if (!lockActionButton(btn)) return false;
 
+    const payload = {
+      email,
+      ...(extraPayload && typeof extraPayload === "object" ? extraPayload : {}),
+    };
+
     try {
       const resp = await fetch(endpoint, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email }),
+        body: JSON.stringify(payload),
         credentials: "same-origin",
       });
 
@@ -743,7 +748,7 @@
       if (infoEl) infoEl.textContent = "";
       const email = (emailEl.value || "").trim();
 
-      await postResend("/forgot/send-code", email, errEl, resendBtn);
+      await postResend("/forgot/send-code", email, errEl, resendBtn, { action: "resend" });
 
       // на успех покажем нейтральное сообщение (как по контракту)
       if (infoEl && !errEl.textContent) {
