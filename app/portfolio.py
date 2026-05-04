@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
@@ -122,30 +122,52 @@ def get_user_portfolio(db: Session, user: User, lang: str) -> dict:
             }
         )
 
-    # 6) Баланс "вчера" из user_portfolio_daily (если есть)
+    # 6) Daily change baseline: one snapshot at the beginning/first dashboard open of the UTC day.
+    # If today's baseline row does not exist, create it once and show 0.00%.
+    # Do not update this row on subsequent dashboard opens, otherwise deposits would reset the daily change.
     today_utc = datetime.now(timezone.utc).date()
-    yesterday = today_utc - timedelta(days=1)
 
-    prev_row = (
+    today_row = (
         db.query(UserPortfolioDaily)
         .filter(
             UserPortfolioDaily.user_id == user.id,
-            UserPortfolioDaily.date_utc == yesterday,
+            UserPortfolioDaily.date_utc == today_utc,
         )
         .first()
     )
 
-    prev_balance = Decimal(prev_row.balance_usdt) if prev_row else None
+    if today_row is None:
+        today_row = UserPortfolioDaily(
+            user_id=user.id,
+            date_utc=today_utc,
+            balance_usdt=total_balance,
+        )
+        db.add(today_row)
+        db.commit()
 
-    if prev_balance is not None and prev_balance > 0:
+    prev_balance = Decimal(today_row.balance_usdt or 0)
+    daily_change_abs = total_balance - prev_balance
+    daily_change_has_baseline = True
+
+    if prev_balance > 0:
         daily_change_pct = (total_balance / prev_balance - Decimal("1")) * Decimal("100")
+        daily_change_display_mode = "pct"
+    elif prev_balance == 0 and total_balance == 0:
+        daily_change_pct = Decimal("0")
+        daily_change_display_mode = "pct"
     else:
+        # Percentage from zero is mathematically undefined.
+        # Frontend should display absolute change instead, e.g. +4.20 USDT.
         daily_change_pct = None
+        daily_change_display_mode = "absolute"
 
     return {
         "current_balance": total_balance,
         "prev_balance": prev_balance,
         "daily_change_pct": daily_change_pct,
+        "daily_change_abs": daily_change_abs,
+        "daily_change_has_baseline": daily_change_has_baseline,
+        "daily_change_display_mode": daily_change_display_mode,
         "stable_balance": stable_balance,
         "stable_symbol": "USDT",
         "stablecoin_icon_name": "usdt.svg",

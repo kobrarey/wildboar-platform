@@ -55,6 +55,7 @@ pydantic==2.12.5
 pydantic-settings==2.10.1
 pydantic_core==2.41.5
 pyparsing==3.3.2
+pyotp==2.9.0
 python-dotenv==1.2.1
 python-multipart==0.0.21
 pyunormalize==17.0.0

@@ -1,0 +1,187 @@
+<!doctype html>
+<html lang="{{ 'en' if lang == 'en' else 'ru' }}">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>{{ 'Cookie Policy' if lang == 'en' else 'Политика использования cookies' }} — Wild Boar</title>
+
+  <!-- Общий стиль платформы -->
+  <link rel="stylesheet" href="/static/css/app.css" />
+
+  <!-- Минимальная локальная стилизация для статической страницы -->
+  <style>
+    .ua-top {
+      background: #f2d400;
+      padding: 14px 16px;
+      border-bottom: 1px solid rgba(0,0,0,.08);
+    }
+    .ua-top__inner {
+      max-width: 980px;
+      margin: 0 auto;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .ua-brand {
+      font-weight: 800;
+      letter-spacing: .3px;
+      color: #111;
+      font-size: 18px;
+      line-height: 1;
+    }
+    .ua-back {
+      text-decoration: none;
+      background: #7f63c7;
+      color: #fff;
+      padding: 10px 14px;
+      border-radius: 10px;
+      font-weight: 600;
+      font-size: 14px;
+    }
+    .ua-wrap {
+      max-width: 980px;
+      margin: 0 auto;
+      padding: 18px 16px 36px;
+    }
+    .ua-card {
+      background: #fff;
+      border: 1px solid rgba(0,0,0,.08);
+      border-radius: 14px;
+      box-shadow: 0 8px 24px rgba(0,0,0,.06);
+      padding: 18px 18px 22px;
+    }
+  </style>
+</head>
+
+<body class="page-landing">
+  <header class="ua-top">
+    <div class="ua-top__inner">
+      <div class="ua-brand">wildboar</div>
+      <a class="ua-back" href="/">
+        {% if lang == 'en' %}
+          Back to website
+        {% else %}
+          На главную
+        {% endif %}
+      </a>
+    </div>
+  </header>
+
+  <main class="ua-wrap">
+    <article class="ua-card">
+    {% if lang == 'en' %}
+      <h1>Cookie Policy</h1>
+      <p><strong>Last updated:</strong> 2026-05-04</p>
+
+      <h2>1. What are cookies?</h2>
+      <p>
+        Cookies are small text files stored by your browser on your device. They help websites remember
+        information about your session, preferences, and security state.
+      </p>
+
+      <h2>2. Cookies and local storage used by Wild Boar</h2>
+      <p>Wild Boar currently uses only functional and strictly necessary cookies/local storage items:</p>
+
+      <ul>
+        <li>
+          <strong>Authentication/session cookie</strong>
+          (<code>{{ session_cookie_name }}</code>) — used to keep you logged in and maintain your secure session.
+        </li>
+        <li>
+          <strong>Language preference</strong>
+          (<code>lang</code>) — used to remember whether you selected Russian or English.
+        </li>
+        <li>
+          <strong>Cookie notice acknowledgment</strong>
+          (<code>cookie_notice_ack</code> and/or localStorage) — used to remember that you have seen and acknowledged the cookie notice.
+        </li>
+        <li>
+          <strong>Theme preference</strong>
+          (cookie and/or localStorage, where applicable) — used to remember the selected interface theme.
+        </li>
+      </ul>
+
+      <h2>3. Strictly necessary cookies</h2>
+      <p>
+        Strictly necessary cookies are used for authentication, security, session management,
+        language preference, and basic platform operation. Without them, some platform functions may not work correctly.
+      </p>
+
+      <h2>4. Analytics and marketing cookies</h2>
+      <p>
+        Wild Boar does not currently use analytics cookies or marketing cookies.
+        If analytics or marketing cookies are introduced in the future, they will be used only after obtaining
+        the required consent where applicable.
+      </p>
+
+      <h2>5. How to delete cookies</h2>
+      <p>
+        You can delete cookies in your browser settings. The exact steps depend on your browser.
+        Usually, this can be done through the privacy/security settings by clearing site data for Wild Boar.
+      </p>
+
+      <h2>6. Changes to this policy</h2>
+      <p>
+        We may update this Cookie Policy from time to time. The updated version will be published on this page.
+      </p>
+    {% else %}
+      <h1>Политика использования cookies</h1>
+      <p><strong>Дата обновления:</strong> 04.05.2026</p>
+
+      <h2>1. Что такое cookies?</h2>
+      <p>
+        Cookies — это небольшие текстовые файлы, которые браузер сохраняет на вашем устройстве.
+        Они помогают сайту запоминать информацию о сессии, настройках и состоянии безопасности.
+      </p>
+
+      <h2>2. Какие cookies и localStorage использует Wild Boar</h2>
+      <p>Сейчас Wild Boar использует только функциональные и строго необходимые cookies/localStorage:</p>
+
+      <ul>
+        <li>
+          <strong>Cookie авторизации/сессии</strong>
+          (<code>{{ session_cookie_name }}</code>) — используется для входа в аккаунт и поддержания защищённой сессии.
+        </li>
+        <li>
+          <strong>Настройка языка</strong>
+          (<code>lang</code>) — используется для запоминания выбранного языка интерфейса: русский или английский.
+        </li>
+        <li>
+          <strong>Подтверждение cookie notice</strong>
+          (<code>cookie_notice_ack</code> и/или localStorage) — используется, чтобы запомнить, что пользователь увидел и подтвердил уведомление о cookies.
+        </li>
+        <li>
+          <strong>Настройка темы интерфейса</strong>
+          (cookie и/или localStorage, если используется) — применяется для запоминания выбранной темы интерфейса.
+        </li>
+      </ul>
+
+      <h2>3. Строго необходимые cookies</h2>
+      <p>
+        Строго необходимые cookies используются для авторизации, безопасности, управления сессией,
+        выбора языка и базовой работы платформы. Без них часть функций платформы может работать некорректно.
+      </p>
+
+      <h2>4. Analytics и marketing cookies</h2>
+      <p>
+        Сейчас Wild Boar не использует analytics cookies и marketing cookies.
+        Если такие cookies появятся в будущем, они будут использоваться только после получения необходимого согласия,
+        если такое согласие требуется.
+      </p>
+
+      <h2>5. Как удалить cookies</h2>
+      <p>
+        Вы можете удалить cookies в настройках браузера. Точный порядок зависит от браузера.
+        Обычно это делается в настройках приватности/безопасности через удаление данных сайта Wild Boar.
+      </p>
+
+      <h2>6. Изменения политики</h2>
+      <p>
+        Мы можем периодически обновлять эту политику. Актуальная версия будет опубликована на этой странице.
+      </p>
+    {% endif %}
+    </article>
+  </main>
+</body>
+</html>

@@ -16,6 +16,7 @@ from app.db import get_db
 from app.web import templates
 from app.i18n import get_lang_from_request, t, SUPPORTED_LANGS, LANG_COOKIE_NAME
 from app.auth import get_current_user
+from app.auth.deps import NotAuthenticated
 from app.auth.code_action_cooldown import enforce_code_action_cooldown
 from app.portfolio import get_user_portfolio
 from app.models import User, UserWallet, WalletTransfer, WithdrawSession, SecurityCode
@@ -29,6 +30,13 @@ router = APIRouter()
 def _cooldown_key(action: str, *parts) -> str:
     safe_parts = [str(p or "").strip().lower() for p in parts]
     return ":".join([action.strip().lower(), *safe_parts])
+
+
+def _get_current_user_or_none(request: Request, db: Session) -> User | None:
+    try:
+        return get_current_user(request, db)
+    except NotAuthenticated:
+        return None
 
 
 def utcnow():
@@ -104,6 +112,45 @@ def dashboard(
 def useragreement(request: Request):
     lang = get_lang_from_request(request)
     return templates.TemplateResponse("useragreement.html", {"request": request, "lang": lang})
+
+
+@router.get("/cookie-policy", response_class=HTMLResponse)
+def cookie_policy(request: Request):
+    lang = get_lang_from_request(request)
+    return templates.TemplateResponse(
+        "cookie_policy.html",
+        {
+            "request": request,
+            "lang": lang,
+            "session_cookie_name": settings.COOKIE_NAME,
+        },
+    )
+
+
+@router.post("/api/cookie-notice/ack")
+def cookie_notice_ack(
+    request: Request,
+    db: Session = Depends(get_db),
+):
+    user = _get_current_user_or_none(request, db)
+
+    if user is not None:
+        user.cookie_notice_acknowledged = True
+        user.cookie_notice_acknowledged_at = utcnow()
+        db.add(user)
+        db.commit()
+
+    resp = JSONResponse({"status": "ok"})
+    resp.set_cookie(
+        key="cookie_notice_ack",
+        value="true",
+        max_age=60 * 60 * 24 * 365,
+        httponly=False,
+        samesite="lax",
+        secure=(request.url.scheme == "https"),
+        path="/",
+    )
+    return resp
 
 
 @router.post("/set-language")

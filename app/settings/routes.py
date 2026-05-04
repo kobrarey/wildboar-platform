@@ -1,4 +1,6 @@
 """Settings routes: security, emails, password change."""
+from datetime import datetime, timezone
+
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -10,7 +12,7 @@ from app.config import settings
 from app.db import get_db
 from app.web import templates
 from app.i18n import t
-from app.models import User, SessionModel
+from app.models import User, SessionModel, UserTotpRecoveryCode
 from app.emails import send_email, render_email_template
 from app.codes import create_code, verify_code
 from app.security import hash_password, validate_password
@@ -25,6 +27,19 @@ from app.auth import (
 )
 from app.auth.deps import COOKIE_NAME
 from app.auth.code_action_cooldown import enforce_code_action_cooldown
+
+from app.totp import (
+    ISSUER_NAME,
+    TotpConfigError,
+    TotpSecretError,
+    build_totp_qr_svg,
+    decrypt_totp_secret,
+    encrypt_totp_secret,
+    generate_recovery_codes,
+    generate_totp_secret,
+    hash_recovery_code,
+    verify_totp_code,
+)
 
 router = APIRouter(prefix="/settings", tags=["settings"])
 
@@ -58,6 +73,14 @@ class EmailDeletePayload(BaseModel):
     slot: int
 
 
+class TotpConfirmPayload(BaseModel):
+    code: str
+
+
+class TotpDisablePayload(BaseModel):
+    code: str
+
+
 @router.get("/security")
 def security_settings_page(request: Request, user: User = Depends(get_current_user)):
     lang = get_lang_from_request(request)
@@ -67,7 +90,15 @@ def security_settings_page(request: Request, user: User = Depends(get_current_us
     ]
     return templates.TemplateResponse(
         "security_settings.html",
-        {"request": request, "lang": lang, "user": user, "emails": emails, "account_type": user.account_type},
+        {
+            "request": request,
+            "lang": lang,
+            "user": user,
+            "emails": emails,
+            "account_type": user.account_type,
+            "totp_enabled": bool(getattr(user, "totp_enabled", False)),
+            "totp_confirmed_at": getattr(user, "totp_confirmed_at", None),
+        },
     )
 
 
@@ -219,6 +250,193 @@ def emails_delete(
     else:
         user.backup_email = None
         user.is_backup_email_verified = False
+
+    db.add(user)
+    db.commit()
+
+    return {"status": "ok"}
+
+
+@router.post("/security/totp/setup/start")
+def totp_setup_start(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    lang = get_lang_from_request(request)
+
+    if bool(getattr(user, "totp_enabled", False)):
+        return JSONResponse(
+            {"status": "error", "message": t(lang, "totp_already_enabled")},
+            status_code=400,
+        )
+
+    try:
+        secret = generate_totp_secret()
+        encrypted_secret = encrypt_totp_secret(secret)
+        qr_svg = build_totp_qr_svg(secret, user.email)
+    except TotpConfigError as e:
+        return JSONResponse(
+            {"status": "error", "message": t(lang, str(e))},
+            status_code=500,
+        )
+    except Exception:
+        return JSONResponse(
+            {"status": "error", "message": t(lang, "totp_setup_required")},
+            status_code=500,
+        )
+
+    user.totp_secret_encrypted = encrypted_secret
+    user.totp_enabled = False
+    user.totp_confirmed_at = None
+    user.totp_last_used_step = None
+
+    db.add(user)
+    db.commit()
+
+    return {
+        "status": "ok",
+        "qr_svg": qr_svg,
+        "manual_key": secret,
+        "issuer": ISSUER_NAME,
+        "account": user.email,
+    }
+
+
+@router.post("/security/totp/setup/confirm")
+def totp_setup_confirm(
+    payload: TotpConfirmPayload,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    lang = get_lang_from_request(request)
+
+    if bool(getattr(user, "totp_enabled", False)):
+        return JSONResponse(
+            {"status": "error", "message": t(lang, "totp_already_enabled")},
+            status_code=400,
+        )
+
+    try:
+        enforce_code_action_cooldown(
+            _cooldown_key("totp_confirm", user.id),
+            seconds=5,
+        )
+    except ValueError as e:
+        return JSONResponse(
+            {"status": "error", "message": t(lang, str(e))},
+            status_code=400,
+        )
+
+    try:
+        secret = decrypt_totp_secret(user.totp_secret_encrypted)
+    except TotpConfigError as e:
+        return JSONResponse(
+            {"status": "error", "message": t(lang, str(e))},
+            status_code=500,
+        )
+    except TotpSecretError as e:
+        return JSONResponse(
+            {"status": "error", "message": t(lang, str(e))},
+            status_code=400,
+        )
+
+    result = verify_totp_code(
+        secret=secret,
+        code=payload.code,
+        last_used_step=user.totp_last_used_step,
+    )
+    if not result.ok:
+        return JSONResponse(
+            {"status": "error", "message": t(lang, result.error_key or "totp_invalid_code")},
+            status_code=400,
+        )
+
+    recovery_codes = generate_recovery_codes()
+
+    db.query(UserTotpRecoveryCode).filter(
+        UserTotpRecoveryCode.user_id == user.id,
+    ).delete(synchronize_session=False)
+
+    for code in recovery_codes:
+        db.add(
+            UserTotpRecoveryCode(
+                user_id=user.id,
+                code_hash=hash_recovery_code(code),
+                is_used=False,
+            )
+        )
+
+    user.totp_enabled = True
+    user.totp_confirmed_at = datetime.now(timezone.utc)
+    user.totp_last_used_step = result.step
+
+    db.add(user)
+    db.commit()
+
+    return {
+        "status": "ok",
+        "recovery_codes": recovery_codes,
+    }
+
+
+@router.post("/security/totp/disable")
+def totp_disable(
+    payload: TotpDisablePayload,
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    lang = get_lang_from_request(request)
+
+    if not bool(getattr(user, "totp_enabled", False)):
+        return {"status": "ok"}
+
+    try:
+        enforce_code_action_cooldown(
+            _cooldown_key("totp_disable", user.id),
+            seconds=5,
+        )
+    except ValueError as e:
+        return JSONResponse(
+            {"status": "error", "message": t(lang, str(e))},
+            status_code=400,
+        )
+
+    try:
+        secret = decrypt_totp_secret(user.totp_secret_encrypted)
+    except TotpConfigError as e:
+        return JSONResponse(
+            {"status": "error", "message": t(lang, str(e))},
+            status_code=500,
+        )
+    except TotpSecretError as e:
+        return JSONResponse(
+            {"status": "error", "message": t(lang, str(e))},
+            status_code=400,
+        )
+
+    result = verify_totp_code(
+        secret=secret,
+        code=payload.code,
+        last_used_step=user.totp_last_used_step,
+    )
+    if not result.ok:
+        return JSONResponse(
+            {"status": "error", "message": t(lang, result.error_key or "totp_invalid_code")},
+            status_code=400,
+        )
+
+    user.totp_enabled = False
+    user.totp_secret_encrypted = None
+    user.totp_confirmed_at = None
+    user.totp_last_used_step = None
+
+    db.query(UserTotpRecoveryCode).filter(
+        UserTotpRecoveryCode.user_id == user.id,
+        UserTotpRecoveryCode.is_used == False,
+    ).delete(synchronize_session=False)
 
     db.add(user)
     db.commit()

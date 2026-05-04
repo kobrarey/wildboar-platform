@@ -42,6 +42,28 @@ class User(Base):
         nullable=True,
     )
 
+    totp_enabled: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=sa_text("FALSE"),
+    )
+    totp_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    totp_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    totp_last_used_step: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    cookie_notice_acknowledged: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=sa_text("FALSE"),
+    )
+    cookie_notice_acknowledged_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     backup_email: Mapped[str | None] = mapped_column(String(255), nullable=True)
     is_backup_email_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
@@ -53,6 +75,29 @@ class User(Base):
     )
     compliance_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
     compliance_updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class UserTotpRecoveryCode(Base):
+    __tablename__ = "user_totp_recovery_codes"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    code_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    is_used: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=sa_text("FALSE"),
+    )
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
 
 
 class SecurityCode(Base):
