@@ -1,6 +1,7 @@
 document.addEventListener("DOMContentLoaded", () => {
   initAccordions();
   initPasswordChange();
+  initTotpSecurity();
   initEmailsManager();
 });
 
@@ -34,9 +35,11 @@ function startBtnCooldown(btn, seconds, label) {
 
   let left = seconds;
   btn.disabled = true;
-  btn.textContent = label || btn.textContent;
 
   const baseText = btn.textContent;
+  if (label) {
+    btn.textContent = label;
+  }
   const id = setInterval(() => {
     left -= 1;
     if (left <= 0) {
@@ -342,6 +345,293 @@ function initPasswordChange() {
   // init
   if (mismatch) mismatch.classList.add("hidden");
   refreshState();
+}
+
+function initTotpSecurity() {
+  const root = document.querySelector("[data-totp-root]");
+  if (!root) return;
+
+  const isEn = document.documentElement.lang === "en";
+  const L = (ru, en) => (isEn ? en : ru);
+
+  const disabledPanel = root.querySelector("[data-totp-disabled-panel]");
+  const enabledPanel = root.querySelector("[data-totp-enabled-panel]");
+  const statusBadge = root.querySelector("[data-totp-status-badge]");
+  const confirmedAtEl = root.querySelector("[data-totp-confirmed-at]");
+
+  const enableBtn = document.getElementById("totpEnableBtn");
+  const setupPanel = document.getElementById("totpSetupPanel");
+  const qrBox = document.getElementById("totpQrBox");
+  const manualKey = document.getElementById("totpManualKey");
+  const setupCode = document.getElementById("totpSetupCode");
+  const confirmBtn = document.getElementById("totpConfirmBtn");
+
+  const recoveryPanel = document.getElementById("totpRecoveryPanel");
+  const recoveryCodesBox = document.getElementById("totpRecoveryCodes");
+  const recoveryDoneBtn = document.getElementById("totpRecoveryDoneBtn");
+
+  const disableCode = document.getElementById("totpDisableCode");
+  const disableBtn = document.getElementById("totpDisableBtn");
+
+  const errorEl = document.getElementById("totpError");
+  const msgEl = document.getElementById("totpMessage");
+
+  function setError(text) {
+    if (errorEl) errorEl.textContent = text || "";
+  }
+
+  function setMsg(text) {
+    if (msgEl) msgEl.textContent = text || "";
+  }
+
+  async function readResponse(resp) {
+    const ct = (resp.headers.get("content-type") || "").toLowerCase();
+
+    if (ct.includes("application/json")) {
+      const data = await resp.json().catch(() => null);
+      return {
+        data,
+        message:
+          data?.message ||
+          data?.detail ||
+          (resp.ok ? "" : L("Ошибка запроса.", "Request error.")),
+      };
+    }
+
+    const text = await resp.text().catch(() => "");
+    return {
+      data: null,
+      message: text || (resp.ok ? "" : L("Ошибка запроса.", "Request error.")),
+    };
+  }
+
+  async function postJSON(url, body = null) {
+    const options = {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      credentials: "same-origin",
+    };
+
+    if (body != null) {
+      options.body = JSON.stringify(body);
+    }
+
+    const resp = await fetch(url, options);
+    const parsed = await readResponse(resp);
+
+    return {
+      ok: resp.ok,
+      status: resp.status,
+      data: parsed.data,
+      message: parsed.message,
+    };
+  }
+
+  function resetSetupState() {
+    if (qrBox) qrBox.innerHTML = "";
+    if (manualKey) manualKey.value = "";
+    if (setupCode) setupCode.value = "";
+    if (confirmBtn) confirmBtn.disabled = true;
+    if (setupPanel) setupPanel.classList.add("hidden");
+  }
+
+  function resetDisableState() {
+    if (disableCode) disableCode.value = "";
+    if (disableBtn) disableBtn.disabled = true;
+  }
+
+  function renderEnabledState(confirmedAtText = "") {
+    root.dataset.totpEnabled = "1";
+
+    if (statusBadge) {
+      statusBadge.textContent = L("Включено", "Enabled");
+      statusBadge.classList.remove("status-badge--warn");
+      statusBadge.classList.add("status-badge--ok");
+    }
+
+    if (confirmedAtEl) {
+      if (confirmedAtText) {
+        confirmedAtEl.classList.remove("hidden");
+        confirmedAtEl.innerHTML = `${L("Включено:", "Enabled at:")} <strong>${confirmedAtText}</strong>`;
+      } else {
+        confirmedAtEl.classList.add("hidden");
+        confirmedAtEl.textContent = "";
+      }
+    }
+
+    if (disabledPanel) disabledPanel.classList.add("hidden");
+    if (enabledPanel) enabledPanel.classList.remove("hidden");
+    if (recoveryPanel) recoveryPanel.classList.add("hidden");
+
+    resetSetupState();
+    resetDisableState();
+  }
+
+  function renderDisabledState() {
+    root.dataset.totpEnabled = "0";
+
+    if (statusBadge) {
+      statusBadge.textContent = L("Отключено", "Disabled");
+      statusBadge.classList.remove("status-badge--ok");
+      statusBadge.classList.add("status-badge--warn");
+    }
+
+    if (confirmedAtEl) {
+      confirmedAtEl.classList.add("hidden");
+      confirmedAtEl.textContent = "";
+    }
+
+    if (disabledPanel) disabledPanel.classList.remove("hidden");
+    if (enabledPanel) enabledPanel.classList.add("hidden");
+    if (recoveryPanel) recoveryPanel.classList.add("hidden");
+
+    resetSetupState();
+    resetDisableState();
+  }
+
+  setupCode?.addEventListener("input", () => {
+    setError("");
+    const code = (setupCode.value || "").trim();
+    if (confirmBtn) confirmBtn.disabled = !isSixDigits(code);
+  });
+
+  disableCode?.addEventListener("input", () => {
+    setError("");
+    const code = (disableCode.value || "").trim();
+    if (disableBtn) disableBtn.disabled = !isSixDigits(code);
+  });
+
+  enableBtn?.addEventListener("click", async () => {
+    setError("");
+    setMsg("");
+
+    if (!lockBtn(enableBtn)) return;
+
+    try {
+      const { ok, data, message } = await postJSON("/settings/security/totp/setup/start");
+
+      if (!ok || !data || data.status !== "ok") {
+        setError(message || L("Не удалось начать настройку аутентификатора.", "Failed to start authenticator setup."));
+        unlockBtn(enableBtn);
+        return;
+      }
+
+      if (qrBox) qrBox.innerHTML = data.qr_svg || "";
+      if (manualKey) manualKey.value = data.manual_key || "";
+      if (setupCode) setupCode.value = "";
+      if (confirmBtn) confirmBtn.disabled = true;
+
+      if (disabledPanel) disabledPanel.classList.add("hidden");
+      if (setupPanel) setupPanel.classList.remove("hidden");
+      if (recoveryPanel) recoveryPanel.classList.add("hidden");
+
+      setMsg(L(
+        "Отсканируйте QR-код в приложении-аутентификаторе и введите 6-значный код.",
+        "Scan the QR code in your authenticator app and enter the 6-digit code."
+      ));
+
+      if (setupCode) setupCode.focus();
+      unlockBtn(enableBtn);
+    } catch (e) {
+      console.error(e);
+      setError(L("Ошибка сети.", "Network error."));
+      unlockBtn(enableBtn);
+    }
+  });
+
+  confirmBtn?.addEventListener("click", async () => {
+    setError("");
+    setMsg("");
+
+    const code = (setupCode?.value || "").trim();
+    if (!isSixDigits(code)) {
+      setError(L("Введите 6-значный код.", "Enter a 6-digit code."));
+      return;
+    }
+
+    if (!lockBtn(confirmBtn)) return;
+
+    try {
+      const { ok, data, message } = await postJSON("/settings/security/totp/setup/confirm", {
+        code,
+      });
+
+      if (!ok || !data || data.status !== "ok") {
+        setError(message || L("Не удалось подтвердить код.", "Failed to confirm the code."));
+        unlockBtn(confirmBtn);
+        return;
+      }
+
+      const recoveryCodes = Array.isArray(data.recovery_codes) ? data.recovery_codes : [];
+
+      if (recoveryCodesBox) {
+        recoveryCodesBox.textContent = recoveryCodes.join("\n");
+      }
+
+      if (setupPanel) setupPanel.classList.add("hidden");
+      if (recoveryPanel) recoveryPanel.classList.remove("hidden");
+
+      setMsg(L(
+        "Google Authenticator включён. Сохраните recovery codes перед продолжением.",
+        "Google Authenticator is enabled. Save the recovery codes before continuing."
+      ));
+
+      unlockBtn(confirmBtn);
+    } catch (e) {
+      console.error(e);
+      setError(L("Ошибка сети.", "Network error."));
+      unlockBtn(confirmBtn);
+    }
+  });
+
+  recoveryDoneBtn?.addEventListener("click", () => {
+    setError("");
+    setMsg("");
+
+    // После успешного включения проще и надёжнее обновить страницу,
+    // чтобы backend заново отдал актуальные totp_enabled / totp_confirmed_at.
+    window.location.reload();
+  });
+
+  disableBtn?.addEventListener("click", async () => {
+    setError("");
+    setMsg("");
+
+    const code = (disableCode?.value || "").trim();
+    if (!isSixDigits(code)) {
+      setError(L("Введите 6-значный код.", "Enter a 6-digit code."));
+      return;
+    }
+
+    if (!lockBtn(disableBtn)) return;
+
+    try {
+      const { ok, data, message } = await postJSON("/settings/security/totp/disable", {
+        code,
+      });
+
+      if (!ok || !data || data.status !== "ok") {
+        setError(message || L("Не удалось отключить аутентификатор.", "Failed to disable authenticator."));
+        unlockBtn(disableBtn);
+        return;
+      }
+
+      setMsg(L("Google Authenticator отключён.", "Google Authenticator disabled."));
+      unlockBtn(disableBtn);
+      renderDisabledState();
+    } catch (e) {
+      console.error(e);
+      setError(L("Ошибка сети.", "Network error."));
+      unlockBtn(disableBtn);
+    }
+  });
+
+  // initial state sync
+  if (root.dataset.totpEnabled === "1") {
+    renderEnabledState(root.dataset.totpConfirmedAt || "");
+  } else {
+    renderDisabledState();
+  }
 }
 
 function initEmailsManager() {

@@ -123,12 +123,16 @@
             <div class="portfolio-metric portfolio-metric--right">
               <div class="p-label">{{ 'Изменение за последний день' if lang == 'ru' else 'Change over last day' }}</div>
               <div class="p-value">
-                {% if portfolio.daily_change_display_mode == 'absolute' %}
-                  {% if portfolio.daily_change_abs > 0 %}+{% endif %}{{ '%.2f'|format(portfolio.daily_change_abs or 0) }} {{ portfolio.stable_symbol or 'USDT' }}
-                {% elif portfolio.daily_change_pct is not none %}
-                  {% if portfolio.daily_change_pct > 0 %}+{% endif %}{{ '%.2f'|format(portfolio.daily_change_pct) }}%
+                {% set daily_mode = portfolio.daily_change_display_mode|default('', true) %}
+                {% set daily_pct = portfolio.daily_change_pct %}
+                {% set daily_abs = portfolio.daily_change_abs %}
+
+                {% if daily_mode == 'absolute' and daily_abs is not none %}
+                  {% if daily_abs > 0 %}+{% endif %}{{ '%.2f'|format(daily_abs) }} {{ portfolio.stable_symbol or 'USDT' }}
+                {% elif daily_pct is not none %}
+                  {% if daily_pct > 0 %}+{% endif %}{{ '%.2f'|format(daily_pct) }}%
                 {% else %}
-                  —
+                  0.00%
                 {% endif %}
               </div>
             </div>

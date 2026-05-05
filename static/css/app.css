@@ -1417,3 +1417,59 @@ body.sidebar-collapsed .sidebar__logout-icon{
   height: 24px;
   flex-basis: 24px;
 }
+
+/* ---------- Cookie notice ---------- */
+.cookie-notice {
+  position: fixed;
+  left: 18px;
+  right: 18px;
+  bottom: 18px;
+  z-index: 1200;
+  max-width: 920px;
+  margin: 0 auto;
+  padding: 14px 16px;
+  border: 1px solid rgba(0,0,0,.12);
+  border-radius: 14px;
+  background: #fff;
+  box-shadow: var(--shadow);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.cookie-notice__text {
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--wb-text);
+}
+
+.cookie-notice__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  flex-shrink: 0;
+}
+
+.cookie-notice__link {
+  font-size: 13px;
+  color: var(--wb-text);
+  text-decoration: underline;
+  white-space: nowrap;
+}
+
+.cookie-notice__ok {
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .cookie-notice {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .cookie-notice__actions {
+    width: 100%;
+    justify-content: space-between;
+  }
+}

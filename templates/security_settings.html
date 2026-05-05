@@ -7,7 +7,7 @@
   <link rel="stylesheet" href="/static/css/app.css" />
   <script defer src="/static/js/app.js?v=5_2"></script>
   <!-- cache-busting для скрипта настроек безопасности -->
-  <script defer src="/static/js/security_settings.js?v=2"></script>
+  <script defer src="/static/js/security_settings.js?v=18_2_2"></script>
 </head>
 
 <body class="page page--dashboard">
@@ -212,6 +212,165 @@
               </div>
 
               <p id="passwordChangeMessage" class="muted" style="margin-top:12px; font-size:13px;"></p>
+            </div>
+          </div>
+
+          <!-- Accordion: Authenticator app / TOTP -->
+          <div
+            class="accordion"
+            data-accordion
+            data-totp-root
+            data-totp-enabled="{{ '1' if totp_enabled else '0' }}"
+            data-totp-confirmed-at="{{ totp_confirmed_at or '' }}"
+            style="margin-top:12px;"
+          >
+            <button class="accordion__header" type="button" data-acc-toggle aria-expanded="false">
+              <span class="accordion__left">
+                <span class="accordion__title">
+                  {% if lang == 'en' %}Authenticator app{% else %}Приложение-аутентификатор{% endif %}
+                </span>
+              </span>
+
+              <span class="accordion__right">
+                {% if totp_enabled %}
+                  <span class="acc-indicator acc-indicator--ok" aria-label="enabled">✓</span>
+                {% else %}
+                  <span class="acc-indicator acc-indicator--warn" aria-label="disabled">!</span>
+                {% endif %}
+                <span class="accordion__chevron" aria-hidden="true"></span>
+              </span>
+            </button>
+
+            <div class="accordion__body">
+              <p class="muted" style="margin:0 0 12px; font-size:13px;">
+                {% if lang == 'en' %}
+                  Use Google Authenticator, Authy, 1Password, or another compatible authenticator app to protect your account.
+                {% else %}
+                  Используйте Google Authenticator, Authy, 1Password или другое совместимое приложение-аутентификатор для защиты аккаунта.
+                {% endif %}
+              </p>
+
+              <div style="margin-bottom:12px;">
+                <span class="status-badge {% if totp_enabled %}status-badge--ok{% else %}status-badge--warn{% endif %}" data-totp-status-badge>
+                  {% if totp_enabled %}
+                    {% if lang == 'en' %}Enabled{% else %}Включено{% endif %}
+                  {% else %}
+                    {% if lang == 'en' %}Disabled{% else %}Отключено{% endif %}
+                  {% endif %}
+                </span>
+
+                {% if totp_enabled and totp_confirmed_at %}
+                  <p class="muted" style="margin:8px 0 0; font-size:13px;" data-totp-confirmed-at>
+                    {% if lang == 'en' %}Enabled at:{% else %}Включено:{% endif %}
+                    <strong>{{ totp_confirmed_at }}</strong>
+                  </p>
+                {% else %}
+                  <p class="muted hidden" style="margin:8px 0 0; font-size:13px;" data-totp-confirmed-at></p>
+                {% endif %}
+              </div>
+
+              <!-- Disabled state -->
+              <div data-totp-disabled-panel class="{% if totp_enabled %}hidden{% endif %}">
+                <button id="totpEnableBtn" class="btn btn--primary" type="button">
+                  {% if lang == 'en' %}Enable{% else %}Включить{% endif %}
+                </button>
+              </div>
+
+              <!-- Setup panel after /setup/start -->
+              <div id="totpSetupPanel" class="hidden" style="margin-top:14px;">
+                <div class="field" style="margin-bottom:12px;">
+                  <div class="field__label">
+                    {% if lang == 'en' %}Scan QR code{% else %}Отсканируйте QR-код{% endif %}
+                  </div>
+
+                  <div
+                    id="totpQrBox"
+                    style="display:inline-flex; align-items:center; justify-content:center; padding:12px; border:1px solid rgba(0,0,0,.10); border-radius:12px; background:#fff;"
+                  ></div>
+                </div>
+
+                <div class="field" style="margin-bottom:12px;">
+                  <label class="field__label" for="totpManualKey">
+                    {% if lang == 'en' %}Manual key{% else %}Ключ для ручного ввода{% endif %}
+                  </label>
+                  <input class="field__input" id="totpManualKey" type="text" readonly />
+                  <p class="muted" style="margin:6px 0 0; font-size:13px;">
+                    {% if lang == 'en' %}
+                      If you cannot scan the QR code, enter this key manually in your authenticator app.
+                    {% else %}
+                      Если QR-код не сканируется, введите этот ключ вручную в приложении-аутентификаторе.
+                    {% endif %}
+                  </p>
+                </div>
+
+                <div class="field" style="margin-bottom:12px;">
+                  <label class="field__label" for="totpSetupCode">
+                    {% if lang == 'en' %}6-digit code from app{% else %}6-значный код из приложения{% endif %}
+                  </label>
+                  <input
+                    class="field__input"
+                    id="totpSetupCode"
+                    type="text"
+                    inputmode="numeric"
+                    autocomplete="one-time-code"
+                    minlength="6"
+                    maxlength="6"
+                    pattern="\d{6}"
+                    placeholder="123456"
+                  />
+                </div>
+
+                <button id="totpConfirmBtn" class="btn btn--primary" type="button" disabled>
+                  {% if lang == 'en' %}Confirm{% else %}Подтвердить{% endif %}
+                </button>
+              </div>
+
+              <!-- Recovery codes after successful setup -->
+              <div id="totpRecoveryPanel" class="hidden" style="margin-top:14px;">
+                <div class="form-error" style="color:#7a4d00; margin-bottom:10px;">
+                  {% if lang == 'en' %}
+                    Save these recovery codes now. They are shown only once.
+                  {% else %}
+                    Сохраните эти recovery codes сейчас. Они показываются только один раз.
+                  {% endif %}
+                </div>
+
+                <div
+                  id="totpRecoveryCodes"
+                  style="font-family:ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; font-size:13px; line-height:1.6; padding:12px; border:1px solid rgba(0,0,0,.10); border-radius:12px; background:rgba(0,0,0,.03); white-space:pre-wrap;"
+                ></div>
+
+                <button id="totpRecoveryDoneBtn" class="btn btn--primary" type="button" style="margin-top:12px;">
+                  {% if lang == 'en' %}I have saved these codes{% else %}Я сохранил эти коды{% endif %}
+                </button>
+              </div>
+
+              <!-- Enabled state -->
+              <div data-totp-enabled-panel class="{% if not totp_enabled %}hidden{% endif %}">
+                <div class="field" style="margin-bottom:12px;">
+                  <label class="field__label" for="totpDisableCode">
+                    {% if lang == 'en' %}Current authenticator code{% else %}Текущий код из приложения{% endif %}
+                  </label>
+                  <input
+                    class="field__input"
+                    id="totpDisableCode"
+                    type="text"
+                    inputmode="numeric"
+                    autocomplete="one-time-code"
+                    minlength="6"
+                    maxlength="6"
+                    pattern="\d{6}"
+                    placeholder="123456"
+                  />
+                </div>
+
+                <button id="totpDisableBtn" class="btn btn--light" type="button" disabled>
+                  {% if lang == 'en' %}Disable{% else %}Отключить{% endif %}
+                </button>
+              </div>
+
+              <div class="form-error" id="totpError" role="alert" aria-live="polite"></div>
+              <p class="muted" id="totpMessage" style="margin-top:12px; font-size:13px;"></p>
             </div>
           </div>
 

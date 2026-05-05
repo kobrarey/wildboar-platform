@@ -7,11 +7,12 @@
 
   <!-- Общий стиль платформы -->
   <link rel="stylesheet" href="/static/css/app.css" />
+  <script defer src="/static/js/app.js?v=18_2_2"></script>
 
   <!-- Минимальная локальная стилизация для статической страницы -->
   <style>
     .ua-top {
-      background: #f2d400;
+      background: var(--wb-yellow);
       padding: 14px 16px;
       border-bottom: 1px solid rgba(0,0,0,.08);
     }
@@ -32,7 +33,7 @@
     }
     .ua-back {
       text-decoration: none;
-      background: #7f63c7;
+      background: var(--wb-purple);
       color: #fff;
       padding: 10px 14px;
       border-radius: 10px;
@@ -54,7 +55,7 @@
   </style>
 </head>
 
-<body class="page-landing">
+<body class="page page--landing">
   <header class="ua-top">
     <div class="ua-top__inner">
       <div class="ua-brand">wildboar</div>

@@ -184,6 +184,97 @@
     }
   }
 
+  // ---------- cookie notice ----------
+  function hasCookie(name, expectedValue = null) {
+    const prefix = `${name}=`;
+    const parts = (document.cookie || "").split(";").map((x) => x.trim());
+
+    for (const part of parts) {
+      if (!part.startsWith(prefix)) continue;
+      const value = decodeURIComponent(part.slice(prefix.length));
+      return expectedValue == null ? true : value === expectedValue;
+    }
+
+    return false;
+  }
+
+  function hasCookieNoticeAck() {
+    if (hasCookie("cookie_notice_ack", "true")) return true;
+
+    try {
+      return localStorage.getItem("cookie_notice_ack") === "true";
+    } catch {
+      return false;
+    }
+  }
+
+  function saveCookieNoticeAckLocal() {
+    try {
+      localStorage.setItem("cookie_notice_ack", "true");
+    } catch {
+      // localStorage может быть недоступен — backend cookie всё равно будет основным источником
+    }
+  }
+
+  async function sendCookieNoticeAck() {
+    try {
+      await fetch("/api/cookie-notice/ack", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Accept": "application/json" },
+      });
+    } catch (err) {
+      console.warn("[cookie_notice] ack request failed:", err);
+    }
+  }
+
+  function initCookieNotice() {
+    // На самой странице Cookie Policy баннер не нужен — пользователь и так читает политику.
+    if (window.location.pathname === "/cookie-policy") return;
+    if (hasCookieNoticeAck()) return;
+    if (document.getElementById("cookieNotice")) return;
+
+    const banner = document.createElement("div");
+    banner.className = "cookie-notice";
+    banner.id = "cookieNotice";
+    banner.setAttribute("role", "dialog");
+    banner.setAttribute("aria-live", "polite");
+    banner.setAttribute(
+      "aria-label",
+      isEn ? "Cookie notice" : "Уведомление о cookies"
+    );
+
+    const text = isEn
+      ? "We use necessary cookies for authentication, security, and language preferences. We do not use analytics or marketing cookies at this stage."
+      : "Мы используем необходимые cookies для входа, безопасности и выбора языка. На этом этапе мы не используем аналитические или маркетинговые cookies.";
+
+    const policyText = isEn ? "Cookie Policy" : "Политика cookies";
+    const okText = isEn ? "OK" : "Понятно";
+
+    banner.innerHTML = `
+      <div class="cookie-notice__text">${text}</div>
+      <div class="cookie-notice__actions">
+        <a class="cookie-notice__link" href="/cookie-policy">${policyText}</a>
+        <button class="btn btn--primary btn--small cookie-notice__ok" type="button">${okText}</button>
+      </div>
+    `;
+
+    document.body.appendChild(banner);
+
+    const okBtn = banner.querySelector(".cookie-notice__ok");
+
+    okBtn?.addEventListener("click", async () => {
+      if (!lockActionButton(okBtn)) return;
+
+      saveCookieNoticeAckLocal();
+
+      // Скрываем сразу, чтобы UI не зависел от скорости сети.
+      banner.remove();
+
+      await sendCookieNoticeAck();
+    });
+  }
+
   // ---------- modal helpers ----------
   function openModal(modalEl) {
     if (!modalEl) return;
@@ -1050,6 +1141,7 @@
     initLogin();
     initForgotPage();
     initForgotNewPasswordPage();
+    initCookieNotice();
 
     // отключаем любые обработчики маски телефона (если были)
     const ph = document.getElementById("regPhone");
