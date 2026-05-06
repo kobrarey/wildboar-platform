@@ -92,6 +92,13 @@ class Settings(BaseSettings):
     BNB_ALERT_THRESHOLD_USD: Decimal = Decimal("100")
     TELEGRAM_CHECK_SEC: int = 3600
 
+    # --- fee wallet daily USDT -> BNB swap ---
+    FEE_WALLET_SWAP_ENABLED: bool = True
+    FEE_WALLET_SWAP_INTERVAL_SEC: int = 3600
+    FEE_WALLET_SWAP_MIN_USDT: Decimal = Decimal("10")
+    FEE_WALLET_SWAP_SLIPPAGE_BPS: int = 100
+    FEE_WALLET_SWAP_DAILY_HOUR_UTC: int = 0
+
     # --- pancake quote ---
     PANCAKE_ROUTER_V2: str = ""
     WBNB_ADDRESS: str = ""

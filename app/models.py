@@ -235,6 +235,50 @@ class WalletTransfer(Base):
     )
 
 
+class FeeWalletSwap(Base):
+    __tablename__ = "fee_wallet_swaps"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    wallet_type: Mapped[str] = mapped_column(String(16), nullable=False)  # ok | blocked
+    wallet_address: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    token_in: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=sa_text("'USDT'"),
+    )
+    token_out: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=sa_text("'BNB'"),
+    )
+
+    amount_in_usdt: Mapped[Decimal] = mapped_column(
+        Numeric(38, 18),
+        nullable=False,
+        server_default=sa_text("0"),
+    )
+    amount_out_bnb: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+
+    tx_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+    status: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=sa_text("'pending'"),
+    )
+
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class WithdrawSession(Base):
     __tablename__ = "withdraw_sessions"
 

@@ -1,11 +1,15 @@
 """Dashboard routes: dashboard, useragreement, set-language."""
+import io
+import json
 import secrets
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN
+from typing import Any
 
 import segno
-from fastapi import APIRouter, Depends
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi import APIRouter, Depends, Query
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
+from openpyxl import Workbook
 from pydantic import BaseModel
 from starlette.requests import Request
 from sqlalchemy import func
@@ -19,7 +23,15 @@ from app.auth import get_current_user
 from app.auth.deps import NotAuthenticated
 from app.auth.code_action_cooldown import enforce_code_action_cooldown
 from app.portfolio import get_user_portfolio
-from app.models import User, UserWallet, WalletTransfer, WithdrawSession, SecurityCode
+from app.models import (
+    User,
+    UserWallet,
+    WalletTransfer,
+    WithdrawSession,
+    SecurityCode,
+    Fund,
+    FundOrder,
+)
 from app.utils.wallet_check import validate_address_status
 from app.codes import create_code, verify_code, get_active_code
 from app.emails import send_withdraw_code
@@ -60,6 +72,78 @@ def mask_email(email: str) -> str:
     l = (local[:1] + "***") if local else "***"
     d = (dom[:1] + "***" + dom[-3:]) if len(dom) >= 3 else (dom[:1] + "***")
     return f"{l}@{d}"
+
+
+def _to_decimal(value: Any) -> Decimal:
+    if value is None:
+        return Decimal("0")
+    if isinstance(value, Decimal):
+        return value
+    return Decimal(str(value))
+
+
+def _dec_str(value: Any, places: str = "0.00") -> str:
+    return str(_to_decimal(value).quantize(Decimal(places), rounding=ROUND_DOWN))
+
+
+def _optional_dec_str(value: Any, places: str = "0.00") -> str | None:
+    if value is None:
+        return None
+    return _dec_str(value, places)
+
+
+def _dt_str(value: datetime | None) -> str:
+    if not value:
+        return ""
+    return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _short_or_empty(value: str | None) -> str:
+    return (value or "").strip()
+
+
+def _transfer_address(tx: WalletTransfer) -> str:
+    ttype = (tx.type or "").lower()
+    if ttype in {"withdraw", "withdrawal"}:
+        return _short_or_empty(tx.to_address)
+    return _short_or_empty(tx.from_address or tx.to_address)
+
+
+def _transfer_datetime(tx: WalletTransfer) -> datetime | None:
+    return tx.tx_time or tx.detected_at
+
+
+def _excel_value(value: Any) -> Any:
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, datetime):
+        return value.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    return value
+
+
+def _build_xlsx_response(headers: list[str], rows: list[list[Any]], filename_prefix: str) -> StreamingResponse:
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "data"
+
+    ws.append(headers)
+    for row in rows:
+        ws.append([_excel_value(v) for v in row])
+
+    bio = io.BytesIO()
+    wb.save(bio)
+    bio.seek(0)
+
+    filename = f"{filename_prefix}_{utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return StreamingResponse(
+        bio,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        },
+    )
 
 
 @router.get("/dashboard")
@@ -540,6 +624,254 @@ def withdraw_cancel(
     db.commit()
 
     return {"status": "ok"}
+
+
+@router.get("/api/dashboard/live")
+def dashboard_live(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    lang = get_lang_from_request(request)
+    portfolio = get_user_portfolio(db, user, lang)
+
+    wallet = (
+        db.query(UserWallet)
+        .filter(
+            UserWallet.user_id == user.id,
+            UserWallet.blockchain == "BSC",
+            UserWallet.is_active == True,
+        )
+        .first()
+    )
+
+    funds_payload = []
+    for f in portfolio.get("funds") or []:
+        funds_payload.append(
+            {
+                "id": f.get("id"),
+                "code": f.get("code"),
+                "category": f.get("category"),
+                "name": f.get("name"),
+                "price": _dec_str(f.get("price"), "0.00"),
+                "shares": _dec_str(f.get("shares"), "0.0000"),
+                "value": _dec_str(f.get("value"), "0.00"),
+                "icon_name": f.get("icon_name") or "fund-default.svg",
+            }
+        )
+
+    return {
+        "status": "ok",
+        "current_balance": _dec_str(portfolio.get("current_balance"), "0.00"),
+        "stable_symbol": portfolio.get("stable_symbol") or "USDT",
+        "daily_change_display_mode": portfolio.get("daily_change_display_mode") or "pct",
+        "daily_change_pct": _optional_dec_str(portfolio.get("daily_change_pct"), "0.00"),
+        "daily_change_abs": _dec_str(portfolio.get("daily_change_abs"), "0.00"),
+        "usdt_balance_total": _dec_str(portfolio.get("usdt_balance_total"), "0.00"),
+        "usdt_balance_available": _dec_str(portfolio.get("usdt_balance_available"), "0.00"),
+        "user_compliance_status": getattr(user, "compliance_status", "ok"),
+        "wallet_compliance_status": (wallet.compliance_status if wallet else "ok"),
+        "funds": funds_payload,
+    }
+
+
+@router.get("/api/history/live")
+def history_live(
+    request: Request,
+    section: str = Query(default="transfers"),
+    sub: str = Query(default="all"),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    lang = get_lang_from_request(request)
+
+    section = (section or "").strip().lower()
+    sub = (sub or "").strip().lower()
+
+    if section not in {"transfers", "trading"}:
+        return JSONResponse(
+            {"status": "error", "message": "Unsupported section"},
+            status_code=400,
+        )
+
+    if section == "transfers":
+        sort_by = func.coalesce(WalletTransfer.tx_time, WalletTransfer.detected_at).desc()
+        q = db.query(WalletTransfer).filter(WalletTransfer.user_id == user.id)
+
+        if sub == "deposits":
+            q = q.filter(WalletTransfer.type == "deposit")
+        elif sub == "withdrawals":
+            q = q.filter(WalletTransfer.type == "withdraw")
+        elif sub != "all":
+            return JSONResponse(
+                {"status": "error", "message": "Unsupported sub"},
+                status_code=400,
+            )
+
+        rows = q.order_by(sort_by).all()
+
+        payload_rows = []
+        for tx in rows:
+            addr = _transfer_address(tx)
+            payload_rows.append(
+                {
+                    "id": tx.id,
+                    "coin": tx.coin or "USDT",
+                    "network": tx.network or "BSC (BEP20)",
+                    "amount": _dec_str(tx.amount, "0.00"),
+                    "type": tx.type,
+                    "address": addr,
+                    "txid": tx.tx_hash or "",
+                    "status": tx.status,
+                    "compliance_status": tx.compliance_status,
+                    "date_time": _dt_str(_transfer_datetime(tx)),
+                    "full_address": addr,
+                    "full_tx_hash": tx.tx_hash or "",
+                }
+            )
+
+        return {
+            "status": "ok",
+            "section": "transfers",
+            "sub": sub,
+            "rows": payload_rows,
+        }
+
+    q = (
+        db.query(FundOrder, Fund)
+        .join(Fund, Fund.id == FundOrder.fund_id)
+        .filter(FundOrder.user_id == user.id)
+    )
+
+    if sub in {"purchases", "buys"}:
+        q = q.filter(FundOrder.side == "buy")
+    elif sub in {"redemptions", "redeem"}:
+        q = q.filter(FundOrder.side == "redeem")
+    elif sub != "all":
+        return JSONResponse(
+            {"status": "error", "message": "Unsupported sub"},
+            status_code=400,
+        )
+
+    rows = q.order_by(FundOrder.created_at.desc()).all()
+
+    payload_rows = []
+    for order, fund in rows:
+        fund_name = fund.name_en if lang == "en" else fund.name_ru
+        payload_rows.append(
+            {
+                "id": order.id,
+                "fund_id": order.fund_id,
+                "fund_code": fund.code,
+                "fund_name": fund_name,
+                "side": order.side,
+                "amount_usdt": _optional_dec_str(order.amount_usdt, "0.00"),
+                "shares": _optional_dec_str(order.shares, "0.0000"),
+                "price_usdt": _optional_dec_str(order.price_usdt, "0.00"),
+                "status": order.status,
+                "created_at": _dt_str(order.created_at),
+                "executed_at": _dt_str(order.executed_at),
+            }
+        )
+
+    return {
+        "status": "ok",
+        "section": "trading",
+        "sub": sub,
+        "rows": payload_rows,
+    }
+
+
+@router.get("/api/history/export/transfers")
+def history_export_transfers(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    headers = [
+        "coin",
+        "network",
+        "amount",
+        "type",
+        "address",
+        "txid",
+        "status",
+        "compliance_status",
+        "date_time",
+    ]
+
+    sort_by = func.coalesce(WalletTransfer.tx_time, WalletTransfer.detected_at).desc()
+    transfers = (
+        db.query(WalletTransfer)
+        .filter(WalletTransfer.user_id == user.id)
+        .order_by(sort_by)
+        .all()
+    )
+
+    rows = []
+    for tx in transfers:
+        addr = _transfer_address(tx)
+        dt = _transfer_datetime(tx)
+
+        rows.append(
+            [
+                tx.coin or "USDT",
+                tx.network or "BSC (BEP20)",
+                tx.amount,
+                tx.type,
+                addr,
+                tx.tx_hash,
+                tx.status,
+                tx.compliance_status,
+                dt,
+            ]
+        )
+
+    return _build_xlsx_response(headers, rows, "wildboar_transfers")
+
+
+@router.get("/api/history/export/trading")
+def history_export_trading(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    headers = [
+        "id",
+        "user_id",
+        "fund_id",
+        "side",
+        "amount_usdt",
+        "shares",
+        "price_usdt",
+        "status",
+        "created_at",
+        "executed_at",
+    ]
+
+    orders = (
+        db.query(FundOrder)
+        .filter(FundOrder.user_id == user.id)
+        .order_by(FundOrder.created_at.desc())
+        .all()
+    )
+
+    rows = []
+    for order in orders:
+        rows.append(
+            [
+                order.id,
+                order.user_id,
+                order.fund_id,
+                order.side,
+                order.amount_usdt,
+                order.shares,
+                order.price_usdt,
+                order.status,
+                order.created_at,
+                order.executed_at,
+            ]
+        )
+
+    return _build_xlsx_response(headers, rows, "wildboar_trading_operations")
 
 
 @router.get("/history")
