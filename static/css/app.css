@@ -1473,3 +1473,34 @@ body.sidebar-collapsed .sidebar__logout-icon{
     justify-content: space-between;
   }
 }
+
+/* ===== Stage 18.2.3: history export + live disabled links ===== */
+
+.history-export-row {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 10px;
+  margin: 10px 0 12px;
+}
+
+.history-export-row .btn {
+  white-space: nowrap;
+}
+
+.btn.is-disabled,
+.btn[aria-disabled="true"].is-disabled {
+  opacity: .55;
+  cursor: not-allowed;
+  pointer-events: none;
+}
+
+@media (max-width: 640px) {
+  .history-export-row {
+    justify-content: stretch;
+  }
+
+  .history-export-row .btn {
+    width: 100%;
+  }
+}

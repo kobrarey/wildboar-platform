@@ -6,7 +6,7 @@
   <title>WildBoar — {{ 'Personal account' if lang == 'en' else 'Личный кабинет' }}</title>
   <link rel="stylesheet" href="/static/css/app.css?v=portfolio8" />
   <script defer src="/static/js/app.js?v=5_2"></script>
-  <script defer src="/static/js/dashboard_wallet.js"></script>
+  <script defer src="/static/js/dashboard_wallet.js?v=18_2_3"></script>
 </head>
 
 <body class="page page--dashboard">
@@ -118,11 +118,17 @@
           <div class="portfolio-header__row1">
             <div class="portfolio-metric">
               <div class="p-label">{{ 'Текущий баланс' if lang == 'ru' else 'Current balance' }}</div>
-              <div class="p-value">{{ '%.2f'|format(portfolio.current_balance or 0) }} {{ portfolio.stable_symbol or 'USDT' }}</div>
+              <div
+                class="p-value"
+                data-live-current-balance
+                data-stable-symbol="{{ portfolio.stable_symbol or 'USDT' }}"
+              >
+                {{ '%.2f'|format(portfolio.current_balance or 0) }} {{ portfolio.stable_symbol or 'USDT' }}
+              </div>
             </div>
             <div class="portfolio-metric portfolio-metric--right">
               <div class="p-label">{{ 'Изменение за последний день' if lang == 'ru' else 'Change over last day' }}</div>
-              <div class="p-value">
+              <div class="p-value" data-live-daily-change data-stable-symbol="{{ portfolio.stable_symbol or 'USDT' }}">
                 {% set daily_mode = portfolio.daily_change_display_mode|default('', true) %}
                 {% set daily_pct = portfolio.daily_change_pct %}
                 {% set daily_abs = portfolio.daily_change_abs %}
@@ -164,7 +170,7 @@
                   />
                   <span>{{ portfolio.stable_symbol or 'USDT' }}</span>
                 </div>
-                <span class="stablecoin-value">
+                <span class="stablecoin-value" data-live-stablecoin-balance>
                   {{ '%.2f'|format((usdt_balance_total|default(portfolio.stable_balance|default(0), true))|float) }}
                 </span>
               </div>
@@ -172,6 +178,7 @@
                 <button
                 type="button"
                 class="btn btn--secondary"
+                data-live-deposit-btn
                 {% if compliance_blocked %}
                   disabled aria-disabled="true"
                 {% else %}
@@ -188,45 +195,47 @@
           </div>
         </div>
 
-        {% if is_blocked %}
-          <div class="compliance-warning" role="alert">
-            <div class="compliance-warning__icon" aria-hidden="true">
-              <svg width="18" height="18" viewBox="0 0 24 24">
-                <path d="M12 3L2 21h20L12 3z" fill="none" stroke="currentColor" stroke-width="2"/>
-                <path d="M12 9v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                <circle cx="12" cy="17" r="1" fill="currentColor"/>
-              </svg>
+        <div data-live-compliance-warning>
+          {% if is_blocked %}
+            <div class="compliance-warning" role="alert">
+              <div class="compliance-warning__icon" aria-hidden="true">
+                <svg width="18" height="18" viewBox="0 0 24 24">
+                  <path d="M12 3L2 21h20L12 3z" fill="none" stroke="currentColor" stroke-width="2"/>
+                  <path d="M12 9v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                  <circle cx="12" cy="17" r="1" fill="currentColor"/>
+                </svg>
+              </div>
+              <div class="compliance-warning__text">
+                <strong>
+                  {% if lang == 'ru' %}
+                    На адрес поступили USDT с санкционными/ограниченными признаками. Пополнение и покупка паёв отключены. Пожалуйста, выведите средства обратно.
+                  {% else %}
+                    USDT with sanctioned/restricted indicators has been received to the address. Deposits and fund share purchases are disabled. Please withdraw the funds back.
+                  {% endif %}
+                </strong>
+              </div>
             </div>
-            <div class="compliance-warning__text">
-              <strong>
-                {% if lang == 'ru' %}
-                  На адрес поступили USDT с санкционными/ограниченными признаками. Пополнение и покупка паёв отключены. Пожалуйста, выведите средства обратно.
-                {% else %}
-                  USDT with sanctioned/restricted indicators has been received to the address. Deposits and fund share purchases are disabled. Please withdraw the funds back.
-                {% endif %}
-              </strong>
+          {% elif is_pending_check %}
+            <div class="compliance-warning compliance-warning--pending" role="alert">
+              <div class="compliance-warning__icon" aria-hidden="true">
+                <svg width="18" height="18" viewBox="0 0 24 24">
+                  <path d="M12 3L2 21h20L12 3z" fill="none" stroke="currentColor" stroke-width="2"/>
+                  <path d="M12 9v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                  <circle cx="12" cy="17" r="1" fill="currentColor"/>
+                </svg>
+              </div>
+              <div class="compliance-warning__text">
+                <strong>
+                  {% if lang == 'ru' %}
+                    Идёт проверка комплаенса, дождитесь её завершения.
+                  {% else %}
+                    Compliance check in progress, please wait for it to complete.
+                  {% endif %}
+                </strong>
+              </div>
             </div>
-          </div>
-        {% elif is_pending_check %}
-          <div class="compliance-warning compliance-warning--pending" role="alert">
-            <div class="compliance-warning__icon" aria-hidden="true">
-              <svg width="18" height="18" viewBox="0 0 24 24">
-                <path d="M12 3L2 21h20L12 3z" fill="none" stroke="currentColor" stroke-width="2"/>
-                <path d="M12 9v5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
-                <circle cx="12" cy="17" r="1" fill="currentColor"/>
-              </svg>
-            </div>
-            <div class="compliance-warning__text">
-              <strong>
-                {% if lang == 'ru' %}
-                  Идёт проверка комплаенса, дождитесь её завершения.
-                {% else %}
-                  Compliance check in progress, please wait for it to complete.
-                {% endif %}
-              </strong>
-            </div>
-          </div>
-        {% endif %}
+          {% endif %}
+        </div>
       </section>
 
       {% if active_funds %}
@@ -246,7 +255,7 @@
             </div>
 
             {% for f in active_funds %}
-            <div class="fund-row">
+            <div class="fund-row" data-live-fund-row data-fund-code="{{ f.code }}">
               <span class="col-name">
                 <div class="fund-name-with-icon">
                   <img
@@ -258,11 +267,15 @@
                   <span class="fund-name-text">{{ f.name }}</span>
                 </div>
               </span>
-              <span class="col-price">{{ '%.2f'|format(f.price or 0) }} USDT</span>
-              <span class="col-qty">{{ '%.4f'|format(f.shares or 0) }}</span>
-              <span class="col-value">{{ '%.2f'|format(f.value or 0) }} USDT</span>
+              <span class="col-price" data-live-fund-price>{{ '%.2f'|format(f.price or 0) }} USDT</span>
+              <span class="col-qty" data-live-fund-shares>{{ '%.4f'|format(f.shares or 0) }}</span>
+              <span class="col-value" data-live-fund-value>{{ '%.2f'|format(f.value or 0) }} USDT</span>
               <span class="col-action">
-                <a class="btn btn--primary btn--small" href="/terminal/{{ f.code }}">
+                <a
+                  class="btn btn--primary btn--small"
+                  href="/terminal/{{ f.code }}"
+                  data-live-invest-btn
+                >
                   {{ 'Инвестировать' if lang == 'ru' else 'Invest' }}
                 </a>
               </span>
@@ -290,7 +303,7 @@
             </div>
 
             {% for f in index_funds %}
-            <div class="fund-row">
+            <div class="fund-row" data-live-fund-row data-fund-code="{{ f.code }}">
               <span class="col-name">
                 <div class="fund-name-with-icon">
                   <img
@@ -302,11 +315,15 @@
                   <span class="fund-name-text">{{ f.name }}</span>
                 </div>
               </span>
-              <span class="col-price">{{ '%.2f'|format(f.price or 0) }} USDT</span>
-              <span class="col-qty">{{ '%.4f'|format(f.shares or 0) }}</span>
-              <span class="col-value">{{ '%.2f'|format(f.value or 0) }} USDT</span>
+              <span class="col-price" data-live-fund-price>{{ '%.2f'|format(f.price or 0) }} USDT</span>
+              <span class="col-qty" data-live-fund-shares>{{ '%.4f'|format(f.shares or 0) }}</span>
+              <span class="col-value" data-live-fund-value>{{ '%.2f'|format(f.value or 0) }} USDT</span>
               <span class="col-action">
-                <a class="btn btn--primary btn--small" href="/terminal/{{ f.code }}">
+                <a
+                  class="btn btn--primary btn--small"
+                  href="/terminal/{{ f.code }}"
+                  data-live-invest-btn
+                >
                   {{ 'Инвестировать' if lang == 'ru' else 'Invest' }}
                 </a>
               </span>
@@ -334,7 +351,7 @@
             </div>
 
             {% for f in test_funds %}
-            <div class="fund-row">
+            <div class="fund-row" data-live-fund-row data-fund-code="{{ f.code }}">
               <span class="col-name">
                 <div class="fund-name-with-icon">
                   <img
@@ -346,11 +363,15 @@
                   <span class="fund-name-text">{{ f.name }}</span>
                 </div>
               </span>
-              <span class="col-price">{{ '%.2f'|format(f.price or 0) }} USDT</span>
-              <span class="col-qty">{{ '%.4f'|format(f.shares or 0) }}</span>
-              <span class="col-value">{{ '%.2f'|format(f.value or 0) }} USDT</span>
+              <span class="col-price" data-live-fund-price>{{ '%.2f'|format(f.price or 0) }} USDT</span>
+              <span class="col-qty" data-live-fund-shares>{{ '%.4f'|format(f.shares or 0) }}</span>
+              <span class="col-value" data-live-fund-value>{{ '%.2f'|format(f.value or 0) }} USDT</span>
               <span class="col-action">
-                <a class="btn btn--primary btn--small" href="/terminal/{{ f.code }}">
+                <a
+                  class="btn btn--primary btn--small"
+                  href="/terminal/{{ f.code }}"
+                  data-live-invest-btn
+                >
                   {{ 'Инвестировать' if lang == 'ru' else 'Invest' }}
                 </a>
               </span>
@@ -470,9 +491,12 @@
             <input class="field__input" type="text" id="withdrawAmount" placeholder="0.00" />
             <button type="button" class="btn btn--ghost amount-max-btn" id="withdrawMaxBtn">MAX</button>
           </div>
-          <div class="field__hint">
+          <div class="field__hint" data-live-withdraw-available>
             {{ 'Доступно' if lang == 'ru' else 'Available' }}:
-            {{ '%.2f'|format((usdt_balance_available|default(usdt_balance|default(0), true))|float) }} USDT
+            <span data-live-withdraw-available-value>
+              {{ '%.2f'|format((usdt_balance_available|default(usdt_balance|default(0), true))|float) }}
+            </span>
+            USDT
           </div>
           <div class="error-text" id="withdrawAmountError"></div>
         </div>

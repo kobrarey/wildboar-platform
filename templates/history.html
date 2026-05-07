@@ -11,7 +11,7 @@
     .tab-btn--small { padding: 8px 14px; min-width: 110px; text-align: center; }
   </style>
   <script defer src="/static/js/app.js?v=5_2"></script>
-  <script defer src="/static/js/history.js?v=9_1_1"></script>
+  <script defer src="/static/js/history.js?v=18_2_3"></script>
 </head>
 <body class="page page--dashboard">
   {# helpers #}
@@ -142,10 +142,10 @@
               <button type="button" class="tab-btn tab-btn--small is-active" data-sub="all">
                 {{ 'Все трансакции' if lang == 'ru' else 'All transactions' }}
               </button>
-              <button type="button" class="tab-btn tab-btn--small" data-sub="buys">
+              <button type="button" class="tab-btn tab-btn--small" data-sub="purchases">
                 {{ 'Покупки' if lang == 'ru' else 'Purchases' }}
               </button>
-              <button type="button" class="tab-btn tab-btn--small" data-sub="redeem">
+              <button type="button" class="tab-btn tab-btn--small" data-sub="redemptions">
                 {{ 'Погашения' if lang == 'ru' else 'Redemptions' }}
               </button>
             </div>
@@ -162,19 +162,37 @@
               </button>
             </div>
 
-            <div class="history-panels">
+            <div class="history-export-row" data-history-export-row>
+              <a
+                class="btn btn--primary btn--small"
+                href="/api/history/export/trading"
+                data-history-export="trading/all"
+              >
+                {{ 'Скачать Excel' if lang == 'ru' else 'Download Excel' }}
+              </a>
+
+              <a
+                class="btn btn--primary btn--small hidden"
+                href="/api/history/export/transfers"
+                data-history-export="transfers/all"
+              >
+                {{ 'Скачать Excel' if lang == 'ru' else 'Download Excel' }}
+              </a>
+            </div>
+
+            <div class="history-panels" data-history-live-root>
               <!-- Trading (placeholders for now) -->
               <div class="history-panel" data-panel="trading/all">
                 <div class="muted" style="margin-top:14px;">
                   {{ 'Данные появятся позже.' if lang == 'ru' else 'Data will appear later.' }}
                 </div>
               </div>
-              <div class="history-panel hidden" data-panel="trading/buys">
+              <div class="history-panel hidden" data-panel="trading/purchases">
                 <div class="muted" style="margin-top:14px;">
                   {{ 'Данные появятся позже.' if lang == 'ru' else 'Data will appear later.' }}
                 </div>
               </div>
-              <div class="history-panel hidden" data-panel="trading/redeem">
+              <div class="history-panel hidden" data-panel="trading/redemptions">
                 <div class="muted" style="margin-top:14px;">
                   {{ 'Данные появятся позже.' if lang == 'ru' else 'Data will appear later.' }}
                 </div>
