@@ -104,6 +104,14 @@ class Settings(BaseSettings):
     WBNB_ADDRESS: str = ""
     USDT_BSC_ADDRESS: str = ""
 
+    # --- stage 18.3: NAV Guard ---
+    NAV_GUARD_ENABLED: bool = True
+    NAV_GUARD_MAX_NAV_DROP_PCT: Decimal = Decimal("15")
+    NAV_GUARD_EARN_DROP_PCT: Decimal = Decimal("50")
+    NAV_GUARD_COMPENSATION_RATIO: Decimal = Decimal("0.70")
+    NAV_GUARD_MIN_EARN_DROP_USD: Decimal = Decimal("10")
+    NAV_GUARD_TELEGRAM_ALERTS: bool = True
+
     # --- stage 18.1: navcalc local config ---
     BYBIT_NAV_HTTP_TIMEOUT_SEC: int = 30
     BYBIT_NAV_RETRIES: int = 4

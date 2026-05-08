@@ -14,6 +14,7 @@ from app.navcalc.db_writer import (
 )
 from app.navcalc.exceptions import NavCalcError, NavConfigError
 from app.navcalc.minute_builder import minute_floor, open_new_minute_state, update_minute_state
+from app.navcalc.nav_guard import evaluate_and_record_nav_guard, mark_nav_guard_accepted
 from app.navcalc.portfolio_nav import compute_nav
 from app.navcalc.schemas import FundNavConfig, MinuteState
 
@@ -110,6 +111,42 @@ def run_collector_forever(
             sample_nav = result.nav_usd
             sample_minute = minute_floor(sample_ts)
 
+            with SessionLocal() as db:
+                guard_decision = evaluate_and_record_nav_guard(
+                    db,
+                    fund_id=fund_id,
+                    fund_code=cfg.fund_code,
+                    current=result,
+                )
+
+            if guard_decision.decision == "rejected":
+                log.warning(
+                    "NAV Guard rejected snapshot fund=%s sample_ts=%s nav=%s "
+                    "nav_drop_pct=%s earn_drop_pct=%s compensation_ratio=%s reason=%s",
+                    cfg.fund_code,
+                    sample_ts.isoformat(),
+                    sample_nav,
+                    guard_decision.nav_drop_pct,
+                    guard_decision.earn_drop_pct,
+                    guard_decision.compensation_ratio,
+                    guard_decision.reason,
+                )
+                next_tick += poll_interval
+                continue
+
+            if guard_decision.decision == "warning":
+                log.warning(
+                    "NAV Guard warning fund=%s sample_ts=%s nav=%s "
+                    "nav_drop_pct=%s earn_drop_pct=%s compensation_ratio=%s reason=%s",
+                    cfg.fund_code,
+                    sample_ts.isoformat(),
+                    sample_nav,
+                    guard_decision.nav_drop_pct,
+                    guard_decision.earn_drop_pct,
+                    guard_decision.compensation_ratio,
+                    guard_decision.reason,
+                )
+
             if current_state is None:
                 current_state = open_new_minute_state(
                     fund_code=cfg.fund_code,
@@ -161,6 +198,11 @@ def run_collector_forever(
                     db,
                     fund_id=fund_id,
                     state=current_state,
+                )
+                mark_nav_guard_accepted(
+                    db,
+                    fund_id=fund_id,
+                    current=result,
                 )
 
             log.info(

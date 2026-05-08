@@ -372,6 +372,73 @@ class FundNavMinute(Base):
     shares_outstanding = Column(Numeric(30, 10), nullable=False)
 
 
+class FundNavGuardState(Base):
+    __tablename__ = "fund_nav_guard_state"
+
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+
+    last_snapshot_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    nav_usd: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+    uta_equity_usd: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+    funding_wallet_usd: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+    earn_usd: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+
+    source: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=sa_text("'bybit_v5'"),
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
+class FundNavGuardEvent(Base):
+    __tablename__ = "fund_nav_guard_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    snapshot_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    decision: Mapped[str] = mapped_column(String(16), nullable=False)  # accepted | warning | rejected
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+
+    old_nav_usd: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    old_uta_equity_usd: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    old_funding_wallet_usd: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    old_earn_usd: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    new_nav_usd: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+    new_uta_equity_usd: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+    new_funding_wallet_usd: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+    new_earn_usd: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+
+    nav_drop_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
+    earn_drop_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
+    compensation_ratio: Mapped[Decimal | None] = mapped_column(Numeric(18, 8), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
 class FundChartDaily(Base):
     __tablename__ = "fund_chart_daily"
 
