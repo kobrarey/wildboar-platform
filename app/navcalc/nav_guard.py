@@ -109,7 +109,7 @@ def evaluate_nav_guard(
     compensation_threshold = Decimal(settings.NAV_GUARD_COMPENSATION_RATIO)
     min_earn_drop_usd = Decimal(settings.NAV_GUARD_MIN_EARN_DROP_USD)
 
-    old_earn_large_enough = old_earn >= min_earn_drop_usd
+    earn_drop_material = earn_drop_abs >= min_earn_drop_usd
     earn_drop_large = (earn_drop_pct is not None) and (earn_drop_pct >= earn_drop_threshold_pct)
     nav_drop_large = (nav_drop_pct is not None) and (nav_drop_pct >= max_nav_drop_pct)
 
@@ -120,7 +120,7 @@ def evaluate_nav_guard(
     )
 
     if (
-        old_earn_large_enough
+        earn_drop_material
         and earn_drop_large
         and nav_drop_large
         and compensation_low
@@ -135,7 +135,7 @@ def evaluate_nav_guard(
         )
 
     if (
-        old_earn_large_enough
+        earn_drop_material
         and earn_drop_large
         and compensation_low
         and (nav_drop_pct is not None)
