@@ -42,6 +42,10 @@ def _round_0(value: Any) -> Decimal:
     return _to_decimal(value).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
 
 
+def _quantize_4_decimal_places(value: Any) -> Decimal:
+    return _to_decimal(value).quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+
+
 def _localize(ru_value: Any, en_value: Any, lang: str, fallback: str = "") -> str:
     if lang == "en":
         return str(en_value or ru_value or fallback or "")
@@ -331,7 +335,9 @@ def _build_fund_info(db: Session, fund: Fund, lang: str) -> dict:
         "fund_code": fund.code,
         "full_name": _fund_full_name(fund, lang),
         "aum_usdt": _round_0(latest_row.nav_usdt if latest_row else 0),
-        "shares_outstanding": _round_0(latest_row.shares_outstanding if latest_row else 0),
+        "shares_outstanding": _quantize_4_decimal_places(
+            latest_row.shares_outstanding if latest_row else 0
+        ),
         "launch_date": launch_date,
         "benchmark_name": _fund_benchmark_name(fund, lang),
         "management_fee_pct": getattr(fund, "management_fee_pct", None),

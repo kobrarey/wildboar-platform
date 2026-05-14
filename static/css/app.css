@@ -963,10 +963,26 @@ body.sidebar-collapsed .sidebar__logout-icon{
   display:block;
 }
 
+.deposit-panel__addr{
+  min-width: 0;
+  width: 100%;
+}
+.deposit-panel__addr .field{ width: 100%; }
+
 .address-row{
   display:flex;
   gap:10px;
   align-items:center;
+  width: 100%;
+  min-width: 0;
+}
+.address-row .field__input{
+  flex: 1 1 auto;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
 }
 
 .copy-btn{
@@ -1045,6 +1061,21 @@ body.sidebar-collapsed .sidebar__logout-icon{
 }
 
 /* history tabs */
+.history-tabs-toolbar{
+  display:flex;
+  flex-wrap:wrap;
+  align-items:flex-start;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom:10px;
+}
+.history-tabs-toolbar .tabs-row{
+  margin-bottom:0;
+}
+.history-tabs-toolbar .history-export-row{
+  margin:0;
+}
+
 .tabs-row{
   display:flex;
   gap:10px;

@@ -129,13 +129,33 @@
       <div class="card">
         <div class="card__body">
           <div id="historyTabs">
-            <div class="tabs-row">
-              <button type="button" class="tab-btn is-active" data-main="trading">
-                {{ 'Торговые операции' if lang == 'ru' else 'Trading operations' }}
-              </button>
-              <button type="button" class="tab-btn" data-main="transfers">
-                {{ 'Трансакции' if lang == 'ru' else 'Transfers' }}
-              </button>
+            <div class="history-tabs-toolbar">
+              <div class="tabs-row">
+                <button type="button" class="tab-btn is-active" data-main="trading">
+                  {{ 'Торговые операции' if lang == 'ru' else 'Trading operations' }}
+                </button>
+                <button type="button" class="tab-btn" data-main="transfers">
+                  {{ 'Трансакции' if lang == 'ru' else 'Transfers' }}
+                </button>
+              </div>
+
+              <div class="history-export-row" data-history-export-row>
+                <a
+                  class="btn btn--primary btn--small"
+                  href="/api/history/export/trading"
+                  data-history-export="trading/all"
+                >
+                  {{ 'Скачать Excel' if lang == 'ru' else 'Download Excel' }}
+                </a>
+
+                <a
+                  class="btn btn--primary btn--small hidden"
+                  href="/api/history/export/transfers"
+                  data-history-export="transfers/all"
+                >
+                  {{ 'Скачать Excel' if lang == 'ru' else 'Download Excel' }}
+                </a>
+              </div>
             </div>
 
             <div class="tabs-row" data-subgroup="trading">
@@ -160,24 +180,6 @@
               <button type="button" class="tab-btn tab-btn--small" data-sub="withdrawals">
                 {{ 'Выводы' if lang == 'ru' else 'Withdrawals' }}
               </button>
-            </div>
-
-            <div class="history-export-row" data-history-export-row>
-              <a
-                class="btn btn--primary btn--small"
-                href="/api/history/export/trading"
-                data-history-export="trading/all"
-              >
-                {{ 'Скачать Excel' if lang == 'ru' else 'Download Excel' }}
-              </a>
-
-              <a
-                class="btn btn--primary btn--small hidden"
-                href="/api/history/export/transfers"
-                data-history-export="transfers/all"
-              >
-                {{ 'Скачать Excel' if lang == 'ru' else 'Download Excel' }}
-              </a>
             </div>
 
             <div class="history-panels" data-history-live-root>

@@ -317,6 +317,12 @@
     return n.toFixed(2);
   }
 
+  function format4(value) {
+    const n = Number(value);
+    if (!Number.isFinite(n)) return "-";
+    return n.toFixed(4);
+  }
+
   function format0(value) {
     const n = Number(value);
     if (!Number.isFinite(n)) return "-";
@@ -377,7 +383,7 @@
     }
 
     if (sharesEl) {
-      sharesEl.textContent = info.shares_outstanding == null ? "-" : format0(info.shares_outstanding);
+      sharesEl.textContent = info.shares_outstanding == null ? "-" : format4(info.shares_outstanding);
     }
   }
 

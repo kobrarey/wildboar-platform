@@ -321,7 +321,7 @@
           <div class="term-kv__row"><span>{{ 'Количество паёв в обращении' if lang=='ru' else 'Shares outstanding' }}</span>
             <span data-live-shares-outstanding>
               {% if fund_info.shares_outstanding is not none %}
-                {{ (fund_info.shares_outstanding|round(0,'common'))|int }}
+                {{ fmt4(fund_info.shares_outstanding) }}
               {% else %}-{% endif %}
             </span>
           </div>
