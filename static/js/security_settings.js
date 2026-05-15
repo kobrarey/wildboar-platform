@@ -324,6 +324,7 @@ function initPasswordChange() {
 
     if (!passwordsMatch()) {
       setError(isEn ? "Passwords do not match" : "Пароли не совпадают");
+      unlockBtn(resendBtn);
       return;
     }
 
