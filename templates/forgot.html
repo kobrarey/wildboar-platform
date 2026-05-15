@@ -70,6 +70,33 @@
         </div>
         <div class="code-resend-hint muted">{% if lang == 'en' %}You can request once per minute{% else %}Можно запрашивать 1 раз в минуту{% endif %}</div>
 
+        <div class="totp-block hidden" id="forgotTotpBlock" data-totp-block>
+          <div class="totp-block__title">
+            {% if lang == 'en' %}Google 2FA Code{% else %}Код Google 2FA{% endif %}
+          </div>
+
+          <input
+            class="totp-code-input"
+            id="forgotTotpCode"
+            type="text"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            minlength="6"
+            maxlength="6"
+            pattern="\d{6}"
+            placeholder="••••••"
+            aria-label="{% if lang == 'en' %}Google 2FA Code{% else %}Код Google 2FA{% endif %}"
+          />
+
+          <button class="totp-help-link" type="button" data-totp-help>
+            {% if lang == 'en' %}Having problems with verification?{% else %}Проблемы с подтверждением?{% endif %}
+          </button>
+
+          <div class="totp-help-message hidden" data-totp-help-message>
+            {% if lang == 'en' %}Please contact support to restore access.{% else %}Свяжитесь с поддержкой для восстановления доступа.{% endif %}
+          </div>
+        </div>
+
         <div class="auth-row">
           <button class="btn-secondary" type="button" id="forgotVerifyBtn" disabled>{% if lang == 'en' %}Confirm{% else %}Подтвердить{% endif %}</button>
         </div>
@@ -79,6 +106,6 @@
     </section>
   </main>
 
-  <script defer src="/static/js/app.js"></script>
+  <script defer src="/static/js/app.js?v=19_1"></script>
 </body>
 </html>

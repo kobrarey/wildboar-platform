@@ -1535,3 +1535,71 @@ body.sidebar-collapsed .sidebar__logout-icon{
     width: 100%;
   }
 }
+
+/* ===== Stage 19.1: reusable TOTP / Google 2FA block ===== */
+
+.totp-block {
+  margin: 12px 0 14px;
+}
+
+.totp-block.hidden {
+  display: none !important;
+}
+
+.totp-block__title {
+  margin-bottom: 8px;
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--wb-text);
+}
+
+.totp-code-input {
+  width: 100%;
+  max-width: 260px;
+  height: 46px;
+  padding: 0 14px;
+  border: 1px solid var(--wb-border);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--wb-text);
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 10px;
+  text-align: center;
+  outline: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.totp-code-input:focus {
+  border-color: var(--wb-purple);
+  box-shadow: 0 0 0 3px rgba(127, 99, 199, .16);
+}
+
+.totp-code-input::placeholder {
+  color: var(--wb-muted);
+  letter-spacing: 8px;
+}
+
+.totp-help-link {
+  display: inline-flex;
+  margin-top: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--wb-purple);
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+.totp-help-message {
+  margin-top: 6px;
+  color: var(--wb-muted);
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.totp-help-message.hidden {
+  display: none !important;
+}

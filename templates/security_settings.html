@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>{% if lang == 'en' %}Security settings{% else %}Настройки безопасности{% endif %} — Wild Boar</title>
   <link rel="stylesheet" href="/static/css/app.css" />
-  <script defer src="/static/js/app.js?v=5_2"></script>
+  <script defer src="/static/js/app.js?v=19_1"></script>
   <!-- cache-busting для скрипта настроек безопасности -->
-  <script defer src="/static/js/security_settings.js?v=18_2_2"></script>
+  <script defer src="/static/js/security_settings.js?v=19_1"></script>
 </head>
 
 <body class="page page--dashboard">
@@ -180,7 +180,7 @@
 
               <div style="margin-top:14px;">
                 <button id="sendPasswordCodeBtn" class="btn btn--light" type="button" disabled>
-                  {% if lang == 'en' %}Get code by email{% else %}Получить код на почту{% endif %}
+                  {% if lang == 'en' %}Continue{% else %}Продолжить{% endif %}
                 </button>
               </div>
 
@@ -203,6 +203,33 @@
                     <button type="button" class="code-resend-btn" id="passwordCodeResendBtn">
                       {% if lang == 'en' %}Send code again{% else %}Отправить код ещё раз{% endif %}
                     </button>
+                  </div>
+
+                  <div class="totp-block hidden" id="passwordChangeTotpBlock" data-totp-block>
+                    <div class="totp-block__title">
+                      {% if lang == 'en' %}Google 2FA Code{% else %}Код Google 2FA{% endif %}
+                    </div>
+
+                    <input
+                      class="totp-code-input"
+                      id="passwordChangeTotpCode"
+                      type="text"
+                      inputmode="numeric"
+                      autocomplete="one-time-code"
+                      minlength="6"
+                      maxlength="6"
+                      pattern="\d{6}"
+                      placeholder="••••••"
+                      aria-label="{% if lang == 'en' %}Google 2FA Code{% else %}Код Google 2FA{% endif %}"
+                    />
+
+                    <button class="totp-help-link" type="button" data-totp-help>
+                      {% if lang == 'en' %}Having problems with verification?{% else %}Проблемы с подтверждением?{% endif %}
+                    </button>
+
+                    <div class="totp-help-message hidden" data-totp-help-message>
+                      {% if lang == 'en' %}Please contact support to restore access.{% else %}Свяжитесь с поддержкой для восстановления доступа.{% endif %}
+                    </div>
                   </div>
                 </div>
               </div>
@@ -462,6 +489,33 @@
                         {% if lang == 'en' %}Send code again{% else %}Отправить код ещё раз{% endif %}
                       </button>
                     </div>
+
+                    <div class="totp-block hidden" data-email-totp-block>
+                      <div class="totp-block__title">
+                        {% if lang == 'en' %}Google 2FA Code{% else %}Код Google 2FA{% endif %}
+                      </div>
+
+                      <input
+                        class="totp-code-input"
+                        type="text"
+                        inputmode="numeric"
+                        autocomplete="one-time-code"
+                        minlength="6"
+                        maxlength="6"
+                        pattern="\d{6}"
+                        placeholder="••••••"
+                        aria-label="{% if lang == 'en' %}Google 2FA Code{% else %}Код Google 2FA{% endif %}"
+                        data-email-totp-input
+                      />
+
+                      <button class="totp-help-link" type="button" data-totp-help>
+                        {% if lang == 'en' %}Having problems with verification?{% else %}Проблемы с подтверждением?{% endif %}
+                      </button>
+
+                      <div class="totp-help-message hidden" data-totp-help-message>
+                        {% if lang == 'en' %}Please contact support to restore access.{% else %}Свяжитесь с поддержкой для восстановления доступа.{% endif %}
+                      </div>
+                    </div>
                   </div>
                 </div>
 
@@ -535,6 +589,33 @@
                       <button type="button" class="code-resend-btn" data-email-resend>
                         {% if lang == 'en' %}Send code again{% else %}Отправить код ещё раз{% endif %}
                       </button>
+                    </div>
+
+                    <div class="totp-block hidden" data-email-totp-block>
+                      <div class="totp-block__title">
+                        {% if lang == 'en' %}Google 2FA Code{% else %}Код Google 2FA{% endif %}
+                      </div>
+
+                      <input
+                        class="totp-code-input"
+                        type="text"
+                        inputmode="numeric"
+                        autocomplete="one-time-code"
+                        minlength="6"
+                        maxlength="6"
+                        pattern="\d{6}"
+                        placeholder="••••••"
+                        aria-label="{% if lang == 'en' %}Google 2FA Code{% else %}Код Google 2FA{% endif %}"
+                        data-email-totp-input
+                      />
+
+                      <button class="totp-help-link" type="button" data-totp-help>
+                        {% if lang == 'en' %}Having problems with verification?{% else %}Проблемы с подтверждением?{% endif %}
+                      </button>
+
+                      <div class="totp-help-message hidden" data-totp-help-message>
+                        {% if lang == 'en' %}Please contact support to restore access.{% else %}Свяжитесь с поддержкой для восстановления доступа.{% endif %}
+                      </div>
                     </div>
                     <div class="code-resend-hint muted">
                       {% if lang == 'en' %}You can request once per minute{% else %}Можно запрашивать 1 раз в минуту{% endif %}
@@ -636,6 +717,53 @@
           Пароль был успешно заменён.
         {% endif %}
       </p>
+    </div>
+  </div>
+
+  <!-- Modal: Security Verification for email delete -->
+  <div class="modal" id="emailDeleteTotpModal" aria-hidden="true">
+    <div class="modal__overlay" data-email-delete-totp-close></div>
+
+    <div class="modal__panel" role="dialog" aria-modal="true">
+      <button
+        class="modal__close"
+        type="button"
+        data-email-delete-totp-close
+        aria-label="{{ 'Close' if lang == 'en' else 'Закрыть' }}"
+      >×</button>
+
+      <h2 class="modal__title">
+        {% if lang == 'en' %}Security Verification{% else %}Проверка безопасности{% endif %}
+      </h2>
+
+      <div class="totp-block" id="emailDeleteTotpBlock" data-totp-block>
+        <div class="totp-block__title">
+          {% if lang == 'en' %}Google 2FA Code{% else %}Код Google 2FA{% endif %}
+        </div>
+
+        <input
+          class="totp-code-input"
+          id="emailDeleteTotpCode"
+          type="text"
+          inputmode="numeric"
+          autocomplete="one-time-code"
+          minlength="6"
+          maxlength="6"
+          pattern="\d{6}"
+          placeholder="••••••"
+          aria-label="{% if lang == 'en' %}Google 2FA Code{% else %}Код Google 2FA{% endif %}"
+        />
+
+        <button class="totp-help-link" type="button" data-totp-help>
+          {% if lang == 'en' %}Having problems with verification?{% else %}Проблемы с подтверждением?{% endif %}
+        </button>
+
+        <div class="totp-help-message hidden" data-totp-help-message>
+          {% if lang == 'en' %}Please contact support to restore access.{% else %}Свяжитесь с поддержкой для восстановления доступа.{% endif %}
+        </div>
+      </div>
+
+      <div class="form-error" id="emailDeleteTotpError" role="alert" aria-live="polite"></div>
     </div>
   </div>
 

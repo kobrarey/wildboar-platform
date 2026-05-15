@@ -47,6 +47,49 @@
       }, 1000);
     }
 
+    function isSixDigitCode(value) {
+      return /^\d{6}$/.test((value || "").trim());
+    }
+
+    function sanitizeDigitCodeInput(input) {
+      if (!input) return "";
+      const clean = (input.value || "").replace(/\D/g, "").slice(0, 6);
+      if (input.value !== clean) input.value = clean;
+      return clean;
+    }
+
+    function initTotpBlock(blockEl, inputEl, onChange) {
+      if (!blockEl || !inputEl) return;
+
+      inputEl.addEventListener("input", () => {
+        sanitizeDigitCodeInput(inputEl);
+        if (typeof onChange === "function") onChange();
+      });
+
+      blockEl.querySelectorAll("[data-totp-help]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          const msg = blockEl.querySelector("[data-totp-help-message]");
+          if (msg) msg.classList.toggle("hidden");
+        });
+      });
+    }
+
+    function setTotpBlockVisible(blockEl, inputEl, required) {
+      if (!blockEl || !inputEl) return;
+
+      blockEl.classList.toggle("hidden", !required);
+
+      if (!required) {
+        inputEl.value = "";
+        const msg = blockEl.querySelector("[data-totp-help-message]");
+        if (msg) msg.classList.add("hidden");
+      }
+    }
+
+    function getTotpCode(inputEl) {
+      return (inputEl?.value || "").trim();
+    }
+
     async function copyToClipboard(text) {
       try {
         if (navigator.clipboard && window.isSecureContext) {
@@ -359,6 +402,7 @@
       confirmDone: false,
       emailOptions: null,
       cancelPending: false,
+      totpRequired: false,
     };
 
     function initWithdrawConfirmModal() {
@@ -373,6 +417,9 @@
       const resendBtn = document.getElementById("w2ResendBtn");
       const errEl = document.getElementById("w2Error");
       const confirmBtn = document.getElementById("w2ConfirmBtn");
+
+      const totpBlock = document.getElementById("w2TotpBlock");
+      const totpInput = document.getElementById("w2TotpCode");
 
       if (!confirmModal) return;
 
@@ -402,8 +449,13 @@
       }
 
       function isValidCode() {
-        const v = (codeInput?.value || "").trim();
-        return /^\d{6}$/.test(v);
+        const emailCode = (codeInput?.value || "").trim();
+        const totpCode = getTotpCode(totpInput);
+
+        const emailOk = isSixDigitCode(emailCode);
+        const totpOk = !withdrawState.totpRequired || isSixDigitCode(totpCode);
+
+        return emailOk && totpOk;
       }
 
       async function getJSON(url) {
@@ -455,12 +507,15 @@
           withdrawState.token = data.token;
           withdrawState.emailSlot = data.email_slot;
           withdrawState.codeSent = true;
+          withdrawState.totpRequired = data.totp_required === true;
+
+          setTotpBlockVisible(totpBlock, totpInput, withdrawState.totpRequired);
 
           withdrawState.amountNet = Number(data.amount_net ?? (withdrawState.amountGross - 1));
           renderSummary();
 
           if (codeInput) codeInput.value = "";
-          if (confirmBtn) confirmBtn.disabled = true;
+          if (confirmBtn) confirmBtn.disabled = !isValidCode();
 
           unlockBtn(getCodeBtn);
           startBtnCooldown(getCodeBtn, 60, L("Получить код", "Get code"));
@@ -506,17 +561,29 @@
 
       async function confirmWithdraw() {
         if (!withdrawState.token) return;
-        if (!isValidCode()) return;
+
+        const code = codeInput?.value?.trim() || "";
+        const totpCode = getTotpCode(totpInput);
+
+        if (!isSixDigitCode(code)) {
+          setError(L("Введите 6-значный код из письма.", "Enter the 6-digit email code."));
+          return;
+        }
+
+        if (withdrawState.totpRequired && !isSixDigitCode(totpCode)) {
+          setError(L("Введите код Google 2FA.", "Enter Google 2FA code."));
+          return;
+        }
+
         if (!lockBtn(confirmBtn)) return;
 
         setError("");
-
-        const code = codeInput?.value?.trim() || "";
 
         try {
           const { ok, data } = await postJSON("/api/withdraw/confirm", {
             token: withdrawState.token,
             code,
+            totp_code: withdrawState.totpRequired ? totpCode : "",
           });
 
           if (!ok || !data || data.status === "error") {
@@ -553,6 +620,8 @@
           withdrawState.token = null;
           withdrawState.codeSent = false;
           withdrawState.emailSlot = null;
+          withdrawState.totpRequired = false;
+          setTotpBlockVisible(totpBlock, totpInput, false);
 
           if (codeInput) codeInput.value = "";
 
@@ -584,6 +653,12 @@
           if (confirmBtn) confirmBtn.disabled = !isValidCode();
         });
       }
+
+      initTotpBlock(totpBlock, totpInput, () => {
+        setError("");
+        if (confirmBtn) confirmBtn.disabled = !isValidCode();
+      });
+
       if (resendBtn) {
         resendBtn.addEventListener("click", (e) => {
           e.preventDefault();
@@ -598,6 +673,8 @@
           withdrawState.emailSlot = Number(selEmail.value);
           withdrawState.token = null;
           withdrawState.codeSent = false;
+          withdrawState.totpRequired = false;
+          setTotpBlockVisible(totpBlock, totpInput, false);
           if (codeInput) codeInput.value = "";
           if (confirmBtn) confirmBtn.disabled = true;
           setError(L("Нажмите «Получить код» для отправки на выбранную почту.", "Press «Get code» to send to the selected email."));
@@ -634,6 +711,8 @@
       withdrawState.codeSent = false;
       withdrawState.confirmDone = false;
       withdrawState.cancelPending = false;
+      withdrawState.totpRequired = false;
+      setTotpBlockVisible(document.getElementById("w2TotpBlock"), document.getElementById("w2TotpCode"), false);
 
       if (codeInput) codeInput.value = "";
       if (errEl) errEl.textContent = "";

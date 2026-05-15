@@ -54,6 +54,68 @@ function startBtnCooldown(btn, seconds, label) {
   }, 1000);
 }
 
+function isTotpEnabledOnPage() {
+  const root = document.querySelector("[data-totp-root]");
+  return root?.dataset?.totpEnabled === "1";
+}
+
+function sanitizeTotpInput(input) {
+  if (!input) return "";
+  const clean = (input.value || "").replace(/\D/g, "").slice(0, 6);
+  if (input.value !== clean) input.value = clean;
+  return clean;
+}
+
+function initInlineTotpBlock(blockEl, inputEl, onChange) {
+  if (!blockEl || !inputEl) return;
+
+  inputEl.addEventListener("input", () => {
+    sanitizeTotpInput(inputEl);
+    if (typeof onChange === "function") onChange();
+  });
+
+  blockEl.querySelectorAll("[data-totp-help]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const msg = blockEl.querySelector("[data-totp-help-message]");
+      if (msg) msg.classList.toggle("hidden");
+    });
+  });
+}
+
+function setInlineTotpVisible(blockEl, inputEl, visible) {
+  if (!blockEl || !inputEl) return;
+
+  blockEl.classList.toggle("hidden", !visible);
+
+  if (!visible) {
+    inputEl.value = "";
+    const msg = blockEl.querySelector("[data-totp-help-message]");
+    if (msg) msg.classList.add("hidden");
+  }
+}
+
+function getInlineTotpCode(inputEl) {
+  return (inputEl?.value || "").trim();
+}
+
+async function parseJsonOrText(resp) {
+  const ct = (resp.headers.get("content-type") || "").toLowerCase();
+
+  if (ct.includes("application/json")) {
+    const data = await resp.json().catch(() => null);
+    return {
+      data,
+      message: data?.message || data?.detail || "",
+    };
+  }
+
+  const text = await resp.text().catch(() => "");
+  return {
+    data: null,
+    message: text,
+  };
+}
+
 function initAccordions() {
   const accordions = document.querySelectorAll("[data-accordion]");
   accordions.forEach((acc) => {
@@ -86,6 +148,9 @@ function initPasswordChange() {
   const resendBtn = document.getElementById("passwordCodeResendBtn");
   const msg = document.getElementById("passwordChangeMessage");
   const slotEl = document.getElementById("passwordEmailSlot");
+  const passwordTotpBlock = document.getElementById("passwordChangeTotpBlock");
+  const passwordTotpInput = document.getElementById("passwordChangeTotpCode");
+  let passwordChangeTotpRequired = false;
 
   if (!newPassword || !confirmPassword || !sendCodeBtn || !confirmBtn || !codeBlock || !codeInput || !msg || !slotEl) return;
 
@@ -145,6 +210,21 @@ function initPasswordChange() {
     }
   }
 
+  function refreshPasswordConfirmState() {
+    if (codeBlock.classList.contains("hidden")) {
+      confirmBtn.disabled = true;
+      return;
+    }
+
+    const emailCode = (codeInput.value || "").trim();
+    const totpCode = getInlineTotpCode(passwordTotpInput);
+
+    const emailOk = isSixDigits(emailCode);
+    const totpOk = !passwordChangeTotpRequired || isSixDigits(totpCode);
+
+    confirmBtn.disabled = !(emailOk && totpOk);
+  }
+
   newPassword.addEventListener("input", () => {
     setMsg("");
     refreshState();
@@ -153,6 +233,18 @@ function initPasswordChange() {
   confirmPassword.addEventListener("input", () => {
     setMsg("");
     refreshState();
+  });
+
+  codeInput.addEventListener("input", () => {
+    setMsg("");
+    setError("");
+    refreshPasswordConfirmState();
+  });
+
+  initInlineTotpBlock(passwordTotpBlock, passwordTotpInput, () => {
+    setMsg("");
+    setError("");
+    refreshPasswordConfirmState();
   });
 
   sendCodeBtn.addEventListener("click", async () => {
@@ -198,9 +290,14 @@ function initPasswordChange() {
         return;
       }
 
+      const parsed = await parseJsonOrText(resp);
+      const data = parsed.data || {};
+      passwordChangeTotpRequired = data.totp_required === true;
+      setInlineTotpVisible(passwordTotpBlock, passwordTotpInput, passwordChangeTotpRequired);
+
       // ok
       codeBlock.classList.remove("hidden");
-      confirmBtn.disabled = false;
+      refreshPasswordConfirmState();
       setMsg(isEn ? "Code sent. Please enter the code from email." : "Код отправлен. Введите код из письма.");
       codeInput.focus();
 
@@ -208,7 +305,7 @@ function initPasswordChange() {
       startBtnCooldown(
         sendCodeBtn,
         60,
-        isEn ? "Get code by email" : "Получить код на почту"
+        isEn ? "Continue" : "Продолжить"
       );
     } catch (e) {
       console.error(e);
@@ -247,6 +344,11 @@ function initPasswordChange() {
       });
 
       if (resp.ok) {
+        const parsed = await parseJsonOrText(resp);
+        const data = parsed.data || {};
+        passwordChangeTotpRequired = data.totp_required === true;
+        setInlineTotpVisible(passwordTotpBlock, passwordTotpInput, passwordChangeTotpRequired);
+        refreshPasswordConfirmState();
         unlockBtn(resendBtn);
         startBtnCooldown(
           resendBtn,
@@ -288,8 +390,14 @@ function initPasswordChange() {
     }
 
     const code = (codeInput.value || "").trim();
+    const totpCode = getInlineTotpCode(passwordTotpInput);
     if (!isSixDigits(code)) {
       setMsg(isEn ? "Enter a 6-digit code" : "Введите 6-значный код");
+      return;
+    }
+
+    if (passwordChangeTotpRequired && !isSixDigits(totpCode)) {
+      setMsg(isEn ? "Enter Google 2FA code" : "Введите код Google 2FA");
       return;
     }
 
@@ -303,6 +411,7 @@ function initPasswordChange() {
         body: JSON.stringify({
           new_password: newPassword.value,
           code: code,
+          totp_code: passwordChangeTotpRequired ? totpCode : "",
         }),
       });
 
@@ -332,6 +441,9 @@ function initPasswordChange() {
       }
       confirmBtn.disabled = true;
       sendCodeBtn.disabled = true;
+
+      passwordChangeTotpRequired = false;
+      setInlineTotpVisible(passwordTotpBlock, passwordTotpInput, false);
 
       // обновим состояние, чтобы корректно пересчитать доступность кнопок
       refreshState();
@@ -646,6 +758,17 @@ function initEmailsManager() {
   const closeWarningEls = document.querySelectorAll("[data-email-warning-close]");
   const closeSuccessEls = document.querySelectorAll("[data-email-success-close]");
   const closeDeleteSuccessEls = document.querySelectorAll("[data-email-delete-success-close]");
+  const totpEnabled = isTotpEnabledOnPage();
+
+  const deleteTotpModal = document.getElementById("emailDeleteTotpModal");
+  const deleteTotpInput = document.getElementById("emailDeleteTotpCode");
+  const deleteTotpError = document.getElementById("emailDeleteTotpError");
+  const closeDeleteTotpEls = document.querySelectorAll("[data-email-delete-totp-close]");
+
+  let pendingDeleteSlot = null;
+  let pendingDeleteBtn = null;
+  let pendingDeleteSetErr = null;
+  let deleteTotpPending = false;
 
   function openLastEmailWarning() {
     if (!warningModal) return;
@@ -713,6 +836,51 @@ function initEmailsManager() {
     }
   }
 
+  function openEmailDeleteTotpModal(slot, btnDelete, setErr) {
+    pendingDeleteSlot = slot;
+    pendingDeleteBtn = btnDelete;
+    pendingDeleteSetErr = setErr;
+    deleteTotpPending = false;
+
+    if (deleteTotpError) deleteTotpError.textContent = "";
+    if (deleteTotpInput) deleteTotpInput.value = "";
+
+    if (deleteTotpModal) {
+      deleteTotpModal.classList.add("is-open");
+      deleteTotpModal.setAttribute("aria-hidden", "false");
+    }
+
+    if (backdrop) backdrop.hidden = false;
+
+    setTimeout(() => {
+      if (deleteTotpInput) deleteTotpInput.focus();
+    }, 50);
+  }
+
+  function closeEmailDeleteTotpModal() {
+    if (deleteTotpModal) {
+      deleteTotpModal.classList.remove("is-open");
+      deleteTotpModal.setAttribute("aria-hidden", "true");
+    }
+
+    if (backdrop) backdrop.hidden = true;
+
+    if (deleteTotpInput) deleteTotpInput.value = "";
+    if (deleteTotpError) deleteTotpError.textContent = "";
+
+    pendingDeleteSlot = null;
+    pendingDeleteBtn = null;
+    pendingDeleteSetErr = null;
+    deleteTotpPending = false;
+  }
+
+  closeDeleteTotpEls.forEach((el) => {
+    el.addEventListener("click", () => {
+      if (pendingDeleteBtn) unlockBtn(pendingDeleteBtn);
+      closeEmailDeleteTotpModal();
+    });
+  });
+
   closeDeleteSuccessEls.forEach((el) => {
     el.addEventListener("click", () => {
       closeEmailDeleteSuccess();
@@ -733,6 +901,72 @@ function initEmailsManager() {
     console.warn("localStorage not available", e);
   }
 
+  async function deleteEmailRequest(slot, totpCode, btnDelete, setErr) {
+    try {
+      const resp = await fetch("/settings/security/emails/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        body: JSON.stringify({
+          slot: slot,
+          totp_code: totpCode || "",
+        }),
+      });
+
+      if (!resp.ok) {
+        const parsed = await parseJsonOrText(resp);
+        const errText = parsed.message || `HTTP ${resp.status}`;
+
+        if (setErr) setErr(errText);
+        if (deleteTotpError && totpCode) deleteTotpError.textContent = errText;
+
+        unlockBtn(btnDelete);
+        deleteTotpPending = false;
+        return;
+      }
+
+      try {
+        localStorage.setItem("wb_email_backup_deleted", "1");
+      } catch (e) {
+        console.warn("localStorage not available", e);
+      }
+
+      closeEmailDeleteTotpModal();
+      window.location.reload();
+    } catch (e) {
+      console.error(e);
+      const msg = isEn ? "Network error" : "Ошибка сети";
+
+      if (setErr) setErr(msg);
+      if (deleteTotpError && totpCode) deleteTotpError.textContent = msg;
+
+      unlockBtn(btnDelete);
+      deleteTotpPending = false;
+    }
+  }
+
+  initInlineTotpBlock(
+    document.getElementById("emailDeleteTotpBlock"),
+    deleteTotpInput,
+    async () => {
+      const code = getInlineTotpCode(deleteTotpInput);
+
+      if (!isSixDigits(code)) return;
+      if (!pendingDeleteSlot || !pendingDeleteBtn) return;
+      if (deleteTotpPending) return;
+
+      deleteTotpPending = true;
+      if (deleteTotpError) deleteTotpError.textContent = "";
+
+      await deleteEmailRequest(
+        pendingDeleteSlot,
+        code,
+        pendingDeleteBtn,
+        pendingDeleteSetErr
+      );
+    }
+  );
+
   items.forEach((item) => {
     const slot = parseInt(item.getAttribute("data-slot") || "0", 10);
     if (!slot) return;
@@ -746,6 +980,8 @@ function initEmailsManager() {
     const errEl = item.querySelector("[data-email-error]");
     const msgEl = item.querySelector("[data-email-msg]");
     const resendBtn = item.querySelector("[data-email-resend]");
+    const emailTotpBlock = item.querySelector("[data-email-totp-block]");
+    const emailTotpInput = item.querySelector("[data-email-totp-input]");
 
     const setErr = (t) => {
       if (!errEl) return;
@@ -756,6 +992,10 @@ function initEmailsManager() {
       if (!msgEl) return;
       msgEl.textContent = t || "";
     };
+
+    initInlineTotpBlock(emailTotpBlock, emailTotpInput, () => {
+      setErr("");
+    });
 
     const getEmail = () => {
       // если есть уже отображаемый email — берём его
@@ -813,6 +1053,7 @@ function initEmailsManager() {
 
           // ok
           if (codeBlock) codeBlock.classList.remove("hidden");
+          setInlineTotpVisible(emailTotpBlock, emailTotpInput, totpEnabled);
           setMsg(isEn ? "Code sent. Enter the code from email." : "Код отправлен. Введите код из письма.");
           if (codeInput) codeInput.focus();
           unlockBtn(btnConfirm);
@@ -833,12 +1074,24 @@ function initEmailsManager() {
         return;
       }
 
+      const totpCode = getInlineTotpCode(emailTotpInput);
+
+      if (totpEnabled && !isSixDigits(totpCode)) {
+        setErr(isEn ? "Enter Google 2FA code" : "Введите код Google 2FA");
+        unlockBtn(btnConfirm);
+        return;
+      }
+
       try {
         const resp = await fetch("/settings/security/emails/confirm", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           credentials: "same-origin",
-          body: JSON.stringify({ slot: slot, code: code }),
+          body: JSON.stringify({
+            slot: slot,
+            code: code,
+            totp_code: totpEnabled ? totpCode : "",
+          }),
         });
 
         if (!resp.ok) {
@@ -869,7 +1122,6 @@ function initEmailsManager() {
       if (btnDelete.disabled) return;
       if (!lockBtn(btnDelete)) return;
 
-      // если это единственная почта — вместо запроса показываем предупреждение
       if (btnDelete.dataset.onlyEmail === "1") {
         unlockBtn(btnDelete);
         openLastEmailWarning();
@@ -879,35 +1131,12 @@ function initEmailsManager() {
       setErr("");
       setMsg("");
 
-      try {
-        const resp = await fetch("/settings/security/emails/delete", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          credentials: "same-origin",
-          body: JSON.stringify({ slot: slot }),
-        });
-
-        if (!resp.ok) {
-          const errText = await resp.text();
-          setErr(errText || `HTTP ${resp.status}`);
-          unlockBtn(btnDelete);
-          return;
-        }
-
-        // после успешного удаления покажем модалку "резервная почта была успешно удалена"
-        try {
-          localStorage.setItem("wb_email_backup_deleted", "1");
-        } catch (e) {
-          console.warn("localStorage not available", e);
-        }
-
-        // при удалении слота 1 backend может "поднять" слот 2 => делаем reload
-        window.location.reload();
-      } catch (e) {
-        console.error(e);
-        setErr(isEn ? "Network error" : "Ошибка сети");
-        unlockBtn(btnDelete);
+      if (totpEnabled) {
+        openEmailDeleteTotpModal(slot, btnDelete, setErr);
+        return;
       }
+
+      await deleteEmailRequest(slot, "", btnDelete, setErr);
     });
 
     // Отдельная кнопка повторной отправки кода

@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>WildBoar — {{ 'Login / Sign up' if lang == 'en' else 'Вход / Регистрация' }}</title>
   <link rel="stylesheet" href="/static/css/app.css" />
-  <script defer src="/static/js/app.js?v=5_2"></script>
+  <script defer src="/static/js/app.js?v=19_1"></script>
   <style>
     .is-hidden { display: none !important; }
   </style>
@@ -97,6 +97,33 @@
           </div>
           <div class="code-resend-hint muted">{{ 'You can request once per minute' if lang == 'en' else 'Можно запрашивать 1 раз в минуту' }}</div>
         </label>
+
+        <div class="totp-block hidden" id="loginTotpBlock" data-totp-block>
+          <div class="totp-block__title">
+            {{ 'Google 2FA Code' if lang == 'en' else 'Код Google 2FA' }}
+          </div>
+
+          <input
+            class="totp-code-input"
+            id="loginTotpCode"
+            type="text"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            minlength="6"
+            maxlength="6"
+            pattern="\d{6}"
+            placeholder="••••••"
+            aria-label="{{ 'Google 2FA Code' if lang == 'en' else 'Код Google 2FA' }}"
+          />
+
+          <button class="totp-help-link" type="button" data-totp-help>
+            {{ 'Having problems with verification?' if lang == 'en' else 'Проблемы с подтверждением?' }}
+          </button>
+
+          <div class="totp-help-message hidden" data-totp-help-message>
+            {{ 'Please contact support to restore access.' if lang == 'en' else 'Свяжитесь с поддержкой для восстановления доступа.' }}
+          </div>
+        </div>
 
         <button type="button" class="btn btn--primary btn--block" id="login2faConfirmBtn" disabled>
           {{ 'Confirm' if lang == 'en' else 'Подтвердить' }}

@@ -132,6 +132,49 @@
   window.unlockActionButton = unlockActionButton;
   window.isActionButtonLocked = isActionButtonLocked;
 
+  function isSixDigitCode(value) {
+    return /^\d{6}$/.test((value || "").trim());
+  }
+
+  function sanitizeDigitCodeInput(input) {
+    if (!input) return "";
+    const clean = (input.value || "").replace(/\D/g, "").slice(0, 6);
+    if (input.value !== clean) input.value = clean;
+    return clean;
+  }
+
+  function initTotpBlock(blockEl, inputEl, onChange) {
+    if (!blockEl || !inputEl) return;
+
+    inputEl.addEventListener("input", () => {
+      sanitizeDigitCodeInput(inputEl);
+      if (typeof onChange === "function") onChange();
+    });
+
+    blockEl.querySelectorAll("[data-totp-help]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const msg = blockEl.querySelector("[data-totp-help-message]");
+        if (msg) msg.classList.toggle("hidden");
+      });
+    });
+  }
+
+  function setTotpBlockVisible(blockEl, inputEl, required) {
+    if (!blockEl || !inputEl) return;
+
+    blockEl.classList.toggle("hidden", !required);
+
+    if (!required) {
+      inputEl.value = "";
+      const msg = blockEl.querySelector("[data-totp-help-message]");
+      if (msg) msg.classList.add("hidden");
+    }
+  }
+
+  function getTotpCode(inputEl) {
+    return (inputEl?.value || "").trim();
+  }
+
   async function postResend(endpoint, email, errEl, btn, extraPayload = null) {
     if (!email) {
       setError(errEl, MSG.email_not_found);
@@ -588,20 +631,28 @@
     const confirmErr = document.getElementById("login2faError");
     const resendBtn = document.getElementById("login2faResendBtn");
 
+    const totpBlock = document.getElementById("loginTotpBlock");
+    const totpInput = document.getElementById("loginTotpCode");
+
     let pendingEmail = "";
+    let loginTotpRequired = false;
 
     function showStep1() {
       if (step1) step1.classList.remove("is-hidden");
       if (step2) step2.classList.add("is-hidden");
       pendingEmail = "";
+      loginTotpRequired = false;
+      setTotpBlockVisible(totpBlock, totpInput, false);
       setError(errorEl, "");
       setError(confirmErr, "");
       if (codeInput) codeInput.value = "";
       if (confirmBtn) confirmBtn.disabled = true;
     }
 
-    function showStep2(email) {
+    function showStep2(email, totpRequired = false) {
       pendingEmail = (email || "").trim();
+      loginTotpRequired = !!totpRequired;
+      setTotpBlockVisible(totpBlock, totpInput, loginTotpRequired);
       if (step1) step1.classList.add("is-hidden");
       if (step2) step2.classList.remove("is-hidden");
       setError(confirmErr, "");
@@ -611,9 +662,13 @@
     }
 
     function refreshConfirm() {
-      const v = (codeInput?.value || "").trim();
-      const ok = /^\d{6}$/.test(v);
-      if (confirmBtn) confirmBtn.disabled = !ok;
+      const emailCode = (codeInput?.value || "").trim();
+      const totpCode = getTotpCode(totpInput);
+
+      const emailOk = isSixDigitCode(emailCode);
+      const totpOk = !loginTotpRequired || isSixDigitCode(totpCode);
+
+      if (confirmBtn) confirmBtn.disabled = !(emailOk && totpOk);
     }
 
     function payloadToMessage(payload, fallback) {
@@ -625,6 +680,11 @@
     // очистка ошибок на ввод
     form.addEventListener("input", () => setError(errorEl, ""));
     codeInput?.addEventListener("input", () => {
+      setError(confirmErr, "");
+      refreshConfirm();
+    });
+
+    initTotpBlock(totpBlock, totpInput, () => {
       setError(confirmErr, "");
       refreshConfirm();
     });
@@ -682,7 +742,7 @@
 
         // 2) {status:"2fa_required"}
         if (payload?.status === "2fa_required") {
-          showStep2(email);
+          showStep2(email, payload?.totp_required === true);
           unlockActionButton(submitBtn);
           return;
         }
@@ -702,8 +762,15 @@
       const email = pendingEmail || (emailInput?.value || "").trim();
       const code = (codeInput?.value || "").trim();
 
+      const totpCode = getTotpCode(totpInput);
+
       if (!email) { setError(confirmErr, MSG.email_not_found_confirm); return; }
-      if (!/^\d{6}$/.test(code)) { setError(confirmErr, MSG.enter_6digit); return; }
+      if (!isSixDigitCode(code)) { setError(confirmErr, MSG.enter_6digit); return; }
+
+      if (loginTotpRequired && !isSixDigitCode(totpCode)) {
+        setError(confirmErr, isEn ? "Enter Google 2FA code." : "Введите код Google 2FA.");
+        return;
+      }
 
       if (!lockActionButton(confirmBtn)) return;
 
@@ -711,7 +778,11 @@
         const resp = await fetch("/login/2fa", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, code }),
+          body: JSON.stringify({
+            email,
+            code,
+            totp_code: loginTotpRequired ? totpCode : "",
+          }),
           credentials: "same-origin",
         });
 
@@ -761,6 +832,10 @@
     const errEl = document.getElementById("forgotError");
     const resendBtn = document.getElementById("forgotResendBtn");
 
+    const totpBlock = document.getElementById("forgotTotpBlock");
+    const totpInput = document.getElementById("forgotTotpCode");
+    let forgotTotpRequired = false;
+
     if (!emailEl || !sendBtn || !codeEl || !verifyBtn) return;
 
     const lang = (document.documentElement.getAttribute("lang") || "en").toLowerCase();
@@ -777,13 +852,21 @@
     function refreshVerify() {
       const email = (emailEl.value || "").trim();
       const code = (codeEl.value || "").trim();
-      const ok = email.length > 0 && /^\d{6}$/.test(code);
-      verifyBtn.disabled = !ok;
+      const totpCode = getTotpCode(totpInput);
+
+      const emailOk = email.length > 0;
+      const codeOk = isSixDigitCode(code);
+      const totpOk = !forgotTotpRequired || isSixDigitCode(totpCode);
+
+      verifyBtn.disabled = !(emailOk && codeOk && totpOk);
       setError(errEl, "");
     }
 
     emailEl.addEventListener("input", refreshVerify);
     codeEl.addEventListener("input", refreshVerify);
+
+    initTotpBlock(totpBlock, totpInput, refreshVerify);
+    setTotpBlockVisible(totpBlock, totpInput, false);
 
     sendBtn.addEventListener("click", async () => {
       setError(errEl, "");
@@ -805,8 +888,17 @@
           credentials: "same-origin",
         });
 
+        const ct = (resp.headers.get("content-type") || "").toLowerCase();
+        const payload = ct.includes("application/json")
+          ? await resp.json().catch(() => null)
+          : null;
+
         // По контракту: всегда 200 {"status":"ok"} (даже если email не существует)
         if (resp.ok) {
+          forgotTotpRequired = payload?.totp_required === true;
+          setTotpBlockVisible(totpBlock, totpInput, forgotTotpRequired);
+          refreshVerify();
+
           if (infoEl) infoEl.textContent = MSG.code_sent;
           unlockActionButton(sendBtn);
           startResendCooldown(sendBtn, 60, isEn ? "Get code" : "Получить код");
@@ -814,16 +906,21 @@
         }
 
         // если всё же вернули ошибку — аккуратно покажем сообщение
-        const raw = await resp.text().catch(() => "");
-        let msg = raw || MSG.error_http(resp.status);
-        if (raw) {
-          try {
-            const data = JSON.parse(raw);
-            if (data && typeof data.message === "string") {
-              msg = data.message;
+        let msg = MSG.error_http(resp.status);
+        if (payload && typeof payload.message === "string") {
+          msg = payload.message;
+        } else if (payload == null) {
+          const raw = await resp.text().catch(() => "");
+          msg = raw || msg;
+          if (raw) {
+            try {
+              const data = JSON.parse(raw);
+              if (data && typeof data.message === "string") {
+                msg = data.message;
+              }
+            } catch {
+              // не JSON — оставляем raw
             }
-          } catch {
-            // не JSON — оставляем raw
           }
         }
         setError(errEl, msg);
@@ -854,8 +951,20 @@
       const email = (emailEl.value || "").trim();
       const code = (codeEl.value || "").trim();
 
-      if (!email) { setError(errEl, MSG.enter_email); return; }
-      if (!/^\d{6}$/.test(code)) { setError(errEl, MSG.enter_6digit); return; }
+      const totpCode = getTotpCode(totpInput);
+
+      if (!email) {
+        setError(errEl, MSG.enter_email);
+        return;
+      }
+      if (!isSixDigitCode(code)) {
+        setError(errEl, MSG.enter_6digit);
+        return;
+      }
+      if (forgotTotpRequired && !isSixDigitCode(totpCode)) {
+        setError(errEl, isEn ? "Enter Google 2FA code." : "Введите код Google 2FA.");
+        return;
+      }
 
       if (!lockActionButton(verifyBtn)) return;
 
@@ -863,7 +972,11 @@
         const resp = await fetch("/forgot/verify", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email, code }),
+          body: JSON.stringify({
+            email,
+            code,
+            totp_code: forgotTotpRequired ? totpCode : "",
+          }),
           credentials: "same-origin",
         });
 
