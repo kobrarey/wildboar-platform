@@ -86,6 +86,8 @@
               {{ 'Staff 2' if lang == 'en' else 'Сотрудник 2' }}
             {% elif account_type == 'ai_agent' %}
               {{ 'AI Agent' if lang == 'en' else 'AI агент' }}
+            {% elif account_type == 'tester' %}
+              {{ 'Tester' if lang == 'en' else 'Тестер' }}
             {% else %}
               {{ 'Basic' if lang == 'en' else 'Базовый' }}
             {% endif %}

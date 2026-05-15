@@ -83,6 +83,8 @@
             {% if lang == 'en' %}Staff 2{% else %}Сотрудник 2{% endif %}
           {% elif account_type == 'ai_agent' %}
             {% if lang == 'en' %}AI Agent{% else %}AI агент{% endif %}
+          {% elif account_type == 'tester' %}
+            {% if lang == 'en' %}Tester{% else %}Тестер{% endif %}
           {% else %}
             {% if lang == 'en' %}Basic{% else %}Базовый{% endif %}
           {% endif %}

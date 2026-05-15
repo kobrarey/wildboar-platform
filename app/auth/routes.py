@@ -19,6 +19,7 @@ from app.emails import send_email, render_email_template
 from app.codes import create_code, verify_code, get_active_code
 from app.security import hash_password, verify_password, validate_password
 from app.wallets import create_bsc_wallet_for_user
+from app.totp import require_totp_if_enabled
 
 from app.auth import (
     get_lang_from_request,
@@ -44,6 +45,7 @@ class RegisterConfirmIn(BaseModel):
 class Login2FAIn(BaseModel):
     email: str
     code: str
+    totp_code: str | None = None
 
 
 async def _payload(request: Request) -> dict:
@@ -304,7 +306,12 @@ def login(
         if not ok:
             return JSONResponse({"status": "error", "message": err}, status_code=400)
 
-        return JSONResponse(content={"status": "2fa_required"})
+        return JSONResponse(
+            content={
+                "status": "2fa_required",
+                "totp_required": bool(getattr(user, "totp_enabled", False)),
+            }
+        )
 
     session_id = create_session(db, user.id)
     resp = JSONResponse(content={"status": "ok", "redirect": "/dashboard"})
@@ -376,7 +383,18 @@ def login_2fa(request: Request, payload: Login2FAIn, db: Session = Depends(get_d
     except ValueError as e:
         return PlainTextResponse(t(lang, str(e)), status_code=400)
 
-    session_id = create_session(db, user.id)
+    ok, err_key = require_totp_if_enabled(
+        user=user,
+        totp_code=payload.totp_code,
+        db=db,
+        lang=lang,
+    )
+    if not ok:
+        return PlainTextResponse(t(lang, err_key or "totp_verification_failed"), status_code=400)
+
+    session_id = create_session(db, user.id, commit=False)
+    db.commit()
+
     resp = JSONResponse(content={"status": "ok", "redirect": "/dashboard"})
     set_auth_cookie(resp, session_id)
     return resp
@@ -458,7 +476,13 @@ async def forgot_send_code(request: Request, db: Session = Depends(get_db)):
     except Exception:
         return PlainTextResponse(t(lang, "send_email_failed"), status_code=400)
 
-    return JSONResponse({"status": "ok"}, status_code=200)
+    return JSONResponse(
+        {
+            "status": "ok",
+            "totp_required": bool(getattr(user, "totp_enabled", False)),
+        },
+        status_code=200,
+    )
 
 
 @router.post("/forgot/verify")
@@ -466,6 +490,7 @@ async def forgot_verify_code(request: Request, db: Session = Depends(get_db)):
     data = await _payload(request)
     email = normalize_email(data.get("email"))
     code = (data.get("code") or "").strip()
+    totp_code = (data.get("totp_code") or "").strip()
     lang = get_lang_from_request(request)
 
     user = get_user_by_any_email(db, email)
@@ -478,6 +503,15 @@ async def forgot_verify_code(request: Request, db: Session = Depends(get_db)):
             return PlainTextResponse(t(lang, "invalid_code"), status_code=400)
     except ValueError as e:
         return PlainTextResponse(t(lang, str(e)), status_code=400)
+
+    ok, err_key = require_totp_if_enabled(
+        user=user,
+        totp_code=totp_code,
+        db=db,
+        lang=lang,
+    )
+    if not ok:
+        return PlainTextResponse(t(lang, err_key or "totp_verification_failed"), status_code=400)
 
     token = uuid.uuid4().hex
     now = utcnow()

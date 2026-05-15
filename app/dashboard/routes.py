@@ -35,6 +35,7 @@ from app.models import (
 from app.utils.wallet_check import validate_address_status
 from app.codes import create_code, verify_code, get_active_code
 from app.emails import send_withdraw_code
+from app.totp import require_totp_if_enabled
 
 router = APIRouter()
 
@@ -274,6 +275,7 @@ class WithdrawResendIn(BaseModel):
 class WithdrawConfirmIn(BaseModel):
     token: str
     code: str
+    totp_code: str | None = None
 
 
 class WithdrawCancelIn(BaseModel):
@@ -460,6 +462,7 @@ def withdraw_request_code(
         "fee": str(fee),
         "to_address": payload.to_address,
         "email_slot": payload.email_slot,
+        "totp_required": bool(getattr(user, "totp_enabled", False)),
     }
 
 
@@ -532,6 +535,18 @@ def withdraw_confirm(
         verify_code(user.id, "withdraw", payload.code, db=db)
     except ValueError as e:
         return JSONResponse({"status": "error", "message": t(lang, str(e))}, status_code=400)
+
+    ok, err_key = require_totp_if_enabled(
+        user=user,
+        totp_code=payload.totp_code,
+        db=db,
+        lang=lang,
+    )
+    if not ok:
+        return JSONResponse(
+            {"status": "error", "message": t(lang, err_key or "totp_verification_failed")},
+            status_code=400,
+        )
 
     wallet = db.query(UserWallet).filter(UserWallet.id == s.wallet_id).first()
     if not wallet:

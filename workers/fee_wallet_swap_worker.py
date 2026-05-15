@@ -23,7 +23,6 @@ from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN
 from typing import Any
 
-import requests
 from sqlalchemy.exc import IntegrityError
 from web3 import Web3
 
@@ -144,22 +143,6 @@ def get_w3() -> Web3:
 
 def checksum(addr: str) -> str:
     return Web3.to_checksum_address((addr or "").strip())
-
-
-def send_telegram(text: str) -> None:
-    if not settings.TELEGRAM_BOT_TOKEN or not settings.TELEGRAM_CHAT_ID:
-        log.info("Telegram not configured. Skip message: %s", text)
-        return
-
-    url = f"https://api.telegram.org/bot{settings.TELEGRAM_BOT_TOKEN}/sendMessage"
-    try:
-        requests.post(
-            url,
-            json={"chat_id": settings.TELEGRAM_CHAT_ID, "text": text},
-            timeout=10,
-        )
-    except Exception as e:
-        log.warning("Telegram alert failed: %s", e)
 
 
 def record_swap(
@@ -467,7 +450,6 @@ def process_fee_wallet(wallet_type: str) -> None:
             f"Tx: {tx_hash}"
         )
         log.info(msg)
-        send_telegram(msg)
 
     except Exception as e:
         err = short_error(e)
@@ -481,12 +463,6 @@ def process_fee_wallet(wallet_type: str) -> None:
             amount_in_usdt=amount_to_swap_dec,
             status="failed",
             error=err,
-        )
-
-        send_telegram(
-            f"❌ Fee wallet swap failed ({wallet_type})\n"
-            f"Address: {wallet_address or 'missing'}\n"
-            f"Error: {err}"
         )
 
 

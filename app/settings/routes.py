@@ -38,6 +38,7 @@ from app.totp import (
     generate_recovery_codes,
     generate_totp_secret,
     hash_recovery_code,
+    require_totp_if_enabled,
     verify_totp_code,
 )
 
@@ -57,6 +58,7 @@ class PasswordChangeRequest(BaseModel):
 class PasswordChangeConfirm(BaseModel):
     new_password: str
     code: str
+    totp_code: str | None = None
 
 
 class EmailSendCodePayload(BaseModel):
@@ -67,10 +69,12 @@ class EmailSendCodePayload(BaseModel):
 class EmailConfirmPayload(BaseModel):
     slot: int
     code: str
+    totp_code: str | None = None
 
 
 class EmailDeletePayload(BaseModel):
     slot: int
+    totp_code: str | None = None
 
 
 class TotpConfirmPayload(BaseModel):
@@ -209,6 +213,18 @@ def emails_confirm(
     except ValueError as e:
         return JSONResponse({"status": "error", "message": t(lang, str(e))}, status_code=400)
 
+    ok, err_key = require_totp_if_enabled(
+        user=user,
+        totp_code=payload.totp_code,
+        db=db,
+        lang=lang,
+    )
+    if not ok:
+        return JSONResponse(
+            {"status": "error", "message": t(lang, err_key or "totp_verification_failed")},
+            status_code=400,
+        )
+
     if slot == 1:
         user.is_email_verified = True
     else:
@@ -241,6 +257,18 @@ def emails_delete(
 
     if non_empty <= 1:
         return JSONResponse({"status": "error", "message": t(lang, "cannot_delete_last_email")}, status_code=400)
+
+    ok, err_key = require_totp_if_enabled(
+        user=user,
+        totp_code=payload.totp_code,
+        db=db,
+        lang=lang,
+    )
+    if not ok:
+        return JSONResponse(
+            {"status": "error", "message": t(lang, err_key or "totp_verification_failed")},
+            status_code=400,
+        )
 
     if slot == 1:
         user.email = user.backup_email
@@ -520,7 +548,10 @@ def send_password_change_code(
     except Exception:
         return JSONResponse({"status": "error", "message": t(lang, "send_email_failed")}, status_code=500)
 
-    return {"status": "ok"}
+    return {
+        "status": "ok",
+        "totp_required": bool(getattr(user, "totp_enabled", False)),
+    }
 
 
 @router.post("/security/change-password")
@@ -541,6 +572,18 @@ def change_password_confirm(
         verify_code(user.id, "password_change", code, db=db)
     except ValueError as e:
         return JSONResponse({"status": "error", "message": t(lang, str(e))}, status_code=400)
+
+    ok, err_key = require_totp_if_enabled(
+        user=user,
+        totp_code=payload.totp_code,
+        db=db,
+        lang=lang,
+    )
+    if not ok:
+        return JSONResponse(
+            {"status": "error", "message": t(lang, err_key or "totp_verification_failed")},
+            status_code=400,
+        )
 
     user.password_hash = hash_password(new_pwd)
 

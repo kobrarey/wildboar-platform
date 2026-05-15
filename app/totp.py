@@ -133,3 +133,46 @@ def verify_recovery_code(code: str, code_hash: str) -> bool:
 
 def normalize_recovery_code(code: str) -> str:
     return (code or "").strip().upper().replace(" ", "")
+
+
+def require_totp_if_enabled(user, totp_code: str | None, db, lang: str) -> tuple[bool, str | None]:
+    """
+    Enforce TOTP only for users with user.totp_enabled=True.
+
+    Returns:
+        (True, None) when TOTP is not enabled or verification passed.
+        (False, error_key) when verification failed.
+
+    Important:
+        This helper does NOT commit.
+        Caller endpoint must commit after successful sensitive action.
+    """
+    if not bool(getattr(user, "totp_enabled", False)):
+        return True, None
+
+    code = (totp_code or "").strip()
+    if not code:
+        return False, "totp_required"
+
+    try:
+        secret = decrypt_totp_secret(getattr(user, "totp_secret_encrypted", None))
+    except TotpConfigError:
+        return False, "totp_not_configured"
+    except TotpSecretError:
+        return False, "totp_verification_failed"
+    except Exception:
+        return False, "totp_verification_failed"
+
+    result = verify_totp_code(
+        secret=secret,
+        code=code,
+        last_used_step=getattr(user, "totp_last_used_step", None),
+    )
+
+    if not result.ok:
+        return False, result.error_key or "totp_invalid_code"
+
+    user.totp_last_used_step = result.step
+    db.add(user)
+
+    return True, None
