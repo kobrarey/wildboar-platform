@@ -3,16 +3,20 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session
 
-from app.models import Fund, FundChartMinute, FundNavMinute
+from app.models import Fund, FundChartDaily, FundChartMinute, FundNavMinute
 from app.navcalc.schemas import MinuteState
 
 
 def _minute_floor(dt: datetime) -> datetime:
     return dt.astimezone(timezone.utc).replace(second=0, microsecond=0)
+
+
+def _day_floor(dt: datetime) -> datetime:
+    return dt.astimezone(timezone.utc).replace(hour=0, minute=0, second=0, microsecond=0)
 
 
 def get_fund_by_code(db: Session, fund_code: str) -> Fund | None:
@@ -98,6 +102,72 @@ def upsert_chart_minute(
     db.commit()
 
 
+def upsert_chart_daily_from_minute_state(
+    db: Session,
+    *,
+    fund_id: int,
+    state: MinuteState,
+) -> None:
+    """
+    Update daily price candle from the accepted minute NAV state.
+
+    fund_chart_daily stores share price OHLC, not fund NAV.
+    Daily open is fixed:
+    - if a daily row already exists, open is not changed;
+    - if this is the first row of a new day and previous daily row exists,
+      open = previous daily close;
+    - otherwise open = current minute open price.
+    """
+    day_ts = _day_floor(state.minute_ts)
+
+    open_price = state.open_nav / state.shares_outstanding
+    high_price = state.high_nav / state.shares_outstanding
+    low_price = state.low_nav / state.shares_outstanding
+    close_price = state.close_nav / state.shares_outstanding
+
+    previous_row = (
+        db.query(FundChartDaily)
+        .filter(
+            FundChartDaily.fund_id == fund_id,
+            FundChartDaily.ts_utc < day_ts,
+        )
+        .order_by(FundChartDaily.ts_utc.desc())
+        .first()
+    )
+
+    daily_open = Decimal(str(previous_row.close)) if previous_row else open_price
+    daily_high = max(daily_open, high_price)
+    daily_low = min(daily_open, low_price)
+
+    table = FundChartDaily.__table__
+
+    stmt = (
+        pg_insert(table)
+        .values(
+            fund_id=fund_id,
+            ts_utc=day_ts,
+            open=daily_open,
+            high=daily_high,
+            low=daily_low,
+            close=close_price,
+            volume=None,
+        )
+        .on_conflict_do_update(
+            index_elements=["fund_id", "ts_utc"],
+            set_={
+                # Do not update open for an existing daily candle.
+                "high": func.greatest(table.c.high, high_price),
+                "low": func.least(table.c.low, low_price),
+                "close": close_price,
+                "volume": None,
+            },
+        )
+    )
+
+    db.execute(stmt)
+    db.commit()
+
+
 def upsert_minute_state(
     db: Session,
     *,
@@ -125,4 +195,10 @@ def upsert_minute_state(
         high_price=high_price,
         low_price=low_price,
         close_price=close_price,
+    )
+
+    upsert_chart_daily_from_minute_state(
+        db,
+        fund_id=fund_id,
+        state=state,
     )
