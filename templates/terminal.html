@@ -5,11 +5,11 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>WildBoar — {{ current_fund.short_name if current_fund and current_fund.short_name else 'Terminal' }}</title>
 
-  <link rel="stylesheet" href="/static/css/app.css?v=terminal_base1" />
-  <link rel="stylesheet" href="/static/css/terminal.css?v=terminal13" />
+  <link rel="stylesheet" href="/static/css/app.css?v=20_1" />
+  <link rel="stylesheet" href="/static/css/terminal.css?v=20_1" />
 
-  <script defer src="/static/js/app.js?v=5_2"></script>
-  <script defer src="/static/js/terminal.js?v=terminal_live2"></script>
+  <script defer src="/static/js/app.js?v=20_1"></script>
+  <script defer src="/static/js/terminal.js?v=20_1"></script>
   <script defer src="/static/charting_library/charting_library.standalone.js"></script>
   <script defer src="/static/js/terminal_chart.js?v=stage13_5"></script>
 </head>
@@ -174,31 +174,75 @@
         <div class="term-table" data-term-panel="history">
           <div class="term-thead term-thead--history">
             <div>{{ 'Название' if lang=='ru' else 'Name' }}</div>
-            <div>{{ 'Направление' if lang=='ru' else 'Side' }}</div>
-            <div class="t-center">{{ 'Стоимость' if lang=='ru' else 'Cost' }}</div>
+            <div class="t-center">{{ 'Сторона' if lang=='ru' else 'Side' }}</div>
+            <div class="t-center">{{ 'Сумма' if lang=='ru' else 'Amount' }}</div>
+            <div class="t-center">{{ 'Паи' if lang=='ru' else 'Shares' }}</div>
             <div class="t-center">{{ 'Цена' if lang=='ru' else 'Price' }}</div>
-            <div class="t-right">{{ 'Время операции' if lang=='ru' else 'Time' }}</div>
+            <div class="t-center">{{ 'Статус' if lang=='ru' else 'Status' }}</div>
+            <div class="t-center">{{ 'Создано' if lang=='ru' else 'Created' }}</div>
+            <div class="t-right">{{ 'Исполнено' if lang=='ru' else 'Executed' }}</div>
           </div>
 
-          <div class="term-tbody">
+          <div class="term-tbody" data-terminal-trade-history-body>
             {% if trade_history and (trade_history|length) > 0 %}
               {% for r in trade_history %}
+                {% set st = (r.status|default('', true))|lower %}
                 <div class="term-tr term-tr--history">
                   <div class="t-name">{{ r.name|default('-', true) }}</div>
-                  <div>{{ r.direction|default('-', true) }}</div>
+
                   <div class="t-center">
-                    {% if r.amount_usdt is not none %}{{ fmt2(r.amount_usdt) }}{% else %}-{% endif %}
+                    {{ r.side|default(r.direction|default('-', true), true) }}
                   </div>
+
                   <div class="t-center">
-                    {% if r.price_usdt is not none %}{{ fmt2(r.price_usdt) }}{% else %}-{% endif %}
+                    {% if r.amount is defined %}
+                      {{ r.amount|default('-', true) }}
+                    {% elif r.amount_usdt is not none %}
+                      {{ fmt2(r.amount_usdt) }} USDT
+                    {% else %}
+                      —
+                    {% endif %}
                   </div>
+
+                  <div class="t-center">
+                    {% if r.shares is defined %}
+                      {{ r.shares|default('-', true) }}
+                    {% elif r.shares_qty is defined and r.shares_qty is not none %}
+                      {{ fmt4(r.shares_qty) }}
+                    {% else %}
+                      —
+                    {% endif %}
+                  </div>
+
+                  <div class="t-center">
+                    {% if r.price is defined %}
+                      {{ r.price|default('-', true) }}
+                    {% elif r.price_usdt is not none %}
+                      {{ fmt2(r.price_usdt) }} USDT
+                    {% else %}
+                      —
+                    {% endif %}
+                  </div>
+
+                  <div class="t-center">
+                    <span class="term-status term-status--{{ st if st in ['pending','processing','success','failed','cancelled'] else 'pending' }}">
+                      {{ r.status_label|default(r.status|default('-', true), true) }}
+                    </span>
+                  </div>
+
+                  <div class="t-center">
+                    {{ r.created|default(r.created_at|default('-', true), true) }}
+                  </div>
+
                   <div class="t-right">
-                    {% if r.created_at %}{{ r.created_at.strftime('%d.%m.%Y %H:%M:%S') }}{% else %}-{% endif %}
+                    {{ r.executed|default(r.executed_at|default('—', true), true) }}
                   </div>
                 </div>
               {% endfor %}
             {% else %}
-              <div class="term-empty">{{ 'Пока нет данных.' if lang=='ru' else 'No data yet.' }}</div>
+              <div class="term-empty" data-terminal-trade-empty>
+                {{ 'Пока нет данных.' if lang=='ru' else 'No data yet.' }}
+              </div>
             {% endif %}
           </div>
         </div>
@@ -245,6 +289,9 @@
     <!-- Right: buy/redeem + fund info -->
     <div class="term-right">
       <div class="term-order"
+           data-authenticated="{{ '1' if is_authenticated else '0' }}"
+           data-fund-code="{{ current_fund.fund_code if current_fund and current_fund.fund_code else chart_config.fund_code }}"
+           data-fund-name="{{ current_fund.short_name|default(current_fund.name|default('-', true), true) }}"
            data-avail-usdt="{{ form_state.available_usdt|default(0, true) }}"
            data-avail-shares="{{ form_state.available_shares_current_fund|default(0, true) }}">
         <div class="term-order__tabs">
@@ -261,7 +308,8 @@
           <div class="order-balance">
             <div class="order-balance__label">{{ 'Доступный баланс' if lang=='ru' else 'Available balance' }}</div>
             <div class="order-balance__value">
-              {{ fmt2(form_state.available_usdt) }} <span class="muted">USDT</span>
+              <span data-order-available-usdt>{{ fmt2(form_state.available_usdt) }}</span>
+              <span class="muted">USDT</span>
               <a class="order-plus" href="/dashboard?open=deposit" title="{{ 'Пополнить' if lang=='ru' else 'Deposit' }}">+</a>
             </div>
           </div>
@@ -286,7 +334,8 @@
           <div class="order-balance">
             <div class="order-balance__label">{{ 'Доступный баланс' if lang=='ru' else 'Available balance' }}</div>
             <div class="order-balance__value">
-              {{ fmt4(form_state.available_shares_current_fund) }} <span class="muted">{{ 'паёв' if lang=='ru' else 'shares' }}</span>
+              <span data-order-available-shares>{{ fmt4(form_state.available_shares_current_fund) }}</span>
+              <span class="muted">{{ 'паёв' if lang=='ru' else 'shares' }}</span>
             </div>
           </div>
 

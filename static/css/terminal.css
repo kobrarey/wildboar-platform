@@ -296,7 +296,18 @@ body.page.page--terminal{
   white-space: nowrap;
 }
 
-.term-thead--history{ grid-template-columns: 1.3fr .8fr .8fr .8fr 1fr; }
+.term-thead--history{
+  grid-template-columns:
+    minmax(140px, 1.35fr)
+    minmax(82px, .75fr)
+    minmax(110px, .9fr)
+    minmax(95px, .8fr)
+    minmax(95px, .8fr)
+    minmax(110px, .85fr)
+    minmax(135px, 1fr)
+    minmax(135px, 1fr);
+}
+
 .term-thead--assets{ grid-template-columns: 1.2fr 1fr 1fr 1fr 1fr 1fr; }
 
 .term-tbody{
@@ -313,12 +324,58 @@ body.page.page--terminal{
 }
 .page--terminal[data-theme="dark"] .term-tr{ border-bottom-color: rgba(255,255,255,.08); }
 
-.term-tr--history{ grid-template-columns: 1.3fr .8fr .8fr .8fr 1fr; }
+.term-tr--history{
+  grid-template-columns:
+    minmax(140px, 1.35fr)
+    minmax(82px, .75fr)
+    minmax(110px, .9fr)
+    minmax(95px, .8fr)
+    minmax(95px, .8fr)
+    minmax(110px, .85fr)
+    minmax(135px, 1fr)
+    minmax(135px, 1fr);
+}
 .term-tr--assets{ grid-template-columns: 1.2fr 1fr 1fr 1fr 1fr 1fr; }
 
 .t-center{ text-align:center; }
 .t-right{ text-align:right; }
 .t-name{ font-weight: 900; }
+
+.term-thead--history > div,
+.term-tr--history > div{
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.term-status{
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+
+.term-status--pending,
+.term-status--processing{
+  color: var(--t-amber);
+}
+
+.term-status--success{
+  color: var(--t-green);
+}
+
+.term-status--failed{
+  color: var(--t-red);
+}
+
+.term-status--cancelled{
+  color: var(--t-muted);
+}
 
 .term-empty{ padding: 14px 0; color: var(--t-muted); }
 
@@ -440,6 +497,11 @@ body.page.page--terminal{
 }
 .order-btn--buy{ background:#16a34a; }
 .order-btn--redeem{ background:#ef4444; }
+
+.order-btn:disabled{
+  opacity: .55;
+  cursor: not-allowed;
+}
 
 /* fund info */
 .term-fund-info{
