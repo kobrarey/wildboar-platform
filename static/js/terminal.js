@@ -334,7 +334,7 @@
       }
 
       if (buyBtn) {
-        buyBtn.disabled = !validateBuy();
+        buyBtn.disabled = !canEnableBuyButton() || buyPending;
       }
     }
 
@@ -350,7 +350,7 @@
       }
 
       if (redBtn) {
-        redBtn.disabled = !validateRedeem();
+        redBtn.disabled = !canEnableRedeemButton() || redeemPending;
       }
     }
 
@@ -503,6 +503,48 @@
       return true;
     }
 
+    function canEnableBuyButton() {
+      if (!buyIn) return false;
+
+      const raw = buyIn.value;
+      const n = parseNum(raw);
+
+      if (n === null) return false;
+      if (!decimalsOk(raw, 2)) return false;
+      if (n <= 0) return false;
+      if (n > BUY_MAX) return false;
+
+      const intLen = String(raw || "").trim().replace(",", ".").split(".")[0].length;
+      if (intLen > BUY_MAX_INT_DIGITS) return false;
+
+      // Для неавторизованного пользователя кнопку надо дать нажать,
+      // чтобы показать login-required message, но API request не отправлять.
+      if (!isAuthenticated) return true;
+
+      return n <= availUSDT;
+    }
+
+    function canEnableRedeemButton() {
+      if (!redIn) return false;
+
+      const raw = redIn.value;
+      const n = parseNum(raw);
+
+      if (n === null) return false;
+      if (!decimalsOk(raw, 4)) return false;
+      if (n <= 0) return false;
+      if (n > REDEEM_MAX) return false;
+
+      const intLenR = String(raw || "").trim().replace(",", ".").split(".")[0].length;
+      if (intLenR > REDEEM_MAX_INT_DIGITS) return false;
+
+      // Для неавторизованного пользователя кнопку надо дать нажать,
+      // чтобы показать login-required message, но API request не отправлять.
+      if (!isAuthenticated) return true;
+
+      return n <= availShares;
+    }
+
     function setBackendError(targetEl, data, fallback) {
       if (!targetEl) return;
       targetEl.textContent = data?.message || data?.detail || fallback;
@@ -528,11 +570,15 @@
     }
 
     buyIn && buyIn.addEventListener("input", () => {
-      if (buyBtn) buyBtn.disabled = !validateBuy() || buyPending;
+      if (buyErr) buyErr.textContent = "";
+      if (buyOk) buyOk.textContent = "";
+      if (buyBtn) buyBtn.disabled = !canEnableBuyButton() || buyPending;
     });
 
     redIn && redIn.addEventListener("input", () => {
-      if (redBtn) redBtn.disabled = !validateRedeem() || redeemPending;
+      if (redErr) redErr.textContent = "";
+      if (redOk) redOk.textContent = "";
+      if (redBtn) redBtn.disabled = !canEnableRedeemButton() || redeemPending;
     });
 
     if (buyBtn) {
@@ -591,7 +637,7 @@
           if (buyErr) buyErr.textContent = L("Ошибка сети.", "Network error.");
         } finally {
           buyPending = false;
-          if (buyBtn) buyBtn.disabled = !validateBuy();
+          if (buyBtn) buyBtn.disabled = !canEnableBuyButton();
         }
       });
     }
@@ -652,7 +698,7 @@
           if (redErr) redErr.textContent = L("Ошибка сети.", "Network error.");
         } finally {
           redeemPending = false;
-          if (redBtn) redBtn.disabled = !validateRedeem();
+          if (redBtn) redBtn.disabled = !canEnableRedeemButton();
         }
       });
     }
