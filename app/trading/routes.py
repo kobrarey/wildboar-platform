@@ -63,7 +63,7 @@ def _trading_error_response(lang: str, error_key: str, status_code: int = 400) -
 def api_create_buy_order(
     payload: TradingBuyOrderIn,
     request: Request,
-    user=Depends(auth_get_current_user),
+    user=Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     lang = get_lang_from_request(request)
@@ -85,7 +85,7 @@ def api_create_buy_order(
 def api_create_redeem_order(
     payload: TradingRedeemOrderIn,
     request: Request,
-    user=Depends(auth_get_current_user),
+    user=Depends(get_optional_user),
     db: Session = Depends(get_db),
 ):
     lang = get_lang_from_request(request)
