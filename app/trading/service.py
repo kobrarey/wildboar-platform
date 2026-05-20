@@ -17,6 +17,7 @@ from app.models import (
 )
 from app.portfolio import FUND_ICON_MAP, get_user_portfolio
 from app.trading.chart_service import build_chart_config_for_fund
+from app.trading.history_formatter import format_trading_history_rows
 
 
 ZERO = Decimal("0")
@@ -28,6 +29,20 @@ def _to_decimal(value: Any) -> Decimal:
     if isinstance(value, Decimal):
         return value
     return Decimal(str(value))
+
+
+def _available_shares(position: UserFundPosition | None) -> Decimal:
+    if position is None:
+        return ZERO
+
+    total = _to_decimal(getattr(position, "shares", 0))
+    reserved = _to_decimal(getattr(position, "shares_reserved", 0))
+    available = total - reserved
+
+    if available < 0:
+        return ZERO
+
+    return available
 
 
 def _safe_price(nav_usdt: Any, shares_outstanding: Any) -> Decimal:
@@ -241,21 +256,7 @@ def _build_trade_history(db: Session, user: User | None, lang: str) -> list[dict
         .all()
     )
 
-    payload: list[dict] = []
-    for order, fund in rows:
-        payload.append(
-            {
-                "fund_code": fund.code,
-                "name": _fund_short_name(fund, lang),
-                "icon_name": _fund_icon_name(fund),
-                "direction": order.side,
-                "amount_usdt": order.amount_usdt,
-                "price_usdt": order.price_usdt,
-                "created_at": order.created_at,
-                "status": order.status,
-            }
-        )
-    return payload
+    return format_trading_history_rows(rows, lang)
 
 
 def _build_assets_block(db: Session, user: User | None, lang: str) -> list[dict]:
@@ -379,7 +380,7 @@ def get_terminal_page_payload(
             .first()
         )
         if current_position:
-            available_shares_current_fund = _to_decimal(current_position.shares)
+            available_shares_current_fund = _available_shares(current_position)
 
     return {
         "current_fund": market_snapshot,

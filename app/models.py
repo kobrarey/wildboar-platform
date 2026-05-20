@@ -360,6 +360,50 @@ class Fund(Base):
     is_active = Column(Boolean, nullable=False, default=True)
 
 
+class FundWallet(Base):
+    __tablename__ = "fund_wallets"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    blockchain: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=sa_text("'BSC'"),
+    )
+
+    wallet_type: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=sa_text("'settlement'"),
+    )
+
+    address: Mapped[str] = mapped_column(String(64), nullable=False)
+    encrypted_private_key: Mapped[str] = mapped_column(Text, nullable=False)
+
+    derivation_path: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    derivation_index: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=sa_text("TRUE"),
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class FundNavMinute(Base):
     __tablename__ = "fund_nav_minute"
 
@@ -526,6 +570,12 @@ class UserFundPosition(Base):
     user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     fund_id = Column(Integer, ForeignKey("funds.id", ondelete="CASCADE"), nullable=False)
     shares = Column(Numeric(30, 10), nullable=False, default=0)
+    shares_reserved = Column(
+        Numeric(30, 10),
+        nullable=False,
+        default=0,
+        server_default=sa_text("0"),
+    )
 
     __table_args__ = (
         UniqueConstraint("user_id", "fund_id", name="user_fund_positions_unique"),

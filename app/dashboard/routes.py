@@ -36,6 +36,7 @@ from app.utils.wallet_check import validate_address_status
 from app.codes import create_code, verify_code, get_active_code
 from app.emails import send_withdraw_code
 from app.totp import require_totp_if_enabled
+from app.trading.history_formatter import format_trading_history_rows
 
 router = APIRouter()
 
@@ -670,6 +671,8 @@ def dashboard_live(
                 "name": f.get("name"),
                 "price": _dec_str(f.get("price"), "0.00"),
                 "shares": _dec_str(f.get("shares"), "0.0000"),
+                "shares_reserved": _dec_str(f.get("shares_reserved"), "0.0000"),
+                "shares_available": _dec_str(f.get("shares_available"), "0.0000"),
                 "value": _dec_str(f.get("value"), "0.00"),
                 "icon_name": f.get("icon_name") or "fund-default.svg",
             }
@@ -770,24 +773,7 @@ def history_live(
 
     rows = q.order_by(FundOrder.created_at.desc()).all()
 
-    payload_rows = []
-    for order, fund in rows:
-        fund_name = fund.name_en if lang == "en" else fund.name_ru
-        payload_rows.append(
-            {
-                "id": order.id,
-                "fund_id": order.fund_id,
-                "fund_code": fund.code,
-                "fund_name": fund_name,
-                "side": order.side,
-                "amount_usdt": _optional_dec_str(order.amount_usdt, "0.00"),
-                "shares": _optional_dec_str(order.shares, "0.0000"),
-                "price_usdt": _optional_dec_str(order.price_usdt, "0.00"),
-                "status": order.status,
-                "created_at": _dt_str(order.created_at),
-                "executed_at": _dt_str(order.executed_at),
-            }
-        )
+    payload_rows = format_trading_history_rows(rows, lang)
 
     return {
         "status": "ok",
@@ -846,43 +832,45 @@ def history_export_transfers(
 
 @router.get("/api/history/export/trading")
 def history_export_trading(
+    request: Request,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    lang = get_lang_from_request(request)
+
     headers = [
-        "id",
-        "user_id",
-        "fund_id",
+        "name",
         "side",
-        "amount_usdt",
+        "amount",
         "shares",
-        "price_usdt",
+        "price",
         "status",
-        "created_at",
-        "executed_at",
+        "created",
+        "executed",
     ]
 
-    orders = (
-        db.query(FundOrder)
+    order_rows = (
+        db.query(FundOrder, Fund)
+        .join(Fund, Fund.id == FundOrder.fund_id)
         .filter(FundOrder.user_id == user.id)
         .order_by(FundOrder.created_at.desc())
         .all()
     )
 
+    formatted_rows = format_trading_history_rows(order_rows, lang)
+
     rows = []
-    for order in orders:
+    for row in formatted_rows:
         rows.append(
             [
-                order.id,
-                order.user_id,
-                order.fund_id,
-                order.side,
-                order.amount_usdt,
-                order.shares,
-                order.price_usdt,
-                order.status,
-                order.created_at,
-                order.executed_at,
+                row.get("name"),
+                row.get("side_label"),
+                row.get("amount"),
+                row.get("shares_display"),
+                row.get("price"),
+                row.get("status_label"),
+                row.get("created"),
+                row.get("executed"),
             ]
         )
 

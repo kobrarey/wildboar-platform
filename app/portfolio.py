@@ -99,7 +99,13 @@ def get_user_portfolio(db: Session, user: User, lang: str) -> dict:
         else:
             price = Decimal("0")
 
-        shares = Decimal(pos_by_fund[fund.id].shares) if fund.id in pos_by_fund else Decimal("0")
+        position = pos_by_fund.get(fund.id)
+        shares = Decimal(position.shares) if position is not None else Decimal("0")
+        shares_reserved = Decimal(getattr(position, "shares_reserved", 0) or 0) if position is not None else Decimal("0")
+        shares_available = shares - shares_reserved
+        if shares_available < 0:
+            shares_available = Decimal("0")
+
         value = price * shares
 
         total_balance += value
@@ -117,6 +123,8 @@ def get_user_portfolio(db: Session, user: User, lang: str) -> dict:
                 "name": name,
                 "price": price,
                 "shares": shares,
+                "shares_reserved": shares_reserved,
+                "shares_available": shares_available,
                 "value": value,
                 "icon_name": icon_name,
             }

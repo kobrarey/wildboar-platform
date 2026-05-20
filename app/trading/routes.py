@@ -1,5 +1,6 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
-from fastapi.responses import RedirectResponse
+from fastapi.responses import JSONResponse, RedirectResponse
+from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 
@@ -19,8 +20,23 @@ from app.trading.service import (
     get_terminal_live_payload,
     get_terminal_page_payload,
 )
+from app.trading.order_service import (
+    TradingOrderError,
+    create_buy_order,
+    create_redeem_order,
+)
 
 router = APIRouter()
+
+
+class TradingBuyOrderIn(BaseModel):
+    fund_code: str
+    amount_usdt: str
+
+
+class TradingRedeemOrderIn(BaseModel):
+    fund_code: str
+    shares: str
 
 
 def get_optional_user(request: Request, db: Session):
@@ -28,6 +44,63 @@ def get_optional_user(request: Request, db: Session):
         return auth_get_current_user(request, db)
     except NotAuthenticated:
         return None
+
+
+def _trading_error_response(lang: str, error_key: str, status_code: int = 400) -> JSONResponse:
+    from app.i18n import t
+
+    return JSONResponse(
+        {
+            "status": "error",
+            "message": t(lang, error_key),
+            "error": error_key,
+        },
+        status_code=status_code,
+    )
+
+
+@router.post("/api/trading/orders/buy")
+def api_create_buy_order(
+    payload: TradingBuyOrderIn,
+    request: Request,
+    user=Depends(auth_get_current_user),
+    db: Session = Depends(get_db),
+):
+    lang = get_lang_from_request(request)
+
+    try:
+        return create_buy_order(
+            db=db,
+            user=user,
+            fund_code=payload.fund_code,
+            amount_usdt=payload.amount_usdt,
+            lang=lang,
+        )
+    except TradingOrderError as exc:
+        status_code = 401 if exc.error_key == "not_authenticated" else 400
+        return _trading_error_response(lang, exc.error_key, status_code=status_code)
+
+
+@router.post("/api/trading/orders/redeem")
+def api_create_redeem_order(
+    payload: TradingRedeemOrderIn,
+    request: Request,
+    user=Depends(auth_get_current_user),
+    db: Session = Depends(get_db),
+):
+    lang = get_lang_from_request(request)
+
+    try:
+        return create_redeem_order(
+            db=db,
+            user=user,
+            fund_code=payload.fund_code,
+            shares=payload.shares,
+            lang=lang,
+        )
+    except TradingOrderError as exc:
+        status_code = 401 if exc.error_key == "not_authenticated" else 400
+        return _trading_error_response(lang, exc.error_key, status_code=status_code)
 
 
 @router.get("/terminal")
