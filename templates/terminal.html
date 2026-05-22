@@ -187,14 +187,14 @@
             {% if trade_history and (trade_history|length) > 0 %}
               {% for r in trade_history %}
                 {% set st_raw = (r.status|default('', true))|lower %}
-                {% set st_class_backend = r.status_class|default('', true) %}
-                {% if st_class_backend %}
-                  {% set st_class = st_class_backend %}
-                {% elif st_raw in ['success','completed','executed'] %}
+                {% set st_color = (r.status_color|default('', true))|lower %}
+                {% set st_class_backend = (r.status_class|default('', true))|lower %}
+
+                {% if st_raw in ['success','completed','executed'] or st_color == 'green' or st_class_backend in ['success','completed','executed','tx-status--success'] %}
                   {% set st_class = 'success' %}
-                {% elif st_raw in ['failed','error','failed_requires_review'] %}
+                {% elif st_raw in ['failed','error','failed_requires_review'] or st_color == 'red' or st_class_backend in ['failed','error','tx-status--failed'] %}
                   {% set st_class = 'failed' %}
-                {% elif st_raw in ['cancelled','canceled'] %}
+                {% elif st_raw in ['cancelled','canceled'] or st_color == 'gray' or st_class_backend in ['cancelled','canceled','tx-status--cancelled'] %}
                   {% set st_class = 'cancelled' %}
                 {% else %}
                   {% set st_class = 'processing' %}
