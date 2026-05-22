@@ -133,5 +133,11 @@ class Settings(BaseSettings):
     SETTLEMENT_GAS_TOPUP_RETRY_HOUR_UTC: int = 23
     SETTLEMENT_GAS_TOPUP_RETRY_MINUTE_UTC: int = 50
 
+    # --- stage 22.0: temporary Bybit master sync ---
+    BYBIT_MASTER_RECV_WINDOW_MS: int = 5000
+    BYBIT_MASTER_HTTP_TIMEOUT_SEC: int = 20
+    BYBIT_MASTER_RETRIES: int = 3
+    BYBIT_MASTER_BACKOFF_SEC: Decimal = Decimal("0.8")
+
 
 settings = Settings()

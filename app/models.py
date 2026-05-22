@@ -404,6 +404,53 @@ class FundWallet(Base):
     archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class FundBybitAccount(Base):
+    __tablename__ = "fund_bybit_accounts"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    bybit_sub_uid: Mapped[str] = mapped_column(String(64), nullable=False)
+    bybit_subaccount_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    coin: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=sa_text("'USDT'"),
+    )
+
+    chain: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    chain_type: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    deposit_address: Mapped[str] = mapped_column(String(128), nullable=False)
+    deposit_tag: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=sa_text("TRUE"),
+    )
+
+    last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
 class FundNavMinute(Base):
     __tablename__ = "fund_nav_minute"
 
