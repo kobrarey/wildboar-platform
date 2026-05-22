@@ -276,12 +276,19 @@
       return String(value);
     }
 
-    function statusClass(status) {
+    function statusClass(status, explicitClass = "") {
+      const cls = String(explicitClass || "").toLowerCase();
       const st = String(status || "").toLowerCase();
 
+      if (["success", "completed", "executed"].includes(cls)) return "success";
+      if (["failed", "error"].includes(cls)) return "failed";
+      if (["cancelled", "canceled"].includes(cls)) return "cancelled";
+      if (["pending", "processing", "settling"].includes(cls)) return "processing";
+
       if (st === "success" || st === "completed" || st === "executed") return "success";
-      if (st === "failed" || st === "error") return "failed";
+      if (st === "failed" || st === "error" || st === "failed_requires_review") return "failed";
       if (st === "cancelled" || st === "canceled") return "cancelled";
+
       return "processing";
     }
 
@@ -294,7 +301,7 @@
         return L("Выполнено", "Completed");
       }
 
-      if (st === "failed" || st === "error") {
+      if (st === "failed" || st === "error" || st === "failed_requires_review") {
         return L("Ошибка", "Failed");
       }
 
@@ -417,6 +424,7 @@
           r.price_text ??
           (r.price_usdt !== undefined && r.price_usdt !== null ? `${fmt2(r.price_usdt)} USDT` : fallback.price),
         status: statusRaw,
+        status_class: r.status_class ?? r.status_color ?? "",
         status_label: r.status_label ?? fallback.status_label,
         created: r.created ?? r.created_at ?? fallback.created,
         executed: r.executed ?? r.executed_at ?? fallback.executed,
@@ -424,7 +432,7 @@
     }
 
     function renderHistoryRow(row) {
-      const stClass = statusClass(row.status);
+      const stClass = statusClass(row.status, row.status_class);
 
       return `
       <div class="term-tr term-tr--history">

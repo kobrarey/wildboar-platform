@@ -1603,3 +1603,25 @@ body.sidebar-collapsed .sidebar__logout-icon{
 .totp-help-message.hidden {
   display: none !important;
 }
+
+/* ===== Stage 21: trading history intermediate statuses ===== */
+.tx-status--pending,
+.tx-status--processing{
+  color: #b45309;
+  font-weight: 700;
+}
+
+.tx-status--success{
+  color: #166534;
+  font-weight: 700;
+}
+
+.tx-status--failed{
+  color: #991b1b;
+  font-weight: 700;
+}
+
+.tx-status--cancelled{
+  color: var(--wb-muted);
+  font-weight: 700;
+}

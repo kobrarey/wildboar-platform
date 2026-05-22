@@ -103,18 +103,43 @@
     return `<span class="tx-status tx-status--pending">${escapeHtml(st || L("В обработке", "Pending"))}</span>`;
   }
 
-  function tradingStatusHtml(status) {
-    const st = String(status || "").toLowerCase();
+  function tradingStatusHtml(rowOrStatus) {
+    const row = rowOrStatus && typeof rowOrStatus === "object"
+      ? rowOrStatus
+      : { status: rowOrStatus };
 
-    if (st === "success" || st === "executed" || st === "completed") {
-      return `<span class="tx-status tx-status--success">${escapeHtml(L("Завершено", "Completed"))}</span>`;
+    const st = String(row.status || "").toLowerCase();
+    const explicitLabel = row.status_label || "";
+    const explicitClass = String(row.status_class || "").toLowerCase();
+    const explicitColor = String(row.status_color || "").toLowerCase();
+
+    let cssClass = "tx-status--pending";
+    let fallbackLabel = L("В обработке", "Processing");
+
+    if (
+      ["success", "completed", "executed"].includes(st) ||
+      ["success", "completed", "executed"].includes(explicitClass) ||
+      explicitColor === "green"
+    ) {
+      cssClass = "tx-status--success";
+      fallbackLabel = L("Завершено", "Completed");
+    } else if (
+      ["failed", "error", "failed_requires_review"].includes(st) ||
+      ["failed", "error"].includes(explicitClass) ||
+      explicitColor === "red"
+    ) {
+      cssClass = "tx-status--failed";
+      fallbackLabel = L("Ошибка", "Failed");
+    } else if (
+      ["cancelled", "canceled"].includes(st) ||
+      ["cancelled", "canceled"].includes(explicitClass) ||
+      explicitColor === "gray"
+    ) {
+      cssClass = "tx-status--cancelled";
+      fallbackLabel = L("Отменено", "Cancelled");
     }
 
-    if (st === "failed" || st === "cancelled" || st === "canceled") {
-      return `<span class="tx-status tx-status--failed">${escapeHtml(L("Ошибка", "Failed"))}</span>`;
-    }
-
-    return `<span class="tx-status tx-status--pending">${escapeHtml(L("В обработке", "Pending"))}</span>`;
+    return `<span class="tx-status ${cssClass}">${escapeHtml(explicitLabel || fallbackLabel)}</span>`;
   }
 
   function complianceStatusHtml(status) {
@@ -254,7 +279,7 @@
                 <div class="tx-col-center">${escapeHtml(row.amount_usdt ?? "—")}</div>
                 <div class="tx-col-center">${escapeHtml(row.shares ?? "—")}</div>
                 <div class="tx-col-center">${escapeHtml(row.price_usdt ?? "—")}</div>
-                <div class="tx-col-center">${tradingStatusHtml(row.status)}</div>
+                <div class="tx-col-center">${tradingStatusHtml(row)}</div>
                 <div class="tx-col-dt tx-col-center">${escapeHtml(row.created_at || "")}</div>
                 <div class="tx-col-dt tx-col-center">${escapeHtml(row.executed_at || "—")}</div>
               </div>

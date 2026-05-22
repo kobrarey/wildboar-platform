@@ -186,7 +186,33 @@
           <div class="term-tbody" data-terminal-trade-history-body>
             {% if trade_history and (trade_history|length) > 0 %}
               {% for r in trade_history %}
-                {% set st = (r.status|default('', true))|lower %}
+                {% set st_raw = (r.status|default('', true))|lower %}
+                {% set st_class_backend = r.status_class|default('', true) %}
+                {% if st_class_backend %}
+                  {% set st_class = st_class_backend %}
+                {% elif st_raw in ['success','completed','executed'] %}
+                  {% set st_class = 'success' %}
+                {% elif st_raw in ['failed','error','failed_requires_review'] %}
+                  {% set st_class = 'failed' %}
+                {% elif st_raw in ['cancelled','canceled'] %}
+                  {% set st_class = 'cancelled' %}
+                {% else %}
+                  {% set st_class = 'processing' %}
+                {% endif %}
+
+                {% set st_label_backend = r.status_label|default('', true) %}
+                {% if st_label_backend %}
+                  {% set st_label = st_label_backend %}
+                {% elif st_class == 'success' %}
+                  {% set st_label = 'Выполнено' if lang=='ru' else 'Completed' %}
+                {% elif st_class == 'failed' %}
+                  {% set st_label = 'Ошибка' if lang=='ru' else 'Failed' %}
+                {% elif st_class == 'cancelled' %}
+                  {% set st_label = 'Отменено' if lang=='ru' else 'Cancelled' %}
+                {% else %}
+                  {% set st_label = 'Обрабатывается' if lang=='ru' else 'Processing' %}
+                {% endif %}
+
                 <div class="term-tr term-tr--history">
                   <div class="t-name">{{ r.name|default('-', true) }}</div>
 
@@ -225,8 +251,8 @@
                   </div>
 
                   <div class="t-center">
-                    <span class="term-status term-status--{{ st if st in ['pending','processing','success','failed','cancelled'] else 'pending' }}">
-                      {{ r.status_label|default(r.status|default('-', true), true) }}
+                    <span class="term-status term-status--{{ st_class }}">
+                      {{ st_label }}
                     </span>
                   </div>
 
