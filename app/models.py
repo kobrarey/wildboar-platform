@@ -1,4 +1,4 @@
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from decimal import Decimal
 
 from sqlalchemy import (
@@ -550,10 +550,21 @@ class FundOrder(Base):
     price_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
 
     status: Mapped[str] = mapped_column(
-        String(16),
+        String(64),
         nullable=False,
         server_default=sa_text("'pending'"),
     )
+
+    settlement_batch_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_settlement_batches.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    reserved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    settlement_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    collection_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -561,6 +572,190 @@ class FundOrder(Base):
         server_default=func.now(),
     )
     executed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FundSettlementBatch(Base):
+    __tablename__ = "fund_settlement_batches"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    settlement_date: Mapped[date] = mapped_column(Date, nullable=False)
+    cutoff_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    settlement_ts: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    price_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    settlement_price_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    nav_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    shares_outstanding_before: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    total_buy_usdt: Mapped[Decimal] = mapped_column(
+        Numeric(30, 10),
+        nullable=False,
+        server_default=sa_text("0"),
+    )
+    total_redeem_shares: Mapped[Decimal] = mapped_column(
+        Numeric(30, 10),
+        nullable=False,
+        server_default=sa_text("0"),
+    )
+    total_redeem_usdt: Mapped[Decimal] = mapped_column(
+        Numeric(30, 10),
+        nullable=False,
+        server_default=sa_text("0"),
+    )
+    net_cash_usdt: Mapped[Decimal] = mapped_column(
+        Numeric(30, 10),
+        nullable=False,
+        server_default=sa_text("0"),
+    )
+
+    planned_shares_to_issue: Mapped[Decimal] = mapped_column(
+        Numeric(30, 10),
+        nullable=False,
+        server_default=sa_text("0"),
+    )
+    planned_shares_to_redeem: Mapped[Decimal] = mapped_column(
+        Numeric(30, 10),
+        nullable=False,
+        server_default=sa_text("0"),
+    )
+    planned_net_shares_change: Mapped[Decimal] = mapped_column(
+        Numeric(30, 10),
+        nullable=False,
+        server_default=sa_text("0"),
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=sa_text("'created'"),
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    pricing_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pricing_unlocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint("fund_id", "settlement_date", name="fund_settlement_batches_fund_date_uq"),
+    )
+
+
+class FundSettlementTransfer(Base):
+    __tablename__ = "fund_settlement_transfers"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    batch_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_settlement_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    order_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_orders.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    transfer_type: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    from_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    to_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    amount_usdt: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    amount_bnb: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+
+    gas_tx_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    tx_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
+
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=sa_text("'pending'"),
+    )
+    attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=sa_text("0"),
+    )
+
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class FundRuntimeState(Base):
+    __tablename__ = "fund_runtime_state"
+
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        primary_key=True,
+        nullable=False,
+    )
+
+    pricing_locked: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=sa_text("FALSE"),
+    )
+    pricing_lock_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    pricing_lock_batch_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_settlement_batches.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    pricing_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    pricing_unlocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
 
 
 class UserFundPosition(Base):

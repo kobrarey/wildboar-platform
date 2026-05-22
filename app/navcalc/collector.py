@@ -17,6 +17,7 @@ from app.navcalc.minute_builder import minute_floor, open_new_minute_state, upda
 from app.navcalc.nav_guard import evaluate_and_record_nav_guard, mark_nav_guard_accepted
 from app.navcalc.portfolio_nav import compute_nav
 from app.navcalc.schemas import FundNavConfig, MinuteState
+from app.settlement.pricing_lock import is_pricing_locked
 
 
 log = logging.getLogger("navcalc.collector")
@@ -146,6 +147,20 @@ def run_collector_forever(
                     guard_decision.compensation_ratio,
                     guard_decision.reason,
                 )
+
+            with SessionLocal() as db:
+                if is_pricing_locked(db, fund_id=fund_id):
+                    log.info(
+                        "Pricing locked; NAV/chart write skipped fund=%s fund_id=%s "
+                        "sample_ts=%s sample_minute=%s nav=%s",
+                        cfg.fund_code,
+                        fund_id,
+                        sample_ts.isoformat(),
+                        sample_minute.isoformat(),
+                        sample_nav,
+                    )
+                    next_tick += poll_interval
+                    continue
 
             if current_state is None:
                 current_state = open_new_minute_state(

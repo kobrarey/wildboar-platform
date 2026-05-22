@@ -120,5 +120,18 @@ class Settings(BaseSettings):
     BYBIT_NAV_EQUITY_TOL_PCT: Decimal = Decimal("0.5")
     NAV_POLL_INTERVAL_SEC: int = 10
 
+    # --- stage 21: settlement ---
+    SETTLEMENT_ENABLED: bool = False
+    SETTLEMENT_CUTOFF_HOUR_UTC: int = 23
+    SETTLEMENT_CUTOFF_MINUTE_UTC: int = 59
+    SETTLEMENT_RUN_HOUR_UTC: int = 0
+    SETTLEMENT_RUN_MINUTE_UTC: int = 0
+    SETTLEMENT_PRICE_MAX_AGE_SEC: int = 300
+
+    SETTLEMENT_WALLET_TARGET_BNB_USD: Decimal = Decimal("100")
+    SETTLEMENT_WALLET_MIN_GAS_BUFFER_MULT: Decimal = Decimal("1.20")
+    SETTLEMENT_GAS_TOPUP_RETRY_HOUR_UTC: int = 23
+    SETTLEMENT_GAS_TOPUP_RETRY_MINUTE_UTC: int = 50
+
 
 settings = Settings()
