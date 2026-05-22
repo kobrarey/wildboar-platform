@@ -74,28 +74,52 @@ def _side_label(side: str | None, lang: str) -> str:
 def _status_meta(status: str | None, lang: str) -> tuple[str, str, str]:
     raw = (status or "").strip().lower()
 
-    if raw in {"pending", "processing"}:
+    processing_statuses = {
+        "pending",
+        "processing",
+        "settling",
+        "buy_collecting",
+        "buy_collected",
+        "awaiting_positive_net_execution",
+        "awaiting_negative_net_execution",
+    }
+
+    failed_statuses = {
+        "failed",
+        "failed_requires_review",
+    }
+
+    success_statuses = {
+        "success",
+    }
+
+    cancelled_statuses = {
+        "cancelled",
+        "canceled",
+    }
+
+    if raw in processing_statuses:
         return (
             "Processing" if lang == "en" else "Обрабатывается",
             "orange",
             "tx-status--pending",
         )
 
-    if raw == "success":
+    if raw in success_statuses:
         return (
             "Completed" if lang == "en" else "Выполнено",
             "green",
             "tx-status--success",
         )
 
-    if raw == "failed":
+    if raw in failed_statuses:
         return (
             "Failed" if lang == "en" else "Ошибка",
             "red",
             "tx-status--failed",
         )
 
-    if raw == "cancelled":
+    if raw in cancelled_statuses:
         return (
             "Cancelled" if lang == "en" else "Отменено",
             "gray",
@@ -103,7 +127,7 @@ def _status_meta(status: str | None, lang: str) -> tuple[str, str, str]:
         )
 
     return (
-        raw or ("Processing" if lang == "en" else "Обрабатывается"),
+        "Processing" if lang == "en" else "Обрабатывается",
         "orange",
         "tx-status--pending",
     )
