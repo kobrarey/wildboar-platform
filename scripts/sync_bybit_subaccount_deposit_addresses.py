@@ -14,10 +14,10 @@ from sqlalchemy.orm import Session
 
 from app.bybit.client import BybitApiError, BybitV5Client
 from app.bybit.deposit_addresses import (
+    BybitChainInfo,
     BybitDepositAddress,
     BybitSubMember,
     query_coin_chains,
-    query_sub_member_deposit_address,
     query_sub_members,
     validate_chain_deposit_enabled,
 )
@@ -63,6 +63,12 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--list-subaccounts",
+        action="store_true",
+        help="List Bybit subaccounts and exit without writing to DB.",
+    )
+
+    parser.add_argument(
         "--coin",
         default="USDT",
         help="Coin to sync. Default: USDT.",
@@ -70,8 +76,9 @@ def parse_args() -> argparse.Namespace:
 
     parser.add_argument(
         "--chain-type",
-        required=True,
-        help="Bybit chainType to sync, for example BSC.",
+        required=False,
+        default=None,
+        help="Bybit chainType to sync, for example BSC. Required unless --list-subaccounts is used.",
     )
 
     parser.add_argument(
@@ -97,6 +104,13 @@ def parse_args() -> argparse.Namespace:
         "--base-url",
         default="https://api.bybit.com",
         help="Bybit API base URL. Default: https://api.bybit.com",
+    )
+
+    parser.add_argument(
+        "--recv-window-ms",
+        type=int,
+        default=30000,
+        help="Bybit recv_window in milliseconds. Default: 30000.",
     )
 
     parser.add_argument(
@@ -303,6 +317,230 @@ def validate_mapping_subaccounts(
     return out
 
 
+def _unique_nonempty(values: list[str | None]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+
+    for value in values:
+        item = (value or "").strip()
+        if not item:
+            continue
+
+        key = item.lower()
+        if key in seen:
+            continue
+
+        seen.add(key)
+        out.append(item)
+
+    return out
+
+
+def _extract_deposit_address_from_result(
+    *,
+    result: dict,
+    sub_uid: str,
+    coin: str,
+    requested_chain_type: str,
+    accepted_chain_values: list[str],
+) -> BybitDepositAddress | None:
+    candidates: list[dict] = []
+
+    if isinstance(result.get("chains"), list):
+        candidates.extend(result.get("chains") or [])
+    elif isinstance(result.get("chains"), dict):
+        candidates.append(result.get("chains"))
+
+    if isinstance(result.get("rows"), list):
+        candidates.extend(result.get("rows") or [])
+
+    if isinstance(result.get("data"), list):
+        candidates.extend(result.get("data") or [])
+
+    if any(
+        key in result
+        for key in ["addressDeposit", "depositAddress", "address"]
+    ):
+        candidates.append(result)
+
+    requested = requested_chain_type.strip()
+    requested_lower = requested.lower()
+
+    accepted = {
+        x.strip().lower()
+        for x in accepted_chain_values
+        if x and x.strip()
+    }
+
+    for item in candidates:
+        chain = str(item.get("chain") or "").strip()
+        raw_chain_type = str(
+            item.get("chainType")
+            or item.get("chain_type")
+            or item.get("chain_type_name")
+            or ""
+        ).strip()
+
+        chain_lower = chain.lower()
+        raw_chain_type_lower = raw_chain_type.lower()
+
+        chain_ok = (
+            not accepted
+            or chain_lower in accepted
+            or raw_chain_type_lower in accepted
+            or chain_lower == requested_lower
+            or raw_chain_type_lower == requested_lower
+            or raw_chain_type_lower.startswith(requested_lower)
+            or requested_lower in raw_chain_type_lower
+        )
+
+        if not chain_ok:
+            continue
+
+        address = str(
+            item.get("addressDeposit")
+            or item.get("depositAddress")
+            or item.get("address")
+            or ""
+        ).strip()
+
+        if not address:
+            continue
+
+        tag = (
+            item.get("tagDeposit")
+            or item.get("depositTag")
+            or item.get("tag")
+            or item.get("memo")
+            or None
+        )
+
+        return BybitDepositAddress(
+            sub_uid=str(sub_uid),
+            coin=coin.strip().upper(),
+            chain=chain or None,
+            # Store our canonical chain_type for later DB lookup by chain_type='BSC'.
+            chain_type=requested,
+            address_deposit=address,
+            tag_deposit=tag,
+        )
+
+    return None
+
+
+def query_sub_member_deposit_address_with_chain_fallback(
+    client: BybitV5Client,
+    *,
+    sub_uid: str,
+    coin: str,
+    requested_chain_type: str,
+    chain_info: BybitChainInfo,
+) -> BybitDepositAddress:
+    coin_norm = coin.strip().upper()
+    requested = requested_chain_type.strip()
+
+    params_variants = [
+        {
+            "subMemberId": str(sub_uid),
+            "coin": coin_norm,
+        },
+        {
+            "subMemberId": str(sub_uid),
+            "coin": coin_norm,
+            "chainType": requested,
+        },
+    ]
+
+    errors: list[str] = []
+
+    for params in params_variants:
+        label = params.get("chainType") or "WITHOUT chainType"
+        print(f"Try deposit address sub_uid={sub_uid} chainType={label}...")
+
+        try:
+            data = client.get(
+                "/v5/asset/deposit/query-sub-member-address",
+                params,
+            )
+        except BybitApiError as exc:
+            errors.append(f"{label}: {exc}")
+            continue
+
+        result = data.get("result", {}) or {}
+
+        items: list[dict] = []
+
+        chains = result.get("chains")
+        if isinstance(chains, list):
+            items.extend(chains)
+        elif isinstance(chains, dict):
+            items.append(chains)
+
+        if isinstance(result.get("rows"), list):
+            items.extend(result.get("rows") or [])
+
+        if isinstance(result.get("data"), list):
+            items.extend(result.get("data") or [])
+
+        if any(
+            key in result
+            for key in ["addressDeposit", "depositAddress", "address"]
+        ):
+            items.append(result)
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+
+            address = str(item.get("addressDeposit") or "").strip()
+            if not address:
+                address = str(item.get("depositAddress") or "").strip()
+            if not address:
+                address = str(item.get("address") or "").strip()
+
+            if not address:
+                continue
+
+            returned_chain = str(item.get("chain") or "").strip()
+            returned_chain_type = str(item.get("chainType") or "").strip()
+
+            # Bybit returns chainType like "BSC (BEP20)", while our canonical local value is "BSC".
+            chain_ok = (
+                returned_chain == requested
+                or returned_chain_type == requested
+                or returned_chain_type.startswith(requested)
+                or requested in returned_chain_type
+                or returned_chain == (chain_info.chain or "")
+            )
+
+            if not chain_ok:
+                continue
+
+            return BybitDepositAddress(
+                sub_uid=str(sub_uid),
+                coin=coin_norm,
+                chain=returned_chain or chain_info.chain,
+                chain_type=requested,
+                address_deposit=address,
+                tag_deposit=(
+                    item.get("tagDeposit")
+                    or item.get("depositTag")
+                    or item.get("tag")
+                    or item.get("memo")
+                    or None
+                ),
+            )
+
+        errors.append(
+            f"{label}: no addressDeposit found in result={json.dumps(result, ensure_ascii=False)[:1500]}"
+        )
+
+    raise SyncConfigError(
+        f"Deposit address query failed for sub_uid={sub_uid}. "
+        f"Errors: {' | '.join(errors)}"
+    )
+
+
 def get_funds_by_code(db: Session) -> dict[str, Fund]:
     rows = db.query(Fund).filter(Fund.code.in_(sorted(SUPPORTED_FUNDS))).all()
     out = {row.code: row for row in rows}
@@ -451,19 +689,13 @@ def sync_deposit_addresses(
 
                 print(f"Query deposit address fund={fund_code} sub_uid={sub_uid}...")
 
-                address = query_sub_member_deposit_address(
+                address = query_sub_member_deposit_address_with_chain_fallback(
                     client,
                     sub_uid=sub_uid,
                     coin=coin_norm,
-                    chain_type=chain_type_norm,
+                    requested_chain_type=chain_type_norm,
+                    chain_info=chain_info,
                 )
-
-                if address.chain_type != chain_type_norm and address.chain != chain_type_norm:
-                    raise SyncConfigError(
-                        f"chainType mismatch for fund={fund_code}: "
-                        f"requested={chain_type_norm}, returned_chain_type={address.chain_type}, "
-                        f"returned_chain={address.chain}"
-                    )
 
                 upsert_fund_bybit_account(
                     db,
@@ -496,15 +728,40 @@ def sync_deposit_addresses(
     return rows
 
 
+def list_subaccounts(*, client: BybitV5Client) -> list[BybitSubMember]:
+    print("Query Bybit subaccounts...")
+    return query_sub_members(client)
+
+
+def print_subaccounts(sub_members: list[BybitSubMember]) -> None:
+    print("")
+    print("Bybit subaccounts:")
+    print("uid | username | remark | status | member_type | account_type | account_mode")
+
+    for item in sub_members:
+        print(
+            f"{item.uid} | "
+            f"{item.username or ''} | "
+            f"{item.remark or ''} | "
+            f"{item.status if item.status is not None else ''} | "
+            f"{item.member_type or ''} | "
+            f"{item.account_type or ''} | "
+            f"{item.account_mode or ''}"
+        )
+
+    print("")
+    print("Delete temporary BYBIT_MASTER_API_KEY / BYBIT_MASTER_API_SECRET now.")
+
+
 def print_summary(rows: list[SyncRow]) -> None:
     print("")
     print("Bybit subaccount deposit address sync summary:")
-    print("fund_code | sub_uid | chain_type | deposit_address | status")
+    print("fund_code | sub_uid | chain | chain_type | deposit_address | tag | status")
 
     for row in rows:
         print(
-            f"{row.fund_code} | {row.sub_uid} | {row.chain_type} | "
-            f"{row.deposit_address} | {row.status}"
+            f"{row.fund_code} | {row.sub_uid} | {row.chain or ''} | {row.chain_type} | "
+            f"{row.deposit_address} | {row.deposit_tag or ''} | {row.status}"
         )
 
     print("")
@@ -517,14 +774,24 @@ def main() -> int:
     args = parse_args()
 
     try:
-        mapping = load_mapping(args)
+        if not args.list_subaccounts and not args.chain_type:
+            raise SyncConfigError("--chain-type is required unless --list-subaccounts is used")
+
         api_key, api_secret = get_master_credentials(args)
 
         client = BybitV5Client(
             api_key=api_key,
             api_secret=api_secret,
             base_url=args.base_url,
+            recv_window_ms=args.recv_window_ms,
         )
+
+        if args.list_subaccounts:
+            sub_members = list_subaccounts(client=client)
+            print_subaccounts(sub_members)
+            return 0
+
+        mapping = load_mapping(args)
 
         rows = sync_deposit_addresses(
             client=client,

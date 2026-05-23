@@ -77,22 +77,22 @@ class BybitV5Client:
             clean_params[key] = value
 
         query_string = urlencode(clean_params)
-        timestamp = self._timestamp_ms()
-        signature = self._sign_get(timestamp=timestamp, query_string=query_string)
-
         url = f"{self.base_url}{path}"
-        headers = self._headers(timestamp=timestamp, signature=signature)
 
         last_error: Exception | None = None
 
         for attempt in range(self.retries + 1):
             try:
-                # Do not log API secret or request signature.
+                timestamp = self._timestamp_ms()
+                signature = self._sign_get(timestamp=timestamp, query_string=query_string)
+                headers = self._headers(timestamp=timestamp, signature=signature)
+
                 log.debug(
-                    "Bybit GET request path=%s params_keys=%s attempt=%s",
+                    "Bybit GET request path=%s params_keys=%s attempt=%s recv_window_ms=%s",
                     path,
                     sorted(clean_params.keys()),
                     attempt + 1,
+                    self.recv_window_ms,
                 )
 
                 resp = requests.get(

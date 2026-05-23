@@ -12,6 +12,9 @@ class BybitSubMember:
     username: str | None = None
     status: int | None = None
     remark: str | None = None
+    member_type: str | None = None
+    account_type: str | None = None
+    account_mode: str | None = None
 
 
 @dataclass(frozen=True)
@@ -45,9 +48,12 @@ def query_sub_members(client: BybitV5Client) -> list[BybitSubMember]:
         out.append(
             BybitSubMember(
                 uid=uid,
-                username=(item.get("username") or item.get("remark") or None),
+                username=(item.get("username") or None),
                 status=item.get("status"),
-                remark=item.get("remark"),
+                remark=(item.get("remark") or None),
+                member_type=(item.get("memberType") or None),
+                account_type=(item.get("accountType") or None),
+                account_mode=(item.get("accountMode") or None),
             )
         )
 
