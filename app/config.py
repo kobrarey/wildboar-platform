@@ -133,6 +133,12 @@ class Settings(BaseSettings):
     SETTLEMENT_GAS_TOPUP_RETRY_HOUR_UTC: int = 23
     SETTLEMENT_GAS_TOPUP_RETRY_MINUTE_UTC: int = 50
 
+    # --- stage 22.1: positive net settlement ---
+    POSITIVE_NET_SETTLEMENT_ENABLED: bool = False
+    POSITIVE_NET_DEPOSIT_CONFIRM_TIMEOUT_SEC: int = 3600
+    POSITIVE_NET_DEPOSIT_POLL_INTERVAL_SEC: int = 30
+    POSITIVE_NET_DUST_TOLERANCE_USDT: Decimal = Decimal("0.01")
+
     # --- stage 22.0: temporary Bybit master sync ---
     BYBIT_MASTER_RECV_WINDOW_MS: int = 5000
     BYBIT_MASTER_HTTP_TIMEOUT_SEC: int = 20

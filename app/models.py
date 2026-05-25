@@ -685,6 +685,18 @@ class FundSettlementBatch(Base):
     )
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
+    positive_net_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    seller_payouts_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    bybit_deposit_tx_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    bybit_deposit_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    bybit_deposit_account_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    bybit_internal_transfer_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    bybit_internal_transfer_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    accounting_finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
     pricing_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     pricing_unlocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
