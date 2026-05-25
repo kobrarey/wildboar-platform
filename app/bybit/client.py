@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import logging
 import time
 from decimal import Decimal
@@ -50,6 +51,14 @@ class BybitV5Client:
 
     def _sign_get(self, *, timestamp: str, query_string: str) -> str:
         payload = f"{timestamp}{self.api_key}{self.recv_window_ms}{query_string}"
+        return hmac.new(
+            self.api_secret.encode("utf-8"),
+            payload.encode("utf-8"),
+            hashlib.sha256,
+        ).hexdigest()
+
+    def _sign_post(self, *, timestamp: str, body: str) -> str:
+        payload = f"{timestamp}{self.api_key}{self.recv_window_ms}{body}"
         return hmac.new(
             self.api_secret.encode("utf-8"),
             payload.encode("utf-8"),
@@ -121,3 +130,64 @@ class BybitV5Client:
                 time.sleep(sleep_sec)
 
         raise BybitApiError(f"Bybit GET failed path={path}: {last_error}")
+
+    def post(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        if not path.startswith("/"):
+            raise ValueError("Bybit path must start with '/'")
+
+        clean_payload: dict[str, Any] = {}
+        for key, value in (payload or {}).items():
+            if value is None:
+                continue
+            clean_payload[key] = value
+
+        body = json.dumps(
+            clean_payload,
+            separators=(",", ":"),
+            ensure_ascii=False,
+        )
+
+        url = f"{self.base_url}{path}"
+
+        last_error: Exception | None = None
+
+        for attempt in range(self.retries + 1):
+            try:
+                timestamp = self._timestamp_ms()
+                signature = self._sign_post(timestamp=timestamp, body=body)
+                headers = self._headers(timestamp=timestamp, signature=signature)
+
+                log.debug(
+                    "Bybit POST request path=%s payload_keys=%s attempt=%s recv_window_ms=%s",
+                    path,
+                    sorted(clean_payload.keys()),
+                    attempt + 1,
+                    self.recv_window_ms,
+                )
+
+                resp = requests.post(
+                    url,
+                    data=body,
+                    headers=headers,
+                    timeout=self.timeout_sec,
+                )
+                resp.raise_for_status()
+
+                data = resp.json()
+                ret_code = data.get("retCode")
+                if ret_code != 0:
+                    raise BybitApiError(
+                        f"Bybit API error path={path} retCode={ret_code} retMsg={data.get('retMsg')}"
+                    )
+
+                return data
+
+            except Exception as exc:
+                last_error = exc
+                if attempt >= self.retries:
+                    break
+
+                sleep_sec = float(self.backoff_sec * Decimal(attempt + 1))
+                time.sleep(sleep_sec)
+
+        raise BybitApiError(f"Bybit POST failed path={path}: {last_error}")

@@ -139,8 +139,8 @@ class Settings(BaseSettings):
     POSITIVE_NET_DEPOSIT_POLL_INTERVAL_SEC: int = 30
     POSITIVE_NET_DUST_TOLERANCE_USDT: Decimal = Decimal("0.01")
 
-    # --- stage 22.0: temporary Bybit master sync ---
-    BYBIT_MASTER_RECV_WINDOW_MS: int = 5000
+    # --- Bybit master API runtime settings ---
+    BYBIT_MASTER_RECV_WINDOW_MS: int = 30000
     BYBIT_MASTER_HTTP_TIMEOUT_SEC: int = 20
     BYBIT_MASTER_RETRIES: int = 3
     BYBIT_MASTER_BACKOFF_SEC: Decimal = Decimal("0.8")

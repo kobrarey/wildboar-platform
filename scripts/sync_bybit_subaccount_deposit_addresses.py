@@ -116,19 +116,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--api-key-env",
         default="BYBIT_MASTER_API_KEY",
-        help="Temporary env var name for master API key.",
+        help="Env var name for restricted master API key.",
     )
 
     parser.add_argument(
         "--api-secret-env",
         default="BYBIT_MASTER_API_SECRET",
-        help="Temporary env var name for master API secret.",
+        help="Env var name for restricted master API secret.",
     )
 
     parser.add_argument(
         "--no-prompt",
         action="store_true",
-        help="Do not ask interactively for API credentials; require temporary env vars.",
+        help="Do not ask interactively for API credentials; require restricted master API credentials from env vars.",
     )
 
     return parser.parse_args()
@@ -269,9 +269,9 @@ def get_master_credentials(args: argparse.Namespace) -> tuple[str, str]:
         if not api_secret:
             missing.append(args.api_secret_env)
         raise SyncConfigError(
-            "Missing temporary env var(s): "
+            "Missing restricted master API env var(s): "
             + ", ".join(missing)
-            + ". Do not store master API credentials permanently."
+            + ". Use a restricted master API key; do not commit real credentials."
         )
 
     if not api_key:
@@ -750,7 +750,7 @@ def print_subaccounts(sub_members: list[BybitSubMember]) -> None:
         )
 
     print("")
-    print("Delete temporary BYBIT_MASTER_API_KEY / BYBIT_MASTER_API_SECRET now.")
+    print("If these credentials were set temporarily for sync, delete them from this shell now.")
 
 
 def print_summary(rows: list[SyncRow]) -> None:
@@ -765,7 +765,7 @@ def print_summary(rows: list[SyncRow]) -> None:
         )
 
     print("")
-    print("Delete temporary BYBIT_MASTER_API_KEY / BYBIT_MASTER_API_SECRET now.")
+    print("If these credentials were set temporarily for sync, delete them from this shell now.")
 
 
 def main() -> int:
@@ -804,7 +804,7 @@ def main() -> int:
         print("")
         print(f"Sync failed: {exc}")
         print("")
-        print("Delete temporary BYBIT_MASTER_API_KEY / BYBIT_MASTER_API_SECRET now.")
+        print("If these credentials were set temporarily for sync, delete them from this shell now.")
         return 1
 
     print_summary(rows)

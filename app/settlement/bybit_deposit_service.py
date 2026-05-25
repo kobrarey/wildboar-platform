@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -72,6 +73,14 @@ class BybitDepositRecord:
     status: str | None
     success_at: str | None
     account_type: str | None
+    raw: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class BybitInternalTransferResult:
+    transfer_id: str
+    status: str
+    completed: bool
     raw: dict[str, Any]
 
 
@@ -431,6 +440,8 @@ def send_or_confirm_positive_net_transfer(
             )
 
         if mock_confirm:
+            mock_tx_hash = f"mock_positive_net_tx_{batch.id}"
+
             row = _create_or_update_positive_net_transfer(
                 db,
                 existing=existing,
@@ -439,7 +450,7 @@ def send_or_confirm_positive_net_transfer(
                 to_address=destination.deposit_address,
                 amount_usdt=amount_usdt,
                 status=TRANSFER_STATUS_CONFIRMED,
-                tx_hash="mock_positive_net_tx",
+                tx_hash=mock_tx_hash,
                 error=None,
             )
 
@@ -525,6 +536,42 @@ def _extract_deposit_records(payload: dict[str, Any]) -> list[dict[str, Any]]:
     return []
 
 
+def query_bybit_sub_member_deposit_records(
+    client: BybitV5Client,
+    *,
+    sub_member_id: str,
+    coin: str = "USDT",
+    tx_hash: str | None = None,
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    params: dict[str, Any] = {
+        "subMemberId": str(sub_member_id),
+        "coin": coin,
+        "limit": limit,
+    }
+
+    if tx_hash:
+        params["txID"] = tx_hash
+
+    try:
+        payload = client.get("/v5/asset/deposit/query-sub-member-record", params)
+        return _extract_deposit_records(payload)
+    except BybitApiError:
+        if not tx_hash:
+            raise
+
+    # Fallback without txID: some Bybit endpoints ignore/reject exact txID filter.
+    payload = client.get(
+        "/v5/asset/deposit/query-sub-member-record",
+        {
+            "subMemberId": str(sub_member_id),
+            "coin": coin,
+            "limit": limit,
+        },
+    )
+    return _extract_deposit_records(payload)
+
+
 def query_bybit_deposit_records(
     client: BybitV5Client,
     *,
@@ -532,14 +579,16 @@ def query_bybit_deposit_records(
     tx_hash: str | None = None,
     limit: int = 50,
 ) -> list[dict[str, Any]]:
+    """
+    Master-account fallback only. Positive-net fund settlement must use
+    query_bybit_sub_member_deposit_records(...).
+    """
     params: dict[str, Any] = {
         "coin": coin,
         "limit": limit,
     }
 
     if tx_hash:
-        # Bybit V5 docs/fields have varied naming across asset endpoints.
-        # First try txID; fallback search below also scans returned rows.
         params["txID"] = tx_hash
 
     try:
@@ -549,7 +598,6 @@ def query_bybit_deposit_records(
         if not tx_hash:
             raise
 
-    # Fallback without txID if endpoint rejects or ignores txID filter.
     payload = client.get(
         "/v5/asset/deposit/query-record",
         {
@@ -625,6 +673,16 @@ def _record_account_type(record: dict[str, Any]) -> str | None:
     return str(value) if value is not None else None
 
 
+def _record_to_address(record: dict[str, Any]) -> str | None:
+    value = (
+        record.get("toAddress")
+        or record.get("address")
+        or record.get("depositAddress")
+        or record.get("addressDeposit")
+    )
+    return str(value).strip() if value else None
+
+
 def find_matching_deposit_record(
     *,
     records: list[dict[str, Any]],
@@ -633,6 +691,7 @@ def find_matching_deposit_record(
     dust_tolerance: Decimal,
     coin: str = "USDT",
     chain_type: str = "BSC",
+    expected_to_address: str | None = None,
 ) -> BybitDepositRecord | None:
     target_tx = tx_hash.lower()
     coin_norm = coin.strip().upper()
@@ -651,6 +710,11 @@ def find_matching_deposit_record(
             chain_norm in value.lower() for value in chain_values
         ):
             continue
+
+        record_to_address = _record_to_address(record)
+        if expected_to_address and record_to_address:
+            if record_to_address.lower() != expected_to_address.lower():
+                continue
 
         amount = _record_amount(record)
         if amount + dust_tolerance < expected_amount:
@@ -749,8 +813,9 @@ def confirm_bybit_deposit_for_batch(
         chain_type="BSC",
     )
 
-    records = query_bybit_deposit_records(
+    records = query_bybit_sub_member_deposit_records(
         client,
+        sub_member_id=destination.bybit_sub_uid,
         coin="USDT",
         tx_hash=tx_hash,
     )
@@ -762,6 +827,7 @@ def confirm_bybit_deposit_for_batch(
         dust_tolerance=Decimal(settings.POSITIVE_NET_DUST_TOLERANCE_USDT),
         coin="USDT",
         chain_type=destination.chain_type,
+        expected_to_address=destination.deposit_address,
     )
 
     if record is None:
@@ -779,3 +845,159 @@ def confirm_bybit_deposit_for_batch(
     db.add(batch)
     db.flush()
     return True
+
+
+def deterministic_internal_transfer_id(
+    *,
+    batch_id: int,
+    fund_id: int,
+) -> str:
+    return str(
+        uuid.uuid5(
+            uuid.NAMESPACE_URL,
+            f"positive-net-fund-to-unified:{batch_id}:{fund_id}",
+        )
+    )
+
+
+def _parse_internal_transfer_status(payload: dict[str, Any]) -> str:
+    result = payload.get("result", {}) or {}
+
+    raw = (
+        result.get("status")
+        or result.get("transferStatus")
+        or payload.get("status")
+        or "SUCCESS"
+    )
+
+    return str(raw).strip().upper()
+
+
+def execute_fund_to_unified_internal_transfer(
+    client: BybitV5Client,
+    *,
+    transfer_id: str,
+    amount_usdt: Decimal,
+) -> BybitInternalTransferResult:
+    if amount_usdt <= 0:
+        return BybitInternalTransferResult(
+            transfer_id=transfer_id,
+            status="SKIPPED_ZERO_AMOUNT",
+            completed=True,
+            raw={},
+        )
+
+    payload = {
+        "transferId": transfer_id,
+        "coin": "USDT",
+        "amount": str(amount_usdt),
+        "fromAccountType": "FUND",
+        "toAccountType": "UNIFIED",
+    }
+
+    response = client.post("/v5/asset/transfer/inter-transfer", payload)
+    status = _parse_internal_transfer_status(response)
+
+    if status in {"SUCCESS", "SUCCEEDED"}:
+        return BybitInternalTransferResult(
+            transfer_id=transfer_id,
+            status=status,
+            completed=True,
+            raw=response,
+        )
+
+    if status in {"PENDING", "STATUS_UNKNOWN", "UNKNOWN"}:
+        return BybitInternalTransferResult(
+            transfer_id=transfer_id,
+            status=status,
+            completed=False,
+            raw=response,
+        )
+
+    raise BybitDepositSettlementError(
+        f"Bybit FUND -> UNIFIED internal transfer failed: "
+        f"transferId={transfer_id} status={status} response={response}"
+    )
+
+
+def ensure_fund_to_unified_internal_transfer(
+    db: Session,
+    *,
+    batch_id: int,
+    client: BybitV5Client | None,
+    dry_run: bool = False,
+    mock_confirm: bool = False,
+) -> bool:
+    batch = _get_batch_for_update(db, batch_id=batch_id)
+
+    amount_usdt = _dec(batch.net_cash_usdt)
+    now = utcnow()
+
+    if amount_usdt == 0:
+        batch.bybit_internal_transfer_id = batch.bybit_internal_transfer_id or "skipped_zero_net"
+        batch.bybit_internal_transfer_completed_at = batch.bybit_internal_transfer_completed_at or now
+        batch.updated_at = now
+        db.add(batch)
+        db.flush()
+        return True
+
+    if batch.bybit_internal_transfer_completed_at is not None:
+        return True
+
+    account_type = (batch.bybit_deposit_account_type or "").strip().lower()
+
+    if account_type in {"unified", "unifiedtrading", "uta"}:
+        batch.bybit_internal_transfer_id = batch.bybit_internal_transfer_id or f"skipped_{account_type}"
+        batch.bybit_internal_transfer_completed_at = now
+        batch.updated_at = now
+        db.add(batch)
+        db.flush()
+        return True
+
+    # Real-mode rule:
+    # FUND or unknown account type requires FUND -> UNIFIED transfer before accounting.
+    transfer_id = batch.bybit_internal_transfer_id or deterministic_internal_transfer_id(
+        batch_id=batch.id,
+        fund_id=batch.fund_id,
+    )
+    batch.bybit_internal_transfer_id = transfer_id
+    db.add(batch)
+    db.flush()
+
+    if dry_run:
+        batch.status = BATCH_STATUS_PENDING_CONFIRMATION
+        batch.updated_at = now
+        db.add(batch)
+        db.flush()
+        return False
+
+    if mock_confirm:
+        batch.bybit_internal_transfer_completed_at = now
+        batch.updated_at = now
+        db.add(batch)
+        db.flush()
+        return True
+
+    if client is None:
+        raise BybitDepositSettlementError(
+            "Bybit client is required for real FUND -> UNIFIED internal transfer"
+        )
+
+    result = execute_fund_to_unified_internal_transfer(
+        client,
+        transfer_id=transfer_id,
+        amount_usdt=amount_usdt,
+    )
+
+    if result.completed:
+        batch.bybit_internal_transfer_completed_at = now
+        batch.updated_at = now
+        db.add(batch)
+        db.flush()
+        return True
+
+    batch.status = BATCH_STATUS_PENDING_CONFIRMATION
+    batch.updated_at = now
+    db.add(batch)
+    db.flush()
+    return False

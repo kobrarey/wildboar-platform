@@ -469,6 +469,8 @@ def process_seller_payouts_for_batch(
                 continue
 
             if mock_confirm:
+                mock_tx_hash = f"mock_seller_payout_tx_{batch.id}_{order.id}"
+
                 _create_or_update_payout_transfer(
                     db,
                     existing=existing,
@@ -478,7 +480,7 @@ def process_seller_payouts_for_batch(
                     to_address=user_wallet.address,
                     amount_usdt=redeem_usdt,
                     status=TRANSFER_STATUS_CONFIRMED,
-                    tx_hash="mock_seller_payout_tx",
+                    tx_hash=mock_tx_hash,
                     error=None,
                 )
                 confirmed_count += 1

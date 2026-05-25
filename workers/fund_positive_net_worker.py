@@ -126,7 +126,10 @@ def _build_bybit_client_if_needed(
     if not api_key or not api_secret:
         raise RuntimeError(
             "BYBIT_MASTER_API_KEY / BYBIT_MASTER_API_SECRET are required for real "
-            "Bybit deposit confirmation. For local checks use --dry-run --mock-chain --mock-bybit."
+            "positive-net settlement runtime: subaccount deposit record confirmation "
+            "and, if needed, FUND -> UNIFIED internal transfer. Use a separate restricted "
+            "master API key with server IP whitelist. For local checks use "
+            "--dry-run --mock-chain --mock-bybit."
         )
 
     return BybitV5Client(

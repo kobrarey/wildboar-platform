@@ -18,6 +18,7 @@ from app.settlement.accounting_service import (
 from app.settlement.bybit_deposit_service import (
     BybitDepositSettlementError,
     confirm_bybit_deposit_for_batch,
+    ensure_fund_to_unified_internal_transfer,
     send_or_confirm_positive_net_transfer,
 )
 from app.settlement.payout_service import (
@@ -200,52 +201,27 @@ def _internal_transfer_ready_or_skipped(
     db: Session,
     *,
     batch: FundSettlementBatch,
+    bybit_client: BybitV5Client | None,
     dry_run: bool,
     mock_bybit: bool,
 ) -> bool:
     """
-    Stage 22.1 guard.
+    Stage 22.1.1 real internal-transfer guard.
 
-    If Bybit deposit lands directly in UNIFIED / mock / zero-net, no internal transfer is needed.
-    If deposit lands in FUND, real FUND -> UNIFIED transfer must be implemented before accounting.
+    Accounting is allowed only after:
+    - zero-net safe skip; or
+    - deposit already landed in UNIFIED/UTA; or
+    - real/mock FUND -> UNIFIED internal transfer completed.
+
+    Unknown account type is NOT a safe skip in real mode.
     """
-    now = utcnow()
-    account_type = (batch.bybit_deposit_account_type or "").strip().lower()
-
-    if _dec(batch.net_cash_usdt) == 0:
-        if batch.bybit_internal_transfer_completed_at is None:
-            batch.bybit_internal_transfer_id = batch.bybit_internal_transfer_id or "skipped_zero_net"
-            batch.bybit_internal_transfer_completed_at = now
-            batch.updated_at = now
-            db.add(batch)
-            db.flush()
-        return True
-
-    if batch.bybit_internal_transfer_completed_at is not None:
-        return True
-
-    if account_type in {"", "unified", "unifiedtrading", "uta", "spot", "mock_confirmed"}:
-        batch.bybit_internal_transfer_id = batch.bybit_internal_transfer_id or (
-            "skipped_" + (account_type or "account_type_not_returned")
-        )
-        batch.bybit_internal_transfer_completed_at = now
-        batch.updated_at = now
-        db.add(batch)
-        db.flush()
-        return True
-
-    if account_type == "fund":
-        if dry_run or mock_bybit:
-            batch.bybit_internal_transfer_id = batch.bybit_internal_transfer_id or "mock_fund_to_unified_completed"
-            batch.bybit_internal_transfer_completed_at = now
-            batch.updated_at = now
-            db.add(batch)
-            db.flush()
-            return True
-
-        return False
-
-    return False
+    return ensure_fund_to_unified_internal_transfer(
+        db,
+        batch_id=batch.id,
+        client=bybit_client,
+        dry_run=dry_run,
+        mock_confirm=mock_bybit,
+    )
 
 
 def _mark_failed_requires_review(
@@ -323,14 +299,18 @@ def process_positive_net_batch(
             db.add(batch)
             db.flush()
 
-        payout_result = process_seller_payouts_for_batch(
-            db,
-            batch_id=batch.id,
-            dry_run=dry_run,
-            mock_confirm=mock_chain,
-        )
+        if batch.seller_payouts_completed_at is not None:
+            seller_payouts_completed = True
+        else:
+            payout_result = process_seller_payouts_for_batch(
+                db,
+                batch_id=batch.id,
+                dry_run=dry_run,
+                mock_confirm=mock_chain,
+            )
+            seller_payouts_completed = payout_result.seller_payouts_completed
 
-        if not payout_result.seller_payouts_completed:
+        if not seller_payouts_completed:
             return PositiveNetSettlementResult(
                 batch_id=batch.id,
                 fund_id=batch.fund_id,
@@ -376,7 +356,7 @@ def process_positive_net_batch(
             db,
             batch_id=batch.id,
             client=bybit_client,
-            mock_confirm=mock_bybit or mock_chain,
+            mock_confirm=mock_bybit,
         )
 
         if not bybit_confirmed:
@@ -399,8 +379,9 @@ def process_positive_net_batch(
         internal_ready = _internal_transfer_ready_or_skipped(
             db,
             batch=batch,
+            bybit_client=bybit_client,
             dry_run=dry_run,
-            mock_bybit=mock_bybit or mock_chain,
+            mock_bybit=mock_bybit,
         )
 
         if not internal_ready:
