@@ -217,7 +217,7 @@
                   <div class="t-name">{{ r.name|default('-', true) }}</div>
 
                   <div class="t-center">
-                    {{ r.side|default(r.direction|default('-', true), true) }}
+                    {{ r.side_label|default(r.side|default(r.direction|default('-', true), true), true) }}
                   </div>
 
                   <div class="t-center">
