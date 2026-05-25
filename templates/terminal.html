@@ -231,10 +231,12 @@
                   </div>
 
                   <div class="t-center">
-                    {% if r.shares is defined %}
-                      {{ r.shares|default('-', true) }}
+                    {% if r.shares_display is defined %}
+                      {{ r.shares_display|default('—', true) }}
+                    {% elif r.shares is defined and r.shares %}
+                      {{ r.shares }} {{ 'shares' if lang == 'en' else 'паёв' }}
                     {% elif r.shares_qty is defined and r.shares_qty is not none %}
-                      {{ fmt4(r.shares_qty) }}
+                      {{ fmt4(r.shares_qty) }} {{ 'shares' if lang == 'en' else 'паёв' }}
                     {% else %}
                       —
                     {% endif %}

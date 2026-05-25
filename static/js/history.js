@@ -276,9 +276,9 @@
               <div class="tx-row tx-row--trading" style="${grid}">
                 <div class="tx-col-coin">${escapeHtml(row.fund_name || row.fund_code || "—")}</div>
                 <div class="tx-col-center">${escapeHtml(tradingSideLabel(row.side))}</div>
-                <div class="tx-col-center">${escapeHtml(row.amount_usdt ?? "—")}</div>
-                <div class="tx-col-center">${escapeHtml(row.shares ?? "—")}</div>
-                <div class="tx-col-center">${escapeHtml(row.price_usdt ?? "—")}</div>
+                <div class="tx-col-center">${escapeHtml(row.amount ?? (row.amount_usdt != null ? `${row.amount_usdt} USDT` : "—"))}</div>
+                <div class="tx-col-center">${escapeHtml(row.shares_display ?? (row.shares != null ? `${row.shares} ${L("паёв", "shares")}` : "—"))}</div>
+                <div class="tx-col-center">${escapeHtml(row.price ?? (row.price_usdt != null ? `${row.price_usdt} USDT` : "—"))}</div>
                 <div class="tx-col-center">${tradingStatusHtml(row)}</div>
                 <div class="tx-col-dt tx-col-center">${escapeHtml(row.created_at || "")}</div>
                 <div class="tx-col-dt tx-col-center">${escapeHtml(row.executed_at || "—")}</div>

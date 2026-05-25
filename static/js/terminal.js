@@ -416,9 +416,10 @@
           r.amount_text ??
           (r.amount_usdt !== undefined && r.amount_usdt !== null ? `${fmt2(r.amount_usdt)} USDT` : fallback.amount),
         shares:
-          r.shares ??
+          r.shares_display ??
           r.shares_text ??
-          (r.shares_qty !== undefined && r.shares_qty !== null ? fmt4(r.shares_qty) : fallback.shares),
+          (r.shares !== undefined && r.shares !== null ? `${fmt4(r.shares)} ${L("паёв", "shares")}` : undefined) ??
+          (r.shares_qty !== undefined && r.shares_qty !== null ? `${fmt4(r.shares_qty)} ${L("паёв", "shares")}` : fallback.shares),
         price:
           r.price ??
           r.price_text ??
