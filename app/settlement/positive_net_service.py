@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -41,6 +42,8 @@ from app.telegram import send_telegram_message
 log = logging.getLogger("settlement.positive_net_service")
 
 ZERO = Decimal("0")
+
+FundClientFactory = Callable[[Session, int], BybitV5Client]
 
 
 class PositiveNetSettlementError(RuntimeError):
@@ -201,24 +204,30 @@ def _internal_transfer_ready_or_skipped(
     db: Session,
     *,
     batch: FundSettlementBatch,
-    bybit_client: BybitV5Client | None,
+    fund_client_factory: FundClientFactory | None,
     dry_run: bool,
     mock_bybit: bool,
 ) -> bool:
     """
-    Stage 22.1.1 real internal-transfer guard.
+    Stage 22.1.2 client routing.
 
     Accounting is allowed only after:
     - zero-net safe skip; or
     - deposit already landed in UNIFIED/UTA; or
     - real/mock FUND -> UNIFIED internal transfer completed.
 
-    Unknown account type is NOT a safe skip in real mode.
+    Real FUND -> UNIFIED must use fund subaccount API credentials,
+    not master API credentials.
     """
+    fund_client = None
+
+    if not dry_run and not mock_bybit and fund_client_factory is not None:
+        fund_client = fund_client_factory(db, batch.fund_id)
+
     return ensure_fund_to_unified_internal_transfer(
         db,
         batch_id=batch.id,
-        client=bybit_client,
+        fund_client=fund_client,
         dry_run=dry_run,
         mock_confirm=mock_bybit,
     )
@@ -244,7 +253,8 @@ def process_positive_net_batch(
     db: Session,
     *,
     batch_id: int,
-    bybit_client: BybitV5Client | None = None,
+    master_client: BybitV5Client | None = None,
+    fund_client_factory: FundClientFactory | None = None,
     dry_run: bool = False,
     mock_chain: bool = False,
     mock_bybit: bool = False,
@@ -355,7 +365,7 @@ def process_positive_net_batch(
         bybit_confirmed = confirm_bybit_deposit_for_batch(
             db,
             batch_id=batch.id,
-            client=bybit_client,
+            master_client=master_client,
             mock_confirm=mock_bybit,
         )
 
@@ -379,7 +389,7 @@ def process_positive_net_batch(
         internal_ready = _internal_transfer_ready_or_skipped(
             db,
             batch=batch,
-            bybit_client=bybit_client,
+            fund_client_factory=fund_client_factory,
             dry_run=dry_run,
             mock_bybit=mock_bybit,
         )

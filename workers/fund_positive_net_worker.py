@@ -106,16 +106,17 @@ def _normalize_fund_code(value: str | None) -> str | None:
     return code
 
 
-def _build_bybit_client_if_needed(
+def _build_master_client_if_needed(
     *,
     dry_run: bool,
     mock_chain: bool,
     mock_bybit: bool,
 ) -> BybitV5Client | None:
     """
-    Bybit client is needed only for real deposit confirmation.
+    Master Bybit client is needed only for subaccount deposit record confirmation.
 
-    Stage 22.1 local mocked checks should use --dry-run and/or --mock-bybit.
+    FUND -> UNIFIED internal transfer uses encrypted per-fund subaccount
+    credentials from fund_bybit_accounts.
     """
     if dry_run or mock_chain or mock_bybit:
         return None
@@ -126,9 +127,10 @@ def _build_bybit_client_if_needed(
     if not api_key or not api_secret:
         raise RuntimeError(
             "BYBIT_MASTER_API_KEY / BYBIT_MASTER_API_SECRET are required for real "
-            "positive-net settlement runtime: subaccount deposit record confirmation "
-            "and, if needed, FUND -> UNIFIED internal transfer. Use a separate restricted "
-            "master API key with server IP whitelist. For local checks use "
+            "positive-net settlement runtime: subaccount deposit record confirmation. "
+            "FUND -> UNIFIED internal transfer uses encrypted per-fund subaccount "
+            "credentials from fund_bybit_accounts. Use a restricted master API key "
+            "with server IP whitelist. For local checks use "
             "--dry-run --mock-chain --mock-bybit."
         )
 
@@ -174,7 +176,7 @@ def _find_candidate_batches(
 def _process_batch_in_own_session(
     *,
     batch_id: int,
-    bybit_client: BybitV5Client | None,
+    master_client: BybitV5Client | None,
     dry_run: bool,
     mock_chain: bool,
     mock_bybit: bool,
@@ -191,7 +193,8 @@ def _process_batch_in_own_session(
         result = process_positive_net_batch(
             db,
             batch_id=batch_id,
-            bybit_client=bybit_client,
+            master_client=master_client,
+            fund_client_factory=None,
             dry_run=dry_run,
             mock_chain=mock_chain,
             mock_bybit=mock_bybit,
@@ -263,7 +266,7 @@ def _run_once(args: argparse.Namespace) -> int:
     fund_code = _normalize_fund_code(args.fund_code)
     finalize_accounting = not bool(args.no_finalize_accounting)
 
-    bybit_client = _build_bybit_client_if_needed(
+    master_client = _build_master_client_if_needed(
         dry_run=bool(args.dry_run),
         mock_chain=bool(args.mock_chain),
         mock_bybit=bool(args.mock_bybit),
@@ -294,7 +297,7 @@ def _run_once(args: argparse.Namespace) -> int:
     for batch_id in batch_ids:
         ok = _process_batch_in_own_session(
             batch_id=batch_id,
-            bybit_client=bybit_client,
+            master_client=master_client,
             dry_run=bool(args.dry_run),
             mock_chain=bool(args.mock_chain),
             mock_bybit=bool(args.mock_bybit),

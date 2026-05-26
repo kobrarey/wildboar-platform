@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.bybit.client import BybitApiError, BybitV5Client
+from app.bybit.credentials import get_active_fund_bybit_client
 from app.config import settings
 from app.models import FundSettlementBatch, FundSettlementTransfer, FundWallet
 from app.settlement.bybit_destination import get_active_bybit_deposit_destination
@@ -742,7 +743,7 @@ def confirm_bybit_deposit_for_batch(
     db: Session,
     *,
     batch_id: int,
-    client: BybitV5Client | None = None,
+    master_client: BybitV5Client | None = None,
     mock_confirm: bool = False,
 ) -> bool:
     """
@@ -801,9 +802,9 @@ def confirm_bybit_deposit_for_batch(
         db.flush()
         return True
 
-    if client is None:
+    if master_client is None:
         raise BybitDepositSettlementError(
-            "Bybit client is required unless mock_confirm=True"
+            "Master Bybit client is required for subaccount deposit record confirmation unless mock_confirm=True"
         )
 
     destination = get_active_bybit_deposit_destination(
@@ -814,7 +815,7 @@ def confirm_bybit_deposit_for_batch(
     )
 
     records = query_bybit_sub_member_deposit_records(
-        client,
+        master_client,
         sub_member_id=destination.bybit_sub_uid,
         coin="USDT",
         tx_hash=tx_hash,
@@ -924,7 +925,7 @@ def ensure_fund_to_unified_internal_transfer(
     db: Session,
     *,
     batch_id: int,
-    client: BybitV5Client | None,
+    fund_client: BybitV5Client | None = None,
     dry_run: bool = False,
     mock_confirm: bool = False,
 ) -> bool:
@@ -978,13 +979,16 @@ def ensure_fund_to_unified_internal_transfer(
         db.flush()
         return True
 
-    if client is None:
-        raise BybitDepositSettlementError(
-            "Bybit client is required for real FUND -> UNIFIED internal transfer"
+    if fund_client is None:
+        fund_client = get_active_fund_bybit_client(
+            db,
+            fund_id=batch.fund_id,
+            coin="USDT",
+            chain_type="BSC",
         )
 
     result = execute_fund_to_unified_internal_transfer(
-        client,
+        fund_client,
         transfer_id=transfer_id,
         amount_usdt=amount_usdt,
     )

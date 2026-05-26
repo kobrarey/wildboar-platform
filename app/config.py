@@ -40,6 +40,9 @@ class Settings(BaseSettings):
     # --- TOTP / Google Authenticator ---
     TOTP_ENC_KEY: str = ""
 
+    # --- Bybit API credentials encryption ---
+    BYBIT_API_ENC_KEY: str = ""
+
     # --- runtime / proxy ---
     APP_ENV: str = "development"
     APP_HOST: str = "127.0.0.1"

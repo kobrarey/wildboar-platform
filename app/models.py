@@ -438,6 +438,19 @@ class FundBybitAccount(Base):
 
     last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    api_key_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_secret_encrypted: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_permissions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_ip_whitelist: Mapped[str | None] = mapped_column(Text, nullable=True)
+    api_key_label: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    api_key_added_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    api_key_last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    api_key_is_active: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=sa_text("FALSE"),
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
