@@ -794,6 +794,184 @@ class FundSettlementTransfer(Base):
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class FundAllocationBatch(Base):
+    __tablename__ = "fund_allocation_batches"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    settlement_batch_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_settlement_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    snapshot_ts: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    positive_net_usdt: Mapped[Decimal] = mapped_column(
+        Numeric(30, 10),
+        nullable=False,
+        server_default=sa_text("0"),
+    )
+    settlement_nav_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    snapshot_total_equity_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    base_nav_for_scale_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    scale: Mapped[Decimal | None] = mapped_column(Numeric(30, 18), nullable=True)
+
+    snapshot_source: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=sa_text("'bybit_subaccount'"),
+    )
+    snapshot_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    status: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=sa_text("'planned'"),
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "settlement_batch_id",
+            name="fund_allocation_batches_settlement_batch_uq",
+        ),
+    )
+
+
+class FundAllocationLeg(Base):
+    __tablename__ = "fund_allocation_legs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    allocation_batch_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_allocation_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    settlement_batch_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_settlement_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    parent_leg_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_allocation_legs.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    leg_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    leg_key: Mapped[str] = mapped_column(String(160), nullable=False)
+
+    leg_group: Mapped[str] = mapped_column(String(64), nullable=False)
+    leg_type: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    coin: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    symbol: Mapped[str | None] = mapped_column(String(80), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    side: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    location: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    current_size: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    current_usd_value: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    current_notional_usd: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    source_weight: Mapped[Decimal | None] = mapped_column(Numeric(30, 18), nullable=True)
+
+    target_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    target_qty: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+
+    execution_mode: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=sa_text("'planned'"),
+    )
+
+    planned_suborders: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    executed_suborders: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    order_link_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    bybit_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    strategy_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    earn_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    transfer_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    last_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    best_bid: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    best_ask: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    corridor_pct: Mapped[Decimal | None] = mapped_column(Numeric(10, 6), nullable=True)
+
+    available_liquidity_qty: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    available_liquidity_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    required_qty: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    required_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    filled_qty: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    filled_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    fill_ratio: Mapped[Decimal | None] = mapped_column(Numeric(30, 18), nullable=True)
+
+    fee_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    actual_cash_used_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    actual_margin_change_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    residual_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    status: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=sa_text("'planned'"),
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        UniqueConstraint(
+            "allocation_batch_id",
+            "leg_index",
+            name="fund_allocation_legs_batch_leg_index_uq",
+        ),
+        UniqueConstraint(
+            "allocation_batch_id",
+            "leg_key",
+            name="fund_allocation_legs_batch_leg_key_uq",
+        ),
+    )
+
+
 class FundRuntimeState(Base):
     __tablename__ = "fund_runtime_state"
 

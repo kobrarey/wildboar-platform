@@ -1,0 +1,101 @@
+﻿{
+  "snapshot_ts": "2099-03-01T00:00:00+00:00",
+  "account_type": "UNIFIED",
+  "summary": {
+    "totalEquity": "11000",
+    "totalWalletBalance": "10400",
+    "totalAvailableBalance": "6200",
+    "totalInitialMargin": "1200",
+    "totalMaintenanceMargin": "400",
+    "accountIMRate": "0.1090909091",
+    "accountMMRate": "0.0363636364"
+  },
+  "wallet": {
+    "unified": [
+      {
+        "coin": "USDT",
+        "walletBalance": "5200",
+        "availableToWithdraw": "5200",
+        "locked": "0",
+        "usdValue": "5200"
+      },
+      {
+        "coin": "BTC",
+        "walletBalance": "0.05",
+        "availableToWithdraw": "0.05",
+        "locked": "0",
+        "usdValue": "3500",
+        "markPrice": "70000"
+      }
+    ],
+    "funding": [
+      {
+        "coin": "USDT",
+        "walletBalance": "25",
+        "transferBalance": "25",
+        "usdValue": "25"
+      }
+    ]
+  },
+  "earn": [
+    {
+      "product": "Flexible Savings",
+      "product_category": "FlexibleSaving",
+      "coin": "USDT",
+      "amount": "1000",
+      "usdValue": "1000",
+      "apr": "0.05",
+      "status": "ACTIVE"
+    },
+    {
+      "product": "On-chain Staking",
+      "product_category": "OnChain",
+      "coin": "ETH",
+      "amount": "0.25",
+      "usdValue": "750",
+      "markPrice": "3000",
+      "apr": "0.035",
+      "status": "ACTIVE"
+    }
+  ],
+  "positions": [
+    {
+      "category": "linear",
+      "symbol": "ETHUSDT",
+      "side": "Buy",
+      "size": "0.2",
+      "avgPrice": "2900",
+      "markPrice": "3000",
+      "positionValue": "600",
+      "leverage": "2"
+    },
+    {
+      "category": "option",
+      "symbol": "BTC-31DEC26-100000-C",
+      "side": "Buy",
+      "size": "0.1",
+      "avgPrice": "500",
+      "markPrice": "550",
+      "positionValue": "55"
+    },
+    {
+      "category": "option",
+      "symbol": "ETH-31DEC26-5000-C",
+      "side": "Sell",
+      "size": "0.2",
+      "avgPrice": "200",
+      "markPrice": "180",
+      "positionValue": "36"
+    }
+  ],
+  "other": [
+    {
+      "type": "unsupported_liquid_swap",
+      "coin": "WBX",
+      "size": "10",
+      "usdValue": "0",
+      "location": "OTHER",
+      "category": "other"
+    }
+  ]
+}
