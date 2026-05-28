@@ -142,6 +142,24 @@ class Settings(BaseSettings):
     POSITIVE_NET_DEPOSIT_POLL_INTERVAL_SEC: int = 30
     POSITIVE_NET_DUST_TOLERANCE_USDT: Decimal = Decimal("0.01")
 
+    # --- stage 22.3: allocation execution engine ---
+    ALLOCATION_EXECUTION_ENABLED: bool = False
+
+    ALLOCATION_LIQUIDITY_CORRIDOR_PCT: Decimal = Decimal("1")
+    ALLOCATION_MARKET_SLIPPAGE_PCT: Decimal = Decimal("1")
+    ALLOCATION_MIN_FILL_RATIO: Decimal = Decimal("0.90")
+
+    ALLOCATION_NATIVE_ICEBERG_ORDER_COUNT: int = 10
+    ALLOCATION_MAX_ACTIVE_STRATEGY_ORDERS: int = 5
+
+    ALLOCATION_SLICED_IOC_SLICES: int = 10
+    ALLOCATION_SLICED_IOC_CHASE_BPS: int = 10
+
+    ALLOCATION_SHORT_OPTION_LIQUIDITY_MULT: Decimal = Decimal("1.20")
+
+    ALLOCATION_MAX_IM_RATE: Decimal = Decimal("0.70")
+    ALLOCATION_MAX_MM_RATE: Decimal = Decimal("0.50")
+
     # --- Bybit master API runtime settings ---
     BYBIT_MASTER_RECV_WINDOW_MS: int = 30000
     BYBIT_MASTER_HTTP_TIMEOUT_SEC: int = 20
