@@ -191,3 +191,88 @@ class BybitV5Client:
                 time.sleep(sleep_sec)
 
         raise BybitApiError(f"Bybit POST failed path={path}: {last_error}")
+
+    def public_get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        if not path.startswith("/"):
+            raise ValueError("Bybit path must start with '/'")
+
+        clean_params: dict[str, Any] = {}
+        for key, value in (params or {}).items():
+            if value is None:
+                continue
+            clean_params[key] = value
+
+        url = f"{self.base_url}{path}"
+
+        last_error: Exception | None = None
+
+        for attempt in range(self.retries + 1):
+            try:
+                log.debug(
+                    "Bybit PUBLIC GET request path=%s params_keys=%s attempt=%s",
+                    path,
+                    sorted(clean_params.keys()),
+                    attempt + 1,
+                )
+
+                resp = requests.get(
+                    url,
+                    params=clean_params,
+                    headers={"Accept": "application/json"},
+                    timeout=self.timeout_sec,
+                )
+                resp.raise_for_status()
+
+                data = resp.json()
+                ret_code = data.get("retCode")
+                if ret_code != 0:
+                    raise BybitApiError(
+                        f"Bybit public API error path={path} retCode={ret_code} retMsg={data.get('retMsg')}"
+                    )
+
+                return data
+
+            except Exception as exc:
+                last_error = exc
+                if attempt >= self.retries:
+                    break
+
+                sleep_sec = float(self.backoff_sec * Decimal(attempt + 1))
+                time.sleep(sleep_sec)
+
+        raise BybitApiError(f"Bybit PUBLIC GET failed path={path}: {last_error}")
+
+    def paginate_get(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        *,
+        page_limit: int = 50,
+        result_list_key: str = "list",
+        cursor_param: str = "cursor",
+        cursor_field: str = "nextPageCursor",
+    ) -> list[dict[str, Any]]:
+        items: list[dict[str, Any]] = []
+        cursor = ""
+
+        base_params = dict(params or {})
+
+        for _ in range(max(int(page_limit), 1)):
+            page_params = dict(base_params)
+            if cursor:
+                page_params[cursor_param] = cursor
+
+            payload = self.get(path, page_params)
+            result = payload.get("result") or {}
+
+            chunk = result.get(result_list_key) or []
+            if isinstance(chunk, list):
+                items.extend([row for row in chunk if isinstance(row, dict)])
+
+            next_cursor = str(result.get(cursor_field) or "").strip()
+            if not next_cursor:
+                break
+
+            cursor = next_cursor
+
+        return items
