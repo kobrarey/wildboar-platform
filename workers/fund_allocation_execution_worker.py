@@ -559,24 +559,23 @@ def _run_once(args: argparse.Namespace) -> int:
         leg_ids,
     )
 
-    if not leg_ids:
-        log.info("No allocation execution candidate legs found.")
-        return 0
-
     ok_count = 0
     failed_count = 0
 
-    for leg_id in leg_ids:
-        ok = _process_leg_in_own_session(
-            allocation_leg_id=leg_id,
-            dry_run=bool(args.dry_run),
-            args=args,
-        )
+    if not leg_ids:
+        log.info("No allocation execution candidate legs found.")
+    else:
+        for leg_id in leg_ids:
+            ok = _process_leg_in_own_session(
+                allocation_leg_id=leg_id,
+                dry_run=bool(args.dry_run),
+                args=args,
+            )
 
-        if ok:
-            ok_count += 1
-        else:
-            failed_count += 1
+            if ok:
+                ok_count += 1
+            else:
+                failed_count += 1
 
     with SessionLocal() as db:
         residual_batch_ids = _find_residual_candidate_batch_ids(
@@ -592,6 +591,8 @@ def _run_once(args: argparse.Namespace) -> int:
             bool(args.dry_run),
             residual_batch_ids,
         )
+    else:
+        log.info("No allocation residual candidate batches found.")
 
     residual_ok_count = 0
     residual_failed_count = 0
