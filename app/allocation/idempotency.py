@@ -51,3 +51,15 @@ def make_mock_bybit_order_id(order_link_id: str) -> str:
 
 def make_mock_strategy_id(strategy_ref: str) -> str:
     return _safe_id(f"mock-strategy:{strategy_ref}")
+
+
+def make_earn_order_link_id(allocation_batch_id: int, leg_id: int) -> str:
+    return _safe_id(f"alloc:{allocation_batch_id}:leg:{leg_id}:earn")
+
+
+def make_residual_earn_leg_key(allocation_batch_id: int) -> str:
+    return f"residual:usdt_earn:{allocation_batch_id}"
+
+
+def make_mock_earn_order_id(order_link_id: str) -> str:
+    return _safe_id(f"mock-earn:{order_link_id}")

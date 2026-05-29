@@ -160,6 +160,13 @@ class Settings(BaseSettings):
     ALLOCATION_MAX_IM_RATE: Decimal = Decimal("0.70")
     ALLOCATION_MAX_MM_RATE: Decimal = Decimal("0.50")
 
+    # --- stage 22.4: spot / earn / residual mock handlers ---
+    ALLOCATION_SPOT_EARN_ENABLED: bool = False
+    ALLOCATION_EARN_ENABLED: bool = False
+    ALLOCATION_USDT_EARN_CATEGORY: str = "FlexibleSaving"
+    ALLOCATION_RESIDUAL_MIN_MATERIALITY_USDT: Decimal = Decimal("0.01")
+    ALLOCATION_RESIDUAL_ALERT_THRESHOLD_USDT: Decimal = Decimal("100")
+
     # --- Bybit master API runtime settings ---
     BYBIT_MASTER_RECV_WINDOW_MS: int = 30000
     BYBIT_MASTER_HTTP_TIMEOUT_SEC: int = 20

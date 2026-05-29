@@ -10,9 +10,14 @@ from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 
 from app.allocation.execution_engine import prepare_execution_for_leg
+from app.allocation.residual_service import process_residual_leg_mock
+from app.allocation.spot_earn_handlers import handle_spot_earn_leg_mock
 from app.allocation.statuses import (
     ALLOCATION_BATCH_STATUS_PLAN_CREATED,
     ALLOCATION_LEG_STATUS_PLANNED,
+    LEG_TYPE_RESIDUAL_USDT_EARN,
+    RESIDUAL_SOURCE_STATUSES,
+    SPOT_EARN_SUPPORTED_LEG_TYPES,
 )
 from app.db import SessionLocal
 from app.models import Fund, FundAllocationBatch, FundAllocationLeg
@@ -33,7 +38,7 @@ SUPPORTED_FUNDS = {
 
 class MockAllocationExecutionClient:
     """
-    Stage 22.3 mock market-data client.
+    Stage 22.4 mock market-data client.
 
     Supports only read-style public_get/get methods required by:
     - get_instrument_info
@@ -66,12 +71,47 @@ class MockAllocationExecutionClient:
     def get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         params = params or {}
         self.get_calls.append((path, dict(params)))
+
+        if path == "/v5/earn/product":
+            return self._earn_product(params)
+
         return self.public_get(path, params)
 
     def post(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         payload = payload or {}
         self.post_calls.append((path, dict(payload)))
-        raise RuntimeError(f"POST is forbidden in Stage 22.3 mock execution worker: {path}")
+        raise RuntimeError(f"POST is forbidden in Stage 22.4 mock execution worker: {path}")
+
+    def _earn_product(self, params: dict[str, Any]) -> dict[str, Any]:
+        coin = str(params.get("coin") or "USDT").upper()
+        category = str(params.get("category") or "FlexibleSaving")
+
+        if coin == "USDT":
+            min_amount = "1"
+            max_amount = "100000"
+            precision = "2"
+        else:
+            min_amount = "0.01"
+            max_amount = "100000"
+            precision = "6"
+
+        return {
+            "retCode": 0,
+            "retMsg": "OK",
+            "result": {
+                "list": [
+                    {
+                        "productId": f"{coin}-{category}-001",
+                        "coin": coin,
+                        "category": category,
+                        "status": "Available",
+                        "minStakeAmount": min_amount,
+                        "maxStakeAmount": max_amount,
+                        "precision": precision,
+                    }
+                ]
+            },
+        }
 
     def _instrument_info(self, params: dict[str, Any]) -> dict[str, Any]:
         symbol = str(params["symbol"]).upper()
@@ -202,7 +242,7 @@ class MockAllocationExecutionClient:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Stage 22.3 allocation execution worker. "
+            "Stage 22.4 allocation execution worker. "
             "Mocked only: no real Bybit orders, no Strategy orders, no transfers, no Earn stake."
         )
     )
@@ -228,13 +268,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mock-market-data",
         action="store_true",
-        help="Use built-in mock market-data client. Required in Stage 22.3.",
+        help="Use built-in mock market-data client. Required in Stage 22.4.",
     )
 
     parser.add_argument(
         "--live-execution",
         action="store_true",
-        help="Reserved for a later approved stage. Blocked in Stage 22.3.",
+        help="Reserved for a later approved stage. Blocked in Stage 22.4.",
     )
 
     parser.add_argument(
@@ -272,13 +312,13 @@ def _normalize_fund_code(value: str | None) -> str | None:
 def _validate_stage22_3_args(args: argparse.Namespace) -> None:
     if args.live_execution:
         raise RuntimeError(
-            "--live-execution is blocked in Stage 22.3. "
+            "--live-execution is blocked in Stage 22.4. "
             "Use --mock-market-data for mocked/local checks only."
         )
 
     if not args.mock_market_data:
         raise RuntimeError(
-            "--mock-market-data is required in Stage 22.3. "
+            "--mock-market-data is required in Stage 22.4. "
             "Real Bybit execution and real market-data execution are blocked."
         )
 
@@ -302,7 +342,6 @@ def _find_candidate_leg_ids(
         .filter(
             FundAllocationBatch.status == ALLOCATION_BATCH_STATUS_PLAN_CREATED,
             FundAllocationLeg.status == ALLOCATION_LEG_STATUS_PLANNED,
-            FundAllocationLeg.symbol.isnot(None),
         )
     )
 
@@ -324,7 +363,7 @@ def _find_candidate_leg_ids(
 
 def _build_client(args: argparse.Namespace) -> MockAllocationExecutionClient:
     if not args.mock_market_data:
-        raise RuntimeError("Only mock market-data client is allowed in Stage 22.3")
+        raise RuntimeError("Only mock market-data client is allowed in Stage 22.4")
 
     return MockAllocationExecutionClient()
 
@@ -339,12 +378,29 @@ def _process_leg_in_own_session(
     client = _build_client(args)
 
     try:
-        decision = prepare_execution_for_leg(
-            db,
-            allocation_leg_id=allocation_leg_id,
-            client=client,
-            mock_mode=True,
+        leg_type_row = (
+            db.query(FundAllocationLeg.leg_type)
+            .filter(FundAllocationLeg.id == allocation_leg_id)
+            .first()
         )
+        if leg_type_row is None:
+            raise RuntimeError(f"Allocation leg not found: {allocation_leg_id}")
+
+        leg_type = str(leg_type_row[0] or "")
+
+        if leg_type in SPOT_EARN_SUPPORTED_LEG_TYPES:
+            decision = handle_spot_earn_leg_mock(
+                db,
+                allocation_leg_id=allocation_leg_id,
+                client=client,
+            )
+        else:
+            decision = prepare_execution_for_leg(
+                db,
+                allocation_leg_id=allocation_leg_id,
+                client=client,
+                mock_mode=True,
+            )
 
         if client.post_calls:
             raise RuntimeError(f"POST calls are forbidden: {client.post_calls}")
@@ -381,6 +437,101 @@ def _process_leg_in_own_session(
         log.exception(
             "Allocation execution leg failed leg_id=%s error=%s",
             allocation_leg_id,
+            exc,
+        )
+        return False
+
+    finally:
+        db.close()
+
+
+
+def _find_residual_candidate_batch_ids(
+    db: Session,
+    *,
+    fund_code: str | None,
+    limit: int,
+) -> list[int]:
+    q = (
+        db.query(FundAllocationLeg.allocation_batch_id)
+        .join(
+            FundAllocationBatch,
+            FundAllocationBatch.id == FundAllocationLeg.allocation_batch_id,
+        )
+        .join(Fund, Fund.id == FundAllocationLeg.fund_id)
+        .filter(
+            FundAllocationBatch.status == ALLOCATION_BATCH_STATUS_PLAN_CREATED,
+            FundAllocationLeg.status.in_(RESIDUAL_SOURCE_STATUSES),
+            FundAllocationLeg.residual_usdt.isnot(None),
+            FundAllocationLeg.residual_usdt > 0,
+            FundAllocationLeg.leg_type != LEG_TYPE_RESIDUAL_USDT_EARN,
+        )
+        .distinct()
+    )
+
+    if fund_code:
+        q = q.filter(Fund.code == fund_code)
+
+    rows = (
+        q.order_by(FundAllocationLeg.allocation_batch_id.asc())
+        .limit(int(limit))
+        .all()
+    )
+
+    return [int(row[0]) for row in rows]
+
+
+def _process_residual_batch_in_own_session(
+    *,
+    allocation_batch_id: int,
+    dry_run: bool,
+    args: argparse.Namespace,
+) -> bool:
+    db = SessionLocal()
+    client = _build_client(args)
+
+    try:
+        decision = process_residual_leg_mock(
+            db,
+            allocation_batch_id=allocation_batch_id,
+            client=client,
+        )
+
+        if client.post_calls:
+            raise RuntimeError(f"POST calls are forbidden: {client.post_calls}")
+
+        if dry_run:
+            db.rollback()
+            log.info(
+                "Allocation residual dry-run rollback completed "
+                "batch_id=%s residual_leg_id=%s action=%s status=%s mode=%s reason=%s",
+                decision.allocation_batch_id,
+                decision.residual_leg_id,
+                decision.action,
+                decision.status,
+                decision.execution_mode,
+                decision.reason,
+            )
+        else:
+            db.commit()
+            log.info(
+                "Allocation residual mock decision committed "
+                "batch_id=%s residual_leg_id=%s action=%s status=%s mode=%s reason=%s",
+                decision.allocation_batch_id,
+                decision.residual_leg_id,
+                decision.action,
+                decision.status,
+                decision.execution_mode,
+                decision.reason,
+            )
+
+        return True
+
+    except Exception as exc:
+        db.rollback()
+        log.exception(
+            "Allocation residual processing failed batch_id=%s error=%s",
+            allocation_batch_id,
             exc,
         )
         return False
@@ -427,14 +578,51 @@ def _run_once(args: argparse.Namespace) -> int:
         else:
             failed_count += 1
 
+    with SessionLocal() as db:
+        residual_batch_ids = _find_residual_candidate_batch_ids(
+            db,
+            fund_code=fund_code,
+            limit=int(args.limit),
+        )
+
+    if residual_batch_ids:
+        log.info(
+            "Allocation residual candidate batches found fund_code=%s dry_run=%s batches=%s",
+            fund_code or "all",
+            bool(args.dry_run),
+            residual_batch_ids,
+        )
+
+    residual_ok_count = 0
+    residual_failed_count = 0
+
+    for batch_id in residual_batch_ids:
+        ok = _process_residual_batch_in_own_session(
+            allocation_batch_id=batch_id,
+            dry_run=bool(args.dry_run),
+            args=args,
+        )
+
+        if ok:
+            residual_ok_count += 1
+        else:
+            residual_failed_count += 1
+
+    failed_total = failed_count + residual_failed_count
+
     log.info(
-        "Allocation execution worker run_once completed ok=%s failed=%s total=%s",
+        "Allocation execution worker run_once completed "
+        "legs_ok=%s legs_failed=%s legs_total=%s "
+        "residual_ok=%s residual_failed=%s residual_total=%s",
         ok_count,
         failed_count,
         len(leg_ids),
+        residual_ok_count,
+        residual_failed_count,
+        len(residual_batch_ids),
     )
 
-    return 0 if failed_count == 0 else 1
+    return 0 if failed_total == 0 else 1
 
 
 def _run_loop(args: argparse.Namespace) -> int:
@@ -466,7 +654,7 @@ def main() -> int:
     _validate_stage22_3_args(args)
 
     log.info(
-        "Stage 22.3 allocation execution worker started. "
+        "Stage 22.4 allocation execution worker started. "
         "Mocked only. No real Bybit orders, no Strategy orders, no transfers, no Earn stake."
     )
 
