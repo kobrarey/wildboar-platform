@@ -2,12 +2,12 @@
 -- PostgreSQL database dump
 --
 
-\restrict efkr93zeg3DzbMG6auybfrqMStDYUM9m1gEINre3pprBJLmX06DG0JVws2ubrW9
+\restrict b476OYj2m1mhT1qGoLawEOz5EwnlbTSaakgTkauyiace2D03Nof8L8UDjFkpCFD
 
 -- Dumped from database version 16.11
 -- Dumped by pg_dump version 16.11
 
--- Started on 2026-05-28 17:30:11
+-- Started on 2026-05-29 17:31:11
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -29,7 +29,7 @@ SET row_security = off;
 
 
 --
--- TOC entry 5308 (class 0 OID 0)
+-- TOC entry 5311 (class 0 OID 0)
 -- Dependencies: 5
 -- Name: SCHEMA public; Type: COMMENT; Schema: -; Owner: -
 --
@@ -78,7 +78,7 @@ CREATE SEQUENCE public.fee_wallet_swaps_id_seq
 
 
 --
--- TOC entry 5309 (class 0 OID 0)
+-- TOC entry 5312 (class 0 OID 0)
 -- Dependencies: 246
 -- Name: fee_wallet_swaps_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -126,7 +126,7 @@ CREATE SEQUENCE public.fund_allocation_batches_id_seq
 
 
 --
--- TOC entry 5310 (class 0 OID 0)
+-- TOC entry 5313 (class 0 OID 0)
 -- Dependencies: 260
 -- Name: fund_allocation_batches_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -190,6 +190,15 @@ CREATE TABLE public.fund_allocation_legs (
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
     sent_at timestamp with time zone,
     confirmed_at timestamp with time zone,
+    earn_product_id character varying(128),
+    earn_product_category character varying(64),
+    earn_product_status character varying(64),
+    earn_min_stake_amount numeric(38,18),
+    earn_max_stake_amount numeric(38,18),
+    earn_precision numeric(38,18),
+    staked_qty numeric(38,18),
+    staked_usdt numeric(30,10),
+    stake_status character varying(64),
     CONSTRAINT fund_allocation_legs_status_check CHECK (((status)::text = ANY ((ARRAY['planned'::character varying, 'skipped_zero_value'::character varying, 'failed_requires_review'::character varying, 'skipped_min_order'::character varying, 'skipped_symbol_not_trading'::character varying, 'skipped_earn_unavailable'::character varying, 'skipped_margin_guard'::character varying, 'market_order_sent'::character varying, 'native_iceberg_processing'::character varying, 'sliced_ioc_processing'::character varying, 'filled'::character varying, 'partial_filled_residualized'::character varying, 'residual_earn_completed'::character varying, 'residual_cash'::character varying])::text[])))
 );
 
@@ -208,7 +217,7 @@ CREATE SEQUENCE public.fund_allocation_legs_id_seq
 
 
 --
--- TOC entry 5311 (class 0 OID 0)
+-- TOC entry 5314 (class 0 OID 0)
 -- Dependencies: 262
 -- Name: fund_allocation_legs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -260,7 +269,7 @@ CREATE SEQUENCE public.fund_bybit_accounts_id_seq
 
 
 --
--- TOC entry 5312 (class 0 OID 0)
+-- TOC entry 5315 (class 0 OID 0)
 -- Dependencies: 258
 -- Name: fund_bybit_accounts_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -299,7 +308,7 @@ CREATE SEQUENCE public.fund_chart_daily_id_seq
 
 
 --
--- TOC entry 5313 (class 0 OID 0)
+-- TOC entry 5316 (class 0 OID 0)
 -- Dependencies: 240
 -- Name: fund_chart_daily_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -338,7 +347,7 @@ CREATE SEQUENCE public.fund_chart_minute_id_seq
 
 
 --
--- TOC entry 5314 (class 0 OID 0)
+-- TOC entry 5317 (class 0 OID 0)
 -- Dependencies: 242
 -- Name: fund_chart_minute_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -387,7 +396,7 @@ CREATE SEQUENCE public.fund_nav_guard_events_id_seq
 
 
 --
--- TOC entry 5315 (class 0 OID 0)
+-- TOC entry 5318 (class 0 OID 0)
 -- Dependencies: 249
 -- Name: fund_nav_guard_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -440,7 +449,7 @@ CREATE SEQUENCE public.fund_nav_minute_id_seq
 
 
 --
--- TOC entry 5316 (class 0 OID 0)
+-- TOC entry 5319 (class 0 OID 0)
 -- Dependencies: 216
 -- Name: fund_nav_minute_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -488,7 +497,7 @@ CREATE SEQUENCE public.fund_orders_id_seq
 
 
 --
--- TOC entry 5317 (class 0 OID 0)
+-- TOC entry 5320 (class 0 OID 0)
 -- Dependencies: 236
 -- Name: fund_orders_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -572,7 +581,7 @@ CREATE SEQUENCE public.fund_settlement_batches_id_seq
 
 
 --
--- TOC entry 5318 (class 0 OID 0)
+-- TOC entry 5321 (class 0 OID 0)
 -- Dependencies: 253
 -- Name: fund_settlement_batches_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -624,7 +633,7 @@ CREATE SEQUENCE public.fund_settlement_transfers_id_seq
 
 
 --
--- TOC entry 5319 (class 0 OID 0)
+-- TOC entry 5322 (class 0 OID 0)
 -- Dependencies: 255
 -- Name: fund_settlement_transfers_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -668,7 +677,7 @@ CREATE SEQUENCE public.fund_wallets_id_seq
 
 
 --
--- TOC entry 5320 (class 0 OID 0)
+-- TOC entry 5323 (class 0 OID 0)
 -- Dependencies: 251
 -- Name: fund_wallets_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -718,7 +727,7 @@ CREATE SEQUENCE public.funds_id_seq
 
 
 --
--- TOC entry 5321 (class 0 OID 0)
+-- TOC entry 5324 (class 0 OID 0)
 -- Dependencies: 218
 -- Name: funds_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -772,7 +781,7 @@ CREATE SEQUENCE public.security_codes_id_seq
 
 
 --
--- TOC entry 5322 (class 0 OID 0)
+-- TOC entry 5325 (class 0 OID 0)
 -- Dependencies: 221
 -- Name: security_codes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -821,7 +830,7 @@ CREATE SEQUENCE public.user_fund_position_stats_id_seq
 
 
 --
--- TOC entry 5323 (class 0 OID 0)
+-- TOC entry 5326 (class 0 OID 0)
 -- Dependencies: 238
 -- Name: user_fund_position_stats_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -859,7 +868,7 @@ CREATE SEQUENCE public.user_fund_positions_id_seq
 
 
 --
--- TOC entry 5324 (class 0 OID 0)
+-- TOC entry 5327 (class 0 OID 0)
 -- Dependencies: 224
 -- Name: user_fund_positions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -895,7 +904,7 @@ CREATE SEQUENCE public.user_portfolio_daily_id_seq
 
 
 --
--- TOC entry 5325 (class 0 OID 0)
+-- TOC entry 5328 (class 0 OID 0)
 -- Dependencies: 226
 -- Name: user_portfolio_daily_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -932,7 +941,7 @@ CREATE SEQUENCE public.user_totp_recovery_codes_id_seq
 
 
 --
--- TOC entry 5326 (class 0 OID 0)
+-- TOC entry 5329 (class 0 OID 0)
 -- Dependencies: 244
 -- Name: user_totp_recovery_codes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -979,7 +988,7 @@ CREATE SEQUENCE public.user_wallets_id_seq
 
 
 --
--- TOC entry 5327 (class 0 OID 0)
+-- TOC entry 5330 (class 0 OID 0)
 -- Dependencies: 228
 -- Name: user_wallets_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -1036,7 +1045,7 @@ CREATE SEQUENCE public.users_id_seq
 
 
 --
--- TOC entry 5328 (class 0 OID 0)
+-- TOC entry 5331 (class 0 OID 0)
 -- Dependencies: 230
 -- Name: users_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -1093,7 +1102,7 @@ CREATE SEQUENCE public.wallet_transfers_id_seq
 
 
 --
--- TOC entry 5329 (class 0 OID 0)
+-- TOC entry 5332 (class 0 OID 0)
 -- Dependencies: 232
 -- Name: wallet_transfers_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -1135,7 +1144,7 @@ CREATE SEQUENCE public.withdraw_sessions_id_seq
 
 
 --
--- TOC entry 5330 (class 0 OID 0)
+-- TOC entry 5333 (class 0 OID 0)
 -- Dependencies: 234
 -- Name: withdraw_sessions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
 --
@@ -1351,7 +1360,7 @@ ALTER TABLE ONLY public.fund_allocation_batches
 
 
 --
--- TOC entry 5072 (class 2606 OID 33462)
+-- TOC entry 5074 (class 2606 OID 33462)
 -- Name: fund_allocation_legs fund_allocation_legs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -1738,7 +1747,15 @@ CREATE INDEX fund_allocation_legs_bybit_order_idx ON public.fund_allocation_legs
 
 
 --
--- TOC entry 5068 (class 1259 OID 33493)
+-- TOC entry 5068 (class 1259 OID 33495)
+-- Name: fund_allocation_legs_earn_order_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX fund_allocation_legs_earn_order_idx ON public.fund_allocation_legs USING btree (earn_order_id) WHERE (earn_order_id IS NOT NULL);
+
+
+--
+-- TOC entry 5069 (class 1259 OID 33493)
 -- Name: fund_allocation_legs_execution_mode_status_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1746,7 +1763,7 @@ CREATE INDEX fund_allocation_legs_execution_mode_status_idx ON public.fund_alloc
 
 
 --
--- TOC entry 5069 (class 1259 OID 33486)
+-- TOC entry 5070 (class 1259 OID 33486)
 -- Name: fund_allocation_legs_fund_group_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1754,7 +1771,7 @@ CREATE INDEX fund_allocation_legs_fund_group_idx ON public.fund_allocation_legs 
 
 
 --
--- TOC entry 5070 (class 1259 OID 33488)
+-- TOC entry 5071 (class 1259 OID 33488)
 -- Name: fund_allocation_legs_order_link_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -1762,7 +1779,23 @@ CREATE INDEX fund_allocation_legs_order_link_idx ON public.fund_allocation_legs 
 
 
 --
--- TOC entry 5073 (class 1259 OID 33487)
+-- TOC entry 5072 (class 1259 OID 33496)
+-- Name: fund_allocation_legs_parent_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX fund_allocation_legs_parent_idx ON public.fund_allocation_legs USING btree (parent_leg_id) WHERE (parent_leg_id IS NOT NULL);
+
+
+--
+-- TOC entry 5075 (class 1259 OID 33497)
+-- Name: fund_allocation_legs_residual_idx; Type: INDEX; Schema: public; Owner: -
+--
+
+CREATE INDEX fund_allocation_legs_residual_idx ON public.fund_allocation_legs USING btree (allocation_batch_id, residual_usdt) WHERE (residual_usdt IS NOT NULL);
+
+
+--
+-- TOC entry 5076 (class 1259 OID 33487)
 -- Name: fund_allocation_legs_strategy_idx; Type: INDEX; Schema: public; Owner: -
 --
 
@@ -2130,7 +2163,7 @@ CREATE INDEX wallet_transfers_wallet_time_idx ON public.wallet_transfers USING b
 
 
 --
--- TOC entry 5105 (class 2606 OID 33441)
+-- TOC entry 5108 (class 2606 OID 33441)
 -- Name: fund_allocation_batches fund_allocation_batches_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2139,7 +2172,7 @@ ALTER TABLE ONLY public.fund_allocation_batches
 
 
 --
--- TOC entry 5106 (class 2606 OID 33436)
+-- TOC entry 5109 (class 2606 OID 33436)
 -- Name: fund_allocation_batches fund_allocation_batches_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2148,7 +2181,7 @@ ALTER TABLE ONLY public.fund_allocation_batches
 
 
 --
--- TOC entry 5107 (class 2606 OID 33463)
+-- TOC entry 5110 (class 2606 OID 33463)
 -- Name: fund_allocation_legs fund_allocation_legs_allocation_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2157,7 +2190,7 @@ ALTER TABLE ONLY public.fund_allocation_legs
 
 
 --
--- TOC entry 5108 (class 2606 OID 33473)
+-- TOC entry 5111 (class 2606 OID 33473)
 -- Name: fund_allocation_legs fund_allocation_legs_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2166,7 +2199,7 @@ ALTER TABLE ONLY public.fund_allocation_legs
 
 
 --
--- TOC entry 5109 (class 2606 OID 33478)
+-- TOC entry 5112 (class 2606 OID 33478)
 -- Name: fund_allocation_legs fund_allocation_legs_parent_leg_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2175,7 +2208,7 @@ ALTER TABLE ONLY public.fund_allocation_legs
 
 
 --
--- TOC entry 5110 (class 2606 OID 33468)
+-- TOC entry 5113 (class 2606 OID 33468)
 -- Name: fund_allocation_legs fund_allocation_legs_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2184,7 +2217,7 @@ ALTER TABLE ONLY public.fund_allocation_legs
 
 
 --
--- TOC entry 5104 (class 2606 OID 33375)
+-- TOC entry 5107 (class 2606 OID 33375)
 -- Name: fund_bybit_accounts fund_bybit_accounts_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2193,7 +2226,7 @@ ALTER TABLE ONLY public.fund_bybit_accounts
 
 
 --
--- TOC entry 5091 (class 2606 OID 33127)
+-- TOC entry 5094 (class 2606 OID 33127)
 -- Name: fund_chart_daily fund_chart_daily_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2202,7 +2235,7 @@ ALTER TABLE ONLY public.fund_chart_daily
 
 
 --
--- TOC entry 5092 (class 2606 OID 33142)
+-- TOC entry 5095 (class 2606 OID 33142)
 -- Name: fund_chart_minute fund_chart_minute_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2211,7 +2244,7 @@ ALTER TABLE ONLY public.fund_chart_minute
 
 
 --
--- TOC entry 5095 (class 2606 OID 33231)
+-- TOC entry 5098 (class 2606 OID 33231)
 -- Name: fund_nav_guard_events fund_nav_guard_events_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2220,7 +2253,7 @@ ALTER TABLE ONLY public.fund_nav_guard_events
 
 
 --
--- TOC entry 5094 (class 2606 OID 33215)
+-- TOC entry 5097 (class 2606 OID 33215)
 -- Name: fund_nav_guard_state fund_nav_guard_state_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2229,7 +2262,7 @@ ALTER TABLE ONLY public.fund_nav_guard_state
 
 
 --
--- TOC entry 5074 (class 2606 OID 32985)
+-- TOC entry 5077 (class 2606 OID 32985)
 -- Name: fund_nav_minute fund_nav_minute_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2238,7 +2271,7 @@ ALTER TABLE ONLY public.fund_nav_minute
 
 
 --
--- TOC entry 5086 (class 2606 OID 33092)
+-- TOC entry 5089 (class 2606 OID 33092)
 -- Name: fund_orders fund_orders_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2247,7 +2280,7 @@ ALTER TABLE ONLY public.fund_orders
 
 
 --
--- TOC entry 5087 (class 2606 OID 33293)
+-- TOC entry 5090 (class 2606 OID 33293)
 -- Name: fund_orders fund_orders_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2256,7 +2289,7 @@ ALTER TABLE ONLY public.fund_orders
 
 
 --
--- TOC entry 5088 (class 2606 OID 33087)
+-- TOC entry 5091 (class 2606 OID 33087)
 -- Name: fund_orders fund_orders_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2265,7 +2298,7 @@ ALTER TABLE ONLY public.fund_orders
 
 
 --
--- TOC entry 5102 (class 2606 OID 33352)
+-- TOC entry 5105 (class 2606 OID 33352)
 -- Name: fund_runtime_state fund_runtime_state_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2274,7 +2307,7 @@ ALTER TABLE ONLY public.fund_runtime_state
 
 
 --
--- TOC entry 5103 (class 2606 OID 33357)
+-- TOC entry 5106 (class 2606 OID 33357)
 -- Name: fund_runtime_state fund_runtime_state_pricing_lock_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2283,7 +2316,7 @@ ALTER TABLE ONLY public.fund_runtime_state
 
 
 --
--- TOC entry 5097 (class 2606 OID 33286)
+-- TOC entry 5100 (class 2606 OID 33286)
 -- Name: fund_settlement_batches fund_settlement_batches_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2292,7 +2325,7 @@ ALTER TABLE ONLY public.fund_settlement_batches
 
 
 --
--- TOC entry 5098 (class 2606 OID 33317)
+-- TOC entry 5101 (class 2606 OID 33317)
 -- Name: fund_settlement_transfers fund_settlement_transfers_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2301,7 +2334,7 @@ ALTER TABLE ONLY public.fund_settlement_transfers
 
 
 --
--- TOC entry 5099 (class 2606 OID 33327)
+-- TOC entry 5102 (class 2606 OID 33327)
 -- Name: fund_settlement_transfers fund_settlement_transfers_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2310,7 +2343,7 @@ ALTER TABLE ONLY public.fund_settlement_transfers
 
 
 --
--- TOC entry 5100 (class 2606 OID 33322)
+-- TOC entry 5103 (class 2606 OID 33322)
 -- Name: fund_settlement_transfers fund_settlement_transfers_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2319,7 +2352,7 @@ ALTER TABLE ONLY public.fund_settlement_transfers
 
 
 --
--- TOC entry 5101 (class 2606 OID 33332)
+-- TOC entry 5104 (class 2606 OID 33332)
 -- Name: fund_settlement_transfers fund_settlement_transfers_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2328,7 +2361,7 @@ ALTER TABLE ONLY public.fund_settlement_transfers
 
 
 --
--- TOC entry 5096 (class 2606 OID 33257)
+-- TOC entry 5099 (class 2606 OID 33257)
 -- Name: fund_wallets fund_wallets_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2337,7 +2370,7 @@ ALTER TABLE ONLY public.fund_wallets
 
 
 --
--- TOC entry 5075 (class 2606 OID 32990)
+-- TOC entry 5078 (class 2606 OID 32990)
 -- Name: password_reset_sessions password_reset_sessions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2346,7 +2379,7 @@ ALTER TABLE ONLY public.password_reset_sessions
 
 
 --
--- TOC entry 5076 (class 2606 OID 32995)
+-- TOC entry 5079 (class 2606 OID 32995)
 -- Name: security_codes security_codes_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2355,7 +2388,7 @@ ALTER TABLE ONLY public.security_codes
 
 
 --
--- TOC entry 5077 (class 2606 OID 33000)
+-- TOC entry 5080 (class 2606 OID 33000)
 -- Name: sessions sessions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2364,7 +2397,7 @@ ALTER TABLE ONLY public.sessions
 
 
 --
--- TOC entry 5089 (class 2606 OID 33115)
+-- TOC entry 5092 (class 2606 OID 33115)
 -- Name: user_fund_position_stats user_fund_position_stats_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2373,7 +2406,7 @@ ALTER TABLE ONLY public.user_fund_position_stats
 
 
 --
--- TOC entry 5090 (class 2606 OID 33110)
+-- TOC entry 5093 (class 2606 OID 33110)
 -- Name: user_fund_position_stats user_fund_position_stats_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2382,7 +2415,7 @@ ALTER TABLE ONLY public.user_fund_position_stats
 
 
 --
--- TOC entry 5078 (class 2606 OID 33005)
+-- TOC entry 5081 (class 2606 OID 33005)
 -- Name: user_fund_positions user_fund_positions_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2391,7 +2424,7 @@ ALTER TABLE ONLY public.user_fund_positions
 
 
 --
--- TOC entry 5079 (class 2606 OID 33010)
+-- TOC entry 5082 (class 2606 OID 33010)
 -- Name: user_fund_positions user_fund_positions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2400,7 +2433,7 @@ ALTER TABLE ONLY public.user_fund_positions
 
 
 --
--- TOC entry 5080 (class 2606 OID 33015)
+-- TOC entry 5083 (class 2606 OID 33015)
 -- Name: user_portfolio_daily user_portfolio_daily_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2409,7 +2442,7 @@ ALTER TABLE ONLY public.user_portfolio_daily
 
 
 --
--- TOC entry 5093 (class 2606 OID 33182)
+-- TOC entry 5096 (class 2606 OID 33182)
 -- Name: user_totp_recovery_codes user_totp_recovery_codes_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2418,7 +2451,7 @@ ALTER TABLE ONLY public.user_totp_recovery_codes
 
 
 --
--- TOC entry 5081 (class 2606 OID 33020)
+-- TOC entry 5084 (class 2606 OID 33020)
 -- Name: user_wallets user_wallets_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2427,7 +2460,7 @@ ALTER TABLE ONLY public.user_wallets
 
 
 --
--- TOC entry 5082 (class 2606 OID 33025)
+-- TOC entry 5085 (class 2606 OID 33025)
 -- Name: wallet_transfers wallet_transfers_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2436,7 +2469,7 @@ ALTER TABLE ONLY public.wallet_transfers
 
 
 --
--- TOC entry 5083 (class 2606 OID 33030)
+-- TOC entry 5086 (class 2606 OID 33030)
 -- Name: wallet_transfers wallet_transfers_wallet_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2445,7 +2478,7 @@ ALTER TABLE ONLY public.wallet_transfers
 
 
 --
--- TOC entry 5084 (class 2606 OID 33057)
+-- TOC entry 5087 (class 2606 OID 33057)
 -- Name: withdraw_sessions withdraw_sessions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2454,7 +2487,7 @@ ALTER TABLE ONLY public.withdraw_sessions
 
 
 --
--- TOC entry 5085 (class 2606 OID 33062)
+-- TOC entry 5088 (class 2606 OID 33062)
 -- Name: withdraw_sessions withdraw_sessions_wallet_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
 --
 
@@ -2462,11 +2495,11 @@ ALTER TABLE ONLY public.withdraw_sessions
     ADD CONSTRAINT withdraw_sessions_wallet_id_fkey FOREIGN KEY (wallet_id) REFERENCES public.user_wallets(id) ON DELETE CASCADE;
 
 
--- Completed on 2026-05-28 17:30:11
+-- Completed on 2026-05-29 17:31:11
 
 --
 -- PostgreSQL database dump complete
 --
 
-\unrestrict efkr93zeg3DzbMG6auybfrqMStDYUM9m1gEINre3pprBJLmX06DG0JVws2ubrW9
+\unrestrict b476OYj2m1mhT1qGoLawEOz5EwnlbTSaakgTkauyiace2D03Nof8L8UDjFkpCFD
 
