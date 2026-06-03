@@ -172,6 +172,18 @@ class Settings(BaseSettings):
     ALLOCATION_OPTIONS_ENABLED: bool = False
     ALLOCATION_DERIVATIVE_RESIDUAL_ON_GUARD_FAIL: bool = True
 
+    # --- stage 22.6: positive-net allocation integration / reconciliation ---
+    POSITIVE_NET_ALLOCATION_ENABLED: bool = False
+    POSITIVE_NET_ALLOCATION_MOCK_ONLY: bool = True
+
+    ALLOCATION_ALERTS_ENABLED: bool = True
+    ALLOCATION_RESIDUAL_CASH_ALERT_THRESHOLD_USDT: Decimal = Decimal("100")
+    ALLOCATION_FAILED_REVIEW_ALERTS: bool = True
+    ALLOCATION_UNKNOWN_STATE_ALERTS: bool = True
+    ALLOCATION_MARGIN_BREACH_ALERTS: bool = True
+
+    ALLOCATION_FINALIZATION_REQUIRE_NO_ACTIVE_LEGS: bool = True
+
     # --- Bybit master API runtime settings ---
     BYBIT_MASTER_RECV_WINDOW_MS: int = 30000
     BYBIT_MASTER_HTTP_TIMEOUT_SEC: int = 20
