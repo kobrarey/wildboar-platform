@@ -9,12 +9,14 @@ from typing import Any
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 
+from app.allocation.derivative_handlers import handle_derivative_leg_mock
 from app.allocation.execution_engine import prepare_execution_for_leg
 from app.allocation.residual_service import process_residual_leg_mock
 from app.allocation.spot_earn_handlers import handle_spot_earn_leg_mock
 from app.allocation.statuses import (
     ALLOCATION_BATCH_STATUS_PLAN_CREATED,
     ALLOCATION_LEG_STATUS_PLANNED,
+    DERIVATIVE_SUPPORTED_LEG_TYPES,
     LEG_TYPE_RESIDUAL_USDT_EARN,
     RESIDUAL_SOURCE_STATUSES,
     SPOT_EARN_SUPPORTED_LEG_TYPES,
@@ -38,7 +40,7 @@ SUPPORTED_FUNDS = {
 
 class MockAllocationExecutionClient:
     """
-    Stage 22.4 mock market-data client.
+    Stage 22.5 mock market-data client.
 
     Supports only read-style public_get/get methods required by:
     - get_instrument_info
@@ -72,6 +74,9 @@ class MockAllocationExecutionClient:
         params = params or {}
         self.get_calls.append((path, dict(params)))
 
+        if path == "/v5/account/wallet-balance":
+            return self._wallet_balance(params)
+
         if path == "/v5/earn/product":
             return self._earn_product(params)
 
@@ -80,7 +85,24 @@ class MockAllocationExecutionClient:
     def post(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         payload = payload or {}
         self.post_calls.append((path, dict(payload)))
-        raise RuntimeError(f"POST is forbidden in Stage 22.4 mock execution worker: {path}")
+        raise RuntimeError(f"POST is forbidden in Stage 22.5 mock execution worker: {path}")
+
+    def _wallet_balance(self, params: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "retCode": 0,
+            "retMsg": "OK",
+            "result": {
+                "list": [
+                    {
+                        "accountType": params.get("accountType") or "UNIFIED",
+                        "totalEquity": "10000",
+                        "totalInitialMargin": "1000",
+                        "totalMaintenanceMargin": "500",
+                        "totalAvailableBalance": "9000",
+                    }
+                ]
+            },
+        }
 
     def _earn_product(self, params: dict[str, Any]) -> dict[str, Any]:
         coin = str(params.get("coin") or "USDT").upper()
@@ -203,6 +225,7 @@ class MockAllocationExecutionClient:
             "BTCUSDT",
             "TINYUSDT",
             "HALTUSDT",
+            "BTC-31DEC26-100000-C",
         }
 
         if symbol in strong_symbols:
@@ -242,7 +265,7 @@ class MockAllocationExecutionClient:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Stage 22.4 allocation execution worker. "
+            "Stage 22.5 allocation execution worker. "
             "Mocked only: no real Bybit orders, no Strategy orders, no transfers, no Earn stake."
         )
     )
@@ -268,13 +291,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mock-market-data",
         action="store_true",
-        help="Use built-in mock market-data client. Required in Stage 22.4.",
+        help="Use built-in mock market-data client. Required in Stage 22.5.",
     )
 
     parser.add_argument(
         "--live-execution",
         action="store_true",
-        help="Reserved for a later approved stage. Blocked in Stage 22.4.",
+        help="Reserved for a later approved stage. Blocked in Stage 22.5.",
     )
 
     parser.add_argument(
@@ -309,16 +332,16 @@ def _normalize_fund_code(value: str | None) -> str | None:
     return code
 
 
-def _validate_stage22_3_args(args: argparse.Namespace) -> None:
+def _validate_stage22_5_args(args: argparse.Namespace) -> None:
     if args.live_execution:
         raise RuntimeError(
-            "--live-execution is blocked in Stage 22.4. "
+            "--live-execution is blocked in Stage 22.5. "
             "Use --mock-market-data for mocked/local checks only."
         )
 
     if not args.mock_market_data:
         raise RuntimeError(
-            "--mock-market-data is required in Stage 22.4. "
+            "--mock-market-data is required in Stage 22.5. "
             "Real Bybit execution and real market-data execution are blocked."
         )
 
@@ -363,7 +386,7 @@ def _find_candidate_leg_ids(
 
 def _build_client(args: argparse.Namespace) -> MockAllocationExecutionClient:
     if not args.mock_market_data:
-        raise RuntimeError("Only mock market-data client is allowed in Stage 22.4")
+        raise RuntimeError("Only mock market-data client is allowed in Stage 22.5")
 
     return MockAllocationExecutionClient()
 
@@ -390,6 +413,12 @@ def _process_leg_in_own_session(
 
         if leg_type in SPOT_EARN_SUPPORTED_LEG_TYPES:
             decision = handle_spot_earn_leg_mock(
+                db,
+                allocation_leg_id=allocation_leg_id,
+                client=client,
+            )
+        elif leg_type in DERIVATIVE_SUPPORTED_LEG_TYPES:
+            decision = handle_derivative_leg_mock(
                 db,
                 allocation_leg_id=allocation_leg_id,
                 client=client,
@@ -652,10 +681,10 @@ def main() -> int:
     )
 
     args = parse_args()
-    _validate_stage22_3_args(args)
+    _validate_stage22_5_args(args)
 
     log.info(
-        "Stage 22.4 allocation execution worker started. "
+        "Stage 22.5 allocation execution worker started. "
         "Mocked only. No real Bybit orders, no Strategy orders, no transfers, no Earn stake."
     )
 

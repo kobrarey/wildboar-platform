@@ -167,6 +167,11 @@ class Settings(BaseSettings):
     ALLOCATION_RESIDUAL_MIN_MATERIALITY_USDT: Decimal = Decimal("0.01")
     ALLOCATION_RESIDUAL_ALERT_THRESHOLD_USDT: Decimal = Decimal("100")
 
+    # --- stage 22.5: derivatives / options mock handlers ---
+    ALLOCATION_DERIVATIVES_ENABLED: bool = False
+    ALLOCATION_OPTIONS_ENABLED: bool = False
+    ALLOCATION_DERIVATIVE_RESIDUAL_ON_GUARD_FAIL: bool = True
+
     # --- Bybit master API runtime settings ---
     BYBIT_MASTER_RECV_WINDOW_MS: int = 30000
     BYBIT_MASTER_HTTP_TIMEOUT_SEC: int = 20
