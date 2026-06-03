@@ -249,12 +249,50 @@ def _guard_diagnostics(guard: MarginGuardResult) -> dict[str, Any]:
     }
 
 
+def _margin_guard_status(guard: MarginGuardResult) -> str:
+    if guard.ok:
+        return "passed"
+
+    if guard.impact.uncertain or not guard.account_risk.is_valid:
+        return "uncertain"
+
+    return "failed"
+
+
+def _apply_margin_guard_audit_to_leg(
+    leg: FundAllocationLeg,
+    *,
+    guard: MarginGuardResult,
+    status_override: str | None = None,
+    error_override: str | None = None,
+) -> None:
+    leg.account_im_rate_before = guard.account_im_rate
+    leg.account_mm_rate_before = guard.account_mm_rate
+    leg.account_im_rate_after_est = guard.post_im_rate
+    leg.account_mm_rate_after_est = guard.post_mm_rate
+
+    leg.total_equity_usdt_before = guard.account_risk.total_equity_usdt
+    leg.total_initial_margin_usdt_before = guard.account_risk.total_initial_margin_usdt
+    leg.total_maintenance_margin_usdt_before = guard.account_risk.total_maintenance_margin_usdt
+
+    leg.estimated_initial_margin_change_usdt = guard.impact.estimated_initial_margin_usdt
+    leg.estimated_maintenance_margin_change_usdt = guard.impact.estimated_maintenance_margin_usdt
+
+    leg.margin_guard_status = status_override or _margin_guard_status(guard)
+    leg.margin_guard_error = error_override if error_override is not None else guard.reason
+
+
 def _mark_guard_skip(
     db: Session,
     leg: FundAllocationLeg,
     *,
     guard: MarginGuardResult,
 ) -> DerivativeHandlerDecision:
+    _apply_margin_guard_audit_to_leg(
+        leg,
+        guard=guard,
+    )
+
     leg.status = guard.status
     leg.execution_mode = EXECUTION_MODE_SKIPPED
     leg.residual_usdt = guard.residual_usdt if guard.residual_usdt > ZERO else _target_usdt(leg)
@@ -301,10 +339,18 @@ def _mark_short_option_liquidity_skip(
     reason: str,
     diagnostics: dict[str, Any] | None = None,
 ) -> DerivativeHandlerDecision:
-    leg.status = ALLOCATION_LEG_STATUS_PARTIAL_FILLED_RESIDUALIZED
+    leg.status = ALLOCATION_LEG_STATUS_SKIPPED_MARGIN_GUARD
     leg.execution_mode = EXECUTION_MODE_SKIPPED
     leg.residual_usdt = _target_usdt(leg)
+    leg.filled_qty = None
+    leg.filled_usdt = None
+    leg.avg_fill_price = None
+    leg.fill_ratio = None
+    leg.fee_usdt = None
+    leg.actual_cash_used_usdt = None
     leg.actual_margin_change_usdt = ZERO
+    leg.margin_guard_status = "short_option_liquidity_failed"
+    leg.margin_guard_error = reason
     leg.error = reason
     leg.updated_at = utcnow()
 
@@ -530,6 +576,13 @@ def handle_derivative_leg_mock(
             leg,
             guard=guard,
         )
+
+    _apply_margin_guard_audit_to_leg(
+        leg,
+        guard=guard,
+    )
+    db.add(leg)
+    db.flush()
 
     short_option_liquidity_decision = _check_short_option_strict_liquidity(
         db,

@@ -938,6 +938,22 @@ class FundAllocationLeg(Base):
     actual_margin_change_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
     residual_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
 
+    # stage 22.5.1: margin/risk audit for derivative/options allocation legs
+    account_im_rate_before: Mapped[Decimal | None] = mapped_column(Numeric(30, 18), nullable=True)
+    account_mm_rate_before: Mapped[Decimal | None] = mapped_column(Numeric(30, 18), nullable=True)
+    account_im_rate_after_est: Mapped[Decimal | None] = mapped_column(Numeric(30, 18), nullable=True)
+    account_mm_rate_after_est: Mapped[Decimal | None] = mapped_column(Numeric(30, 18), nullable=True)
+
+    total_equity_usdt_before: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    total_initial_margin_usdt_before: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    total_maintenance_margin_usdt_before: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    estimated_initial_margin_change_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    estimated_maintenance_margin_change_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    margin_guard_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    margin_guard_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
     status: Mapped[str] = mapped_column(
         String(64),
         nullable=False,
