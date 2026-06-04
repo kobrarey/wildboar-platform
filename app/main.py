@@ -8,6 +8,7 @@ from app.auth.routes import router as auth_router
 from app.settings.routes import router as settings_router
 from app.dashboard.routes import router as dashboard_router
 from app.trading.routes import router as trading_router
+from app.telegram.routes import router as telegram_router
 
 app = FastAPI()
 
@@ -23,3 +24,4 @@ app.include_router(auth_router)
 app.include_router(settings_router)
 app.include_router(dashboard_router)
 app.include_router(trading_router)
+app.include_router(telegram_router)

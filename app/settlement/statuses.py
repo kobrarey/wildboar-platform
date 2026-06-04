@@ -15,6 +15,7 @@ BATCH_STATUS_POSITIVE_NET_PROCESSING = "positive_net_processing"
 BATCH_STATUS_POSITIVE_NET_ACCOUNTING_FINALIZED = "positive_net_accounting_finalized"
 BATCH_STATUS_POSITIVE_CASH_SETTLEMENT_COMPLETED = "positive_cash_settlement_completed"
 BATCH_STATUS_FAILED_REQUIRES_REVIEW = "failed_requires_review"
+BATCH_STATUS_PAUSED_OPERATOR_ACTION_REQUIRED = "paused_operator_action_required"
 BATCH_STATUS_NO_ORDERS = "no_orders"
 BATCH_STATUS_FAILED = "failed"
 

@@ -39,7 +39,10 @@ class TradingRedeemOrderIn(BaseModel):
     shares: str
 
 
-def get_optional_user(request: Request, db: Session):
+def get_optional_user(
+    request: Request,
+    db: Session = Depends(get_db),
+):
     try:
         return auth_get_current_user(request, db)
     except NotAuthenticated:

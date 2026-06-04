@@ -95,6 +95,14 @@ class Settings(BaseSettings):
     BNB_ALERT_THRESHOLD_USD: Decimal = Decimal("100")
     TELEGRAM_CHECK_SEC: int = 3600
 
+    # --- stage 22.7: telegram operator actions ---
+    TELEGRAM_OPERATOR_ACTIONS_ENABLED: bool = False
+    TELEGRAM_OPERATOR_ALLOWED_CHAT_IDS: str = ""
+    TELEGRAM_OPERATOR_ALLOWED_USER_IDS: str = ""
+    TELEGRAM_CALLBACK_SECRET: str = ""
+    TELEGRAM_OPERATOR_ACTION_TTL_MINUTES: int = 60
+    TELEGRAM_OPERATOR_ACTION_COOLDOWN_SEC: int = 30
+
     # --- fee wallet daily USDT -> BNB swap ---
     FEE_WALLET_SWAP_ENABLED: bool = True
     FEE_WALLET_SWAP_INTERVAL_SEC: int = 3600

@@ -794,6 +794,85 @@ class FundSettlementTransfer(Base):
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
+class FundOperatorAction(Base):
+    __tablename__ = "fund_operator_actions"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    fund_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    settlement_batch_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_settlement_batches.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    allocation_batch_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_allocation_batches.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    action_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    status: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=sa_text("'pending'"),
+    )
+
+    idempotency_key: Mapped[str] = mapped_column(String(160), nullable=False)
+    callback_token_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    telegram_chat_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    telegram_user_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    telegram_message_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    telegram_callback_query_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    requested_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    requested_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    processing_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=sa_text("0"),
+    )
+
+    payload_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    result_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "idempotency_key",
+            name="fund_operator_actions_idempotency_uq",
+        ),
+    )
+
+
 class FundAllocationBatch(Base):
     __tablename__ = "fund_allocation_batches"
 
