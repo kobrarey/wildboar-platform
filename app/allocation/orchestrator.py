@@ -238,11 +238,17 @@ def _validate_positive_net_settlement(settlement_batch: FundSettlementBatch) -> 
 
 
 def _mark_batch_processing(batch: FundAllocationBatch) -> None:
+    now = utcnow()
+
     if batch.status != ALLOCATION_BATCH_STATUS_ALLOCATION_PROCESSING:
         batch.status = ALLOCATION_BATCH_STATUS_ALLOCATION_PROCESSING
         batch.error = None
         batch.completed_at = None
-        batch.updated_at = utcnow()
+
+    if batch.allocation_started_at is None:
+        batch.allocation_started_at = now
+
+    batch.updated_at = now
 
 
 def _mark_batch_failed(
@@ -444,6 +450,10 @@ def process_positive_net_allocation_batch_mock(
     _validate_positive_net_settlement(settlement_batch)
 
     _mark_batch_processing(batch)
+
+    if batch.reconciliation_started_at is None:
+        batch.reconciliation_started_at = utcnow()
+
     db.add(batch)
     db.flush()
 
@@ -479,6 +489,11 @@ def process_positive_net_allocation_batch_mock(
         )
         _assert_no_post_calls(client)
 
+        batch.reconciliation_completed_at = utcnow()
+        batch.updated_at = batch.reconciliation_completed_at
+        db.add(batch)
+        db.flush()
+
         finalization = finalize_allocation_batch(
             db,
             allocation_batch_id=batch.id,
@@ -494,6 +509,12 @@ def process_positive_net_allocation_batch_mock(
             report=report,
             mock_only=True,
         )
+
+        if alert_result.alerts:
+            batch.alert_sent_at = utcnow()
+            batch.updated_at = batch.alert_sent_at
+            db.add(batch)
+            db.flush()
 
         _assert_no_post_calls(client)
 
@@ -574,6 +595,12 @@ def process_positive_net_allocation_batch_mock(
             report=report,
             mock_only=True,
         )
+
+        if alert_result.alerts:
+            batch.alert_sent_at = utcnow()
+            batch.updated_at = batch.alert_sent_at
+            db.add(batch)
+            db.flush()
 
         db.refresh(batch)
 

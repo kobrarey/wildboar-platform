@@ -829,6 +829,27 @@ class FundAllocationBatch(Base):
     )
     snapshot_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
+    # stage 22.6.1: allocation finalization/reporting/timeline audit
+    report_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    allocation_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reconciliation_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    reconciliation_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    alert_sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    total_legs_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    filled_legs_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    skipped_legs_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    partial_legs_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    failed_legs_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    active_legs_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    total_target_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    total_filled_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    total_residual_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    residual_earn_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    residual_cash_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
     status: Mapped[str] = mapped_column(
         String(64),
         nullable=False,

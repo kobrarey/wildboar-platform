@@ -422,6 +422,25 @@ def _decide_final_status(summary: AllocationBatchSummary) -> tuple[str, bool, st
     )
 
 
+def _apply_summary_to_batch(
+    batch: FundAllocationBatch,
+    *,
+    summary: AllocationBatchSummary,
+) -> None:
+    batch.total_legs_count = summary.total_legs
+    batch.filled_legs_count = summary.filled_legs_count
+    batch.skipped_legs_count = summary.skipped_legs_count
+    batch.partial_legs_count = summary.partial_legs_count
+    batch.failed_legs_count = summary.failed_legs_count
+    batch.active_legs_count = summary.active_legs_count
+
+    batch.total_target_usdt = summary.total_target_usdt
+    batch.total_filled_usdt = summary.total_filled_usdt
+    batch.total_residual_usdt = summary.total_residual_usdt
+    batch.residual_earn_usdt = summary.residual_earn_usdt
+    batch.residual_cash_usdt = summary.residual_cash_usdt
+
+
 def finalize_allocation_batch(
     db: Session,
     *,
@@ -436,6 +455,11 @@ def finalize_allocation_batch(
     )
 
     status_after, is_completed, reason = _decide_final_status(summary)
+
+    _apply_summary_to_batch(
+        batch,
+        summary=summary,
+    )
 
     batch.status = status_after
 

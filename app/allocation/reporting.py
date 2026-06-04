@@ -289,7 +289,7 @@ def store_allocation_report(
     report = _json_dict(report)
 
     if hasattr(batch, "report_json"):
-        setattr(batch, "report_json", report)
+        batch.report_json = report
     else:
         snapshot_json = dict(batch.snapshot_json or {})
         snapshot_json["allocation_report"] = report
