@@ -16,6 +16,17 @@ BATCH_STATUS_POSITIVE_NET_ACCOUNTING_FINALIZED = "positive_net_accounting_finali
 BATCH_STATUS_POSITIVE_CASH_SETTLEMENT_COMPLETED = "positive_cash_settlement_completed"
 BATCH_STATUS_FAILED_REQUIRES_REVIEW = "failed_requires_review"
 BATCH_STATUS_PAUSED_OPERATOR_ACTION_REQUIRED = "paused_operator_action_required"
+
+# stage 23: negative-net settlement statuses
+BATCH_STATUS_NEGATIVE_NET_TARGETS_CALCULATED = "negative_net_targets_calculated"
+BATCH_STATUS_NEGATIVE_NET_SALE_PLANNED = "negative_net_sale_planned"
+BATCH_STATUS_NEGATIVE_NET_SALE_PROCESSING = "negative_net_sale_processing"
+BATCH_STATUS_AWAITING_BYBIT_WITHDRAWAL = "awaiting_bybit_withdrawal"
+BATCH_STATUS_BYBIT_WITHDRAWAL_CONFIRMED = "bybit_withdrawal_confirmed"
+BATCH_STATUS_SELLER_PAYOUT_PROCESSING = "seller_payout_processing"
+BATCH_STATUS_NEGATIVE_NET_ACCOUNTING_FINALIZED = "negative_net_accounting_finalized"
+BATCH_STATUS_NEGATIVE_CASH_SETTLEMENT_COMPLETED = "negative_cash_settlement_completed"
+
 BATCH_STATUS_NO_ORDERS = "no_orders"
 BATCH_STATUS_FAILED = "failed"
 

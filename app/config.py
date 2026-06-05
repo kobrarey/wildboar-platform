@@ -103,6 +103,9 @@ class Settings(BaseSettings):
     TELEGRAM_OPERATOR_ACTION_TTL_MINUTES: int = 60
     TELEGRAM_OPERATOR_ACTION_COOLDOWN_SEC: int = 30
 
+    # --- stage 23.1: negative-net target calculation ---
+    NEGATIVE_NET_MOCK_BYBIT_WITHDRAWAL_FEE_USDT: Decimal = Decimal("1")
+
     # --- fee wallet daily USDT -> BNB swap ---
     FEE_WALLET_SWAP_ENABLED: bool = True
     FEE_WALLET_SWAP_INTERVAL_SEC: int = 3600

@@ -609,6 +609,18 @@ class FundOrder(Base):
     shares: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
     price_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
 
+    # stage 23.1: negative-net redeem fee / payout audit
+    gross_redeem_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    success_fee_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    management_fee_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    partial_month_fee_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    net_user_payout_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    net_price_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    fee_calc_month_open_price_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    fee_calc_days_in_month_period: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    success_fee_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 10), nullable=True)
+    management_fee_rate: Mapped[Decimal | None] = mapped_column(Numeric(18, 10), nullable=True)
+
     status: Mapped[str] = mapped_column(
         String(64),
         nullable=False,
@@ -674,6 +686,20 @@ class FundSettlementBatch(Base):
         nullable=False,
         server_default=sa_text("0"),
     )
+
+    # stage 23.1: negative-net fee totals / withdrawal targets
+    total_gross_redeem_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    total_net_user_payout_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    total_success_fee_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    total_management_fee_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    total_partial_month_fee_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    bybit_withdrawal_fee_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    required_master_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    withdrawal_request_amount_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    negative_net_target_calculated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    fee_calc_month_open_price_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    fee_calc_month_open_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    fee_calc_days_in_month_period: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     planned_shares_to_issue: Mapped[Decimal] = mapped_column(
         Numeric(30, 10),
