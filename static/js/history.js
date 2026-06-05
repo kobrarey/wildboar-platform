@@ -254,7 +254,7 @@
 
   function renderTradingTable(rows) {
     const safeRows = Array.isArray(rows) ? rows : [];
-    const grid = "grid-template-columns:minmax(160px,1.4fr) 110px 120px 110px 100px 110px 160px 160px;";
+    const grid = "grid-template-columns:minmax(150px,1.25fr) 100px 115px 105px 100px 150px 110px 150px 150px;";
 
     const header = `
       <div class="tx-header tx-header--trading" style="${grid}">
@@ -263,6 +263,7 @@
         <div class="tx-col-center">${escapeHtml(L("Стоимость", "Amount"))}</div>
         <div class="tx-col-center">${escapeHtml(L("Паи", "Shares"))}</div>
         <div class="tx-col-center">${escapeHtml(L("Цена", "Price"))}</div>
+        <div class="tx-col-center">${escapeHtml(L("Комиссия за неполный месяц", "Partial month fee"))}</div>
         <div class="tx-col-center">${escapeHtml(L("Статус", "Status"))}</div>
         <div class="tx-col-center">${escapeHtml(L("Создано", "Created"))}</div>
         <div class="tx-col-center">${escapeHtml(L("Исполнено", "Executed"))}</div>
@@ -279,6 +280,7 @@
                 <div class="tx-col-center">${escapeHtml(row.amount ?? (row.amount_usdt != null ? `${row.amount_usdt} USDT` : "—"))}</div>
                 <div class="tx-col-center">${escapeHtml(row.shares_display ?? (row.shares != null ? `${row.shares} ${L("паёв", "shares")}` : "—"))}</div>
                 <div class="tx-col-center">${escapeHtml(row.price ?? (row.price_usdt != null ? `${row.price_usdt} USDT` : "—"))}</div>
+                <div class="tx-col-center">${escapeHtml(row.partial_month_fee ?? (row.partial_month_fee_usdt != null ? `${row.partial_month_fee_usdt} USDT` : "—"))}</div>
                 <div class="tx-col-center">${tradingStatusHtml(row)}</div>
                 <div class="tx-col-dt tx-col-center">${escapeHtml(row.created_at || "")}</div>
                 <div class="tx-col-dt tx-col-center">${escapeHtml(row.executed_at || "—")}</div>

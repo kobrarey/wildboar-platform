@@ -178,6 +178,7 @@
             <div class="t-center">{{ 'Сумма' if lang=='ru' else 'Amount' }}</div>
             <div class="t-center">{{ 'Паи' if lang=='ru' else 'Shares' }}</div>
             <div class="t-center">{{ 'Цена' if lang=='ru' else 'Price' }}</div>
+            <div class="t-center">{{ 'Комиссия за неполный месяц' if lang=='ru' else 'Partial month fee' }}</div>
             <div class="t-center">{{ 'Статус' if lang=='ru' else 'Status' }}</div>
             <div class="t-center">{{ 'Создано' if lang=='ru' else 'Created' }}</div>
             <div class="t-right">{{ 'Исполнено' if lang=='ru' else 'Executed' }}</div>
@@ -247,6 +248,16 @@
                       {{ r.price|default('-', true) }}
                     {% elif r.price_usdt is not none %}
                       {{ fmt2(r.price_usdt) }} USDT
+                    {% else %}
+                      —
+                    {% endif %}
+                  </div>
+
+                  <div class="t-center">
+                    {% if r.partial_month_fee is defined %}
+                      {{ r.partial_month_fee|default('—', true) }}
+                    {% elif r.partial_month_fee_usdt is defined and r.partial_month_fee_usdt is not none %}
+                      {{ fmt2(r.partial_month_fee_usdt) }} USDT
                     {% else %}
                       —
                     {% endif %}

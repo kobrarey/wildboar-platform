@@ -381,6 +381,7 @@
         amount: `${fmt2(amountUsdt)} USDT`,
         shares: "—",
         price: "—",
+        partial_month_fee: "—",
         status: "pending",
         status_label: L("Обрабатывается", "Processing"),
         created: nowDisplay(),
@@ -395,6 +396,7 @@
         amount: "—",
         shares: `${fmt4(shares)} ${L("паёв", "shares")}`,
         price: "—",
+        partial_month_fee: "—",
         status: "pending",
         status_label: L("Обрабатывается", "Processing"),
         created: nowDisplay(),
@@ -424,6 +426,10 @@
           r.price ??
           r.price_text ??
           (r.price_usdt !== undefined && r.price_usdt !== null ? `${fmt2(r.price_usdt)} USDT` : fallback.price),
+        partial_month_fee:
+          r.partial_month_fee ??
+          r.partial_month_fee_label ??
+          (r.partial_month_fee_usdt !== undefined && r.partial_month_fee_usdt !== null ? `${fmt2(r.partial_month_fee_usdt)} USDT` : fallback.partial_month_fee ?? "—"),
         status: statusRaw,
         status_class: r.status_class ?? r.status_color ?? "",
         status_label: r.status_label ?? fallback.status_label,
@@ -442,6 +448,7 @@
         <div class="t-center">${escapeHtml(normalizeDisplayValue(row.amount))}</div>
         <div class="t-center">${escapeHtml(normalizeDisplayValue(row.shares))}</div>
         <div class="t-center">${escapeHtml(normalizeDisplayValue(row.price))}</div>
+        <div class="t-center">${escapeHtml(normalizeDisplayValue(row.partial_month_fee))}</div>
         <div class="t-center">
           <span class="term-status term-status--${stClass}">
             ${escapeHtml(statusLabel(row.status, row.status_label))}
