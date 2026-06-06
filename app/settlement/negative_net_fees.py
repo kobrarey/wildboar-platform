@@ -284,10 +284,12 @@ def calculate_redeem_order_fees(
         * (Decimal(n_d) / DAYS_IN_FEE_MONTH)
     )
 
-    # In Stage 23 policy this is the partial-month management fee shown in history.
-    partial_month_fee_usdt = management_fee_usdt
+    # Stage 23.1.1:
+    # partial_month_fee_usdt is the total redeem fee shown in trade history:
+    # success fee + partial-month management fee.
+    partial_month_fee_usdt = success_fee_usdt + management_fee_usdt
 
-    total_fee_usdt = success_fee_usdt + management_fee_usdt
+    total_fee_usdt = partial_month_fee_usdt
     net_user_payout_usdt = floor_usdt_2(gross_redeem_usdt - total_fee_usdt)
     net_price_usdt = p_t - (total_fee_usdt / n_s)
 
