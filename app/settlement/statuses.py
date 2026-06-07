@@ -27,6 +27,26 @@ BATCH_STATUS_SELLER_PAYOUT_PROCESSING = "seller_payout_processing"
 BATCH_STATUS_NEGATIVE_NET_ACCOUNTING_FINALIZED = "negative_net_accounting_finalized"
 BATCH_STATUS_NEGATIVE_CASH_SETTLEMENT_COMPLETED = "negative_cash_settlement_completed"
 
+# fund_negative_sale_batches.status
+SALE_BATCH_STATUS_SNAPSHOT_CREATED = "snapshot_created"
+SALE_BATCH_STATUS_SALE_PLAN_CREATED = "sale_plan_created"
+SALE_BATCH_STATUS_SALE_PLAN_FAILED_REQUIRES_REVIEW = "sale_plan_failed_requires_review"
+SALE_BATCH_STATUS_SALE_EXECUTION_PROCESSING = "sale_execution_processing"
+SALE_BATCH_STATUS_SALE_EXECUTION_COMPLETED = "sale_execution_completed"
+SALE_BATCH_STATUS_SALE_EXECUTION_FAILED_REQUIRES_REVIEW = "sale_execution_failed_requires_review"
+
+# fund_negative_sale_legs.status
+SALE_LEG_STATUS_PLANNED = "planned"
+SALE_LEG_STATUS_SKIPPED_ZERO_VALUE = "skipped_zero_value"
+SALE_LEG_STATUS_SKIPPED_NOT_ELIGIBLE = "skipped_not_eligible"
+SALE_LEG_STATUS_SKIPPED_MIN_ORDER = "skipped_min_order"
+SALE_LEG_STATUS_SKIPPED_SYMBOL_NOT_TRADING = "skipped_symbol_not_trading"
+SALE_LEG_STATUS_SKIPPED_LIQUIDITY_GUARD = "skipped_liquidity_guard"
+SALE_LEG_STATUS_SKIPPED_MARGIN_GUARD = "skipped_margin_guard"
+SALE_LEG_STATUS_CASH_AVAILABLE = "cash_available"
+SALE_LEG_STATUS_BUFFER_AVAILABLE = "buffer_available"
+SALE_LEG_STATUS_FAILED_REQUIRES_REVIEW = "failed_requires_review"
+
 BATCH_STATUS_NO_ORDERS = "no_orders"
 BATCH_STATUS_FAILED = "failed"
 

@@ -106,6 +106,11 @@ class Settings(BaseSettings):
     # --- stage 23.1: negative-net target calculation ---
     NEGATIVE_NET_MOCK_BYBIT_WITHDRAWAL_FEE_USDT: Decimal = Decimal("1")
 
+    # --- stage 23.2: negative-net sale plan ---
+    NEGATIVE_NET_SALE_PLAN_MOCK_ONLY: bool = True
+    NEGATIVE_NET_EXTRA_LARGEST_ASSET_BUFFER_PCT: Decimal = Decimal("0.10")
+    NEGATIVE_NET_SALE_PLAN_USE_READONLY_BYBIT: bool = False
+
     # --- fee wallet daily USDT -> BNB swap ---
     FEE_WALLET_SWAP_ENABLED: bool = True
     FEE_WALLET_SWAP_INTERVAL_SEC: int = 3600

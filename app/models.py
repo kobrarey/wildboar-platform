@@ -8,7 +8,7 @@ from sqlalchemy import (
 )
 from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from sqlalchemy.sql import func
 
 from .db import Base
@@ -752,6 +752,190 @@ class FundSettlementBatch(Base):
 
     __table_args__ = (
         UniqueConstraint("fund_id", "settlement_date", name="fund_settlement_batches_fund_date_uq"),
+    )
+
+
+class FundNegativeSaleBatch(Base):
+    __tablename__ = "fund_negative_sale_batches"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    settlement_batch_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_settlement_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=sa_text("'snapshot_created'"),
+    )
+
+    required_master_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    withdrawal_request_amount_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    total_net_user_payout_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    total_partial_month_fee_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    bybit_withdrawal_fee_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    unified_usdt_available: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    fund_wallet_usdt_available: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    usdt_earn_available: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    total_cash_like_available_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    sale_target_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    planned_sale_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    expected_shortage_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    expected_surplus_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    largest_extra_sale_buffer_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 10), nullable=True)
+
+    snapshot_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    plan_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    report_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    snapshot_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    plan_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    settlement_batch: Mapped["FundSettlementBatch"] = relationship(
+        "FundSettlementBatch",
+        foreign_keys=[settlement_batch_id],
+    )
+    fund: Mapped["Fund"] = relationship(
+        "Fund",
+        foreign_keys=[fund_id],
+    )
+    sale_legs: Mapped[list["FundNegativeSaleLeg"]] = relationship(
+        "FundNegativeSaleLeg",
+        back_populates="sale_batch",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "settlement_batch_id",
+            name="fund_negative_sale_batches_settlement_uq",
+        ),
+    )
+
+
+class FundNegativeSaleLeg(Base):
+    __tablename__ = "fund_negative_sale_legs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    sale_batch_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_negative_sale_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    settlement_batch_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_settlement_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    leg_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    leg_group: Mapped[str] = mapped_column(String(64), nullable=False)
+    leg_type: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    coin: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    symbol: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    category: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    side: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    location: Mapped[str | None] = mapped_column(String(64), nullable=True)
+
+    current_qty: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    current_size: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    current_usd_value: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    current_notional_usd: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    source_weight: Mapped[Decimal | None] = mapped_column(Numeric(30, 18), nullable=True)
+
+    target_cash_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    target_qty: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    expected_cash_delta_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    eligible: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=sa_text("TRUE"),
+    )
+    eligibility_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    use_for_deficit_cover: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=sa_text("TRUE"),
+    )
+
+    instrument_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    min_order_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    liquidity_check_required: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    margin_guard_required: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+
+    planned_execution_mode: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    order_link_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    strategy_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    status: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=sa_text("'planned'"),
+    )
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    sale_batch: Mapped["FundNegativeSaleBatch"] = relationship(
+        "FundNegativeSaleBatch",
+        back_populates="sale_legs",
+        foreign_keys=[sale_batch_id],
+    )
+    settlement_batch: Mapped["FundSettlementBatch"] = relationship(
+        "FundSettlementBatch",
+        foreign_keys=[settlement_batch_id],
+    )
+    fund: Mapped["Fund"] = relationship(
+        "Fund",
+        foreign_keys=[fund_id],
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "sale_batch_id",
+            "leg_index",
+            name="fund_negative_sale_legs_batch_index_uq",
+        ),
     )
 
 
