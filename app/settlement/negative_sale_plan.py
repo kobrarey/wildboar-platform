@@ -99,6 +99,9 @@ class NegativeSalePlanComputation:
     unified_usdt_available: Decimal
     fund_wallet_usdt_available: Decimal
     usdt_earn_available: Decimal
+    usdt_earn_redeemable: Decimal
+    usdt_earn_used_as_buffer: Decimal
+    cash_like_available_for_plan: Decimal
     total_cash_like_available_usdt: Decimal
 
     sale_target_usdt: Decimal
@@ -240,7 +243,19 @@ def _cash_like_leg(
     amount_usdt: Decimal,
     status: str,
     reason: str,
+    eligible: bool = True,
+    use_for_deficit_cover: bool = True,
+    target_cash_usdt: Decimal | None = None,
+    expected_cash_delta_usdt: Decimal | None = None,
+    instrument_status: str = "cash",
 ) -> SaleLegPlan:
+    target_cash = amount_usdt if target_cash_usdt is None else target_cash_usdt
+    expected_cash_delta = (
+        target_cash
+        if expected_cash_delta_usdt is None
+        else expected_cash_delta_usdt
+    )
+
     return SaleLegPlan(
         leg_group="cash_like",
         leg_type=leg_type,
@@ -254,14 +269,14 @@ def _cash_like_leg(
         current_usd_value=amount_usdt,
         current_notional_usd=None,
         source_weight=None,
-        target_cash_usdt=amount_usdt,
+        target_cash_usdt=target_cash,
         target_qty=None,
-        expected_cash_delta_usdt=amount_usdt,
-        eligible=True,
+        expected_cash_delta_usdt=expected_cash_delta,
+        eligible=eligible,
         eligibility_reason=reason,
-        use_for_deficit_cover=True,
-        instrument_status="cash",
-        min_order_passed=True,
+        use_for_deficit_cover=use_for_deficit_cover,
+        instrument_status=instrument_status,
+        min_order_passed=True if eligible else None,
         liquidity_check_required=False,
         margin_guard_required=False,
         planned_execution_mode="cash_source_only",
@@ -297,18 +312,46 @@ def _build_cash_like_legs(snapshot: NegativeSaleSnapshot) -> list[SaleLegPlan]:
         )
 
     if snapshot.usdt_earn_available > ZERO:
-        legs.append(
-            _cash_like_leg(
-                leg_type="usdt_earn_buffer",
-                location="EARN",
-                amount_usdt=snapshot.usdt_earn_available,
-                status=SALE_LEG_STATUS_BUFFER_AVAILABLE,
-                reason=(
-                    "USDT Earn is planned as a buffer/source only. "
-                    "No Earn redeem is executed in Stage 23.2."
-                ),
+        usdt_earn_used_as_buffer = snapshot.usdt_earn_used_as_buffer()
+
+        if usdt_earn_used_as_buffer > ZERO:
+            legs.append(
+                _cash_like_leg(
+                    leg_type="usdt_earn_buffer",
+                    location="EARN",
+                    amount_usdt=snapshot.usdt_earn_available,
+                    target_cash_usdt=usdt_earn_used_as_buffer,
+                    expected_cash_delta_usdt=usdt_earn_used_as_buffer,
+                    status=SALE_LEG_STATUS_BUFFER_AVAILABLE,
+                    reason=(
+                        "USDT Earn is planned as redeemable buffer only. "
+                        f"available={snapshot.usdt_earn_available}, "
+                        f"redeemable={snapshot.usdt_earn_redeemable}, "
+                        f"used_as_buffer={usdt_earn_used_as_buffer}. "
+                        "No Earn redeem is executed in Stage 23.2."
+                    ),
+                )
             )
-        )
+        else:
+            legs.append(
+                _cash_like_leg(
+                    leg_type="usdt_earn_buffer",
+                    location="EARN",
+                    amount_usdt=snapshot.usdt_earn_available,
+                    target_cash_usdt=ZERO,
+                    expected_cash_delta_usdt=ZERO,
+                    status=SALE_LEG_STATUS_SKIPPED_NOT_ELIGIBLE,
+                    reason=(
+                        "usdt_earn_not_redeemable: USDT Earn balance exists, "
+                        "but redeemable amount is zero or missing. "
+                        f"available={snapshot.usdt_earn_available}, "
+                        f"redeemable={snapshot.usdt_earn_redeemable}."
+                    ),
+                    eligible=False,
+                    use_for_deficit_cover=False,
+                    instrument_status="not_redeemable",
+                )
+            )
 
     return legs
 
@@ -652,13 +695,16 @@ def _compute_negative_sale_plan(
     unified_usdt_available = snapshot.unified_usdt_available
     fund_wallet_usdt_available = snapshot.fund_wallet_usdt_available
     usdt_earn_available = snapshot.usdt_earn_available
-    total_cash_like_available_usdt = snapshot.total_cash_like_available_usdt()
+    usdt_earn_redeemable = snapshot.usdt_earn_redeemable
+    usdt_earn_used_as_buffer = snapshot.usdt_earn_used_as_buffer()
+    cash_like_available_for_plan = snapshot.total_cash_like_available_usdt()
+    total_cash_like_available_usdt = cash_like_available_for_plan
 
     sale_target_usdt = _max_zero(
         required_master_usdt
         - unified_usdt_available
         - fund_wallet_usdt_available
-        - usdt_earn_available
+        - usdt_earn_used_as_buffer
     )
 
     cash_like_legs = _build_cash_like_legs(snapshot)
@@ -690,12 +736,15 @@ def _compute_negative_sale_plan(
         "formula": {
             "sale_target_usdt": (
                 "max(required_master_usdt - unified_usdt_available "
-                "- fund_wallet_usdt_available - usdt_earn_available, 0)"
+                "- fund_wallet_usdt_available - usdt_earn_used_as_buffer, 0)"
             ),
             "required_master_usdt": str(required_master_usdt),
             "unified_usdt_available": str(unified_usdt_available),
             "fund_wallet_usdt_available": str(fund_wallet_usdt_available),
             "usdt_earn_available": str(usdt_earn_available),
+            "usdt_earn_redeemable": str(usdt_earn_redeemable),
+            "usdt_earn_used_as_buffer": str(usdt_earn_used_as_buffer),
+            "cash_like_available_for_plan": str(cash_like_available_for_plan),
             "total_cash_like_available_usdt": str(total_cash_like_available_usdt),
         },
         "targets": {
@@ -731,6 +780,9 @@ def _compute_negative_sale_plan(
         unified_usdt_available=unified_usdt_available,
         fund_wallet_usdt_available=fund_wallet_usdt_available,
         usdt_earn_available=usdt_earn_available,
+        usdt_earn_redeemable=usdt_earn_redeemable,
+        usdt_earn_used_as_buffer=usdt_earn_used_as_buffer,
+        cash_like_available_for_plan=cash_like_available_for_plan,
         total_cash_like_available_usdt=total_cash_like_available_usdt,
         sale_target_usdt=sale_target_usdt,
         planned_sale_usdt=planned_sale_usdt,
@@ -1088,7 +1140,13 @@ def create_negative_sale_plan(
             diagnostics={
                 "sale_target_formula": (
                     "max(required_master_usdt - unified_usdt_available "
-                    "- fund_wallet_usdt_available - usdt_earn_available, 0)"
+                    "- fund_wallet_usdt_available - usdt_earn_used_as_buffer, 0)"
+                ),
+                "usdt_earn_available": str(computation.usdt_earn_available),
+                "usdt_earn_redeemable": str(computation.usdt_earn_redeemable),
+                "usdt_earn_used_as_buffer": str(computation.usdt_earn_used_as_buffer),
+                "cash_like_available_for_plan": str(
+                    computation.cash_like_available_for_plan
                 ),
                 "total_cash_like_available_usdt": str(
                     computation.total_cash_like_available_usdt

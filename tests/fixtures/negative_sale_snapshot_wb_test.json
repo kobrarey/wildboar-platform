@@ -1,84 +1,84 @@
 {
-    "snapshot_ts": "2026-06-06T12:00:00+00:00",
-    "cash": {
-      "unified_usdt_available": "100",
-      "fund_wallet_usdt_available": "25",
-      "usdt_earn_available": "50",
-      "usdt_earn_redeemable": "40"
-    },
-    "assets": {
-      "spot": [
-        {
-          "coin": "ETH",
-          "symbol": "ETHUSDT",
-          "qty": "1.5",
-          "usd_value": "4500",
-          "instrument_status": "trading"
-        },
-        {
-          "coin": "ZERO",
-          "symbol": "ZEROUSDT",
-          "qty": "10",
-          "usd_value": "0",
-          "instrument_status": "trading"
-        },
-        {
-          "coin": null,
-          "symbol": null,
-          "qty": "5",
-          "usd_value": "100",
-          "instrument_status": "trading"
-        },
-        {
-          "coin": "HALT",
-          "symbol": "HALTUSDT",
-          "qty": "10",
-          "usd_value": "100",
-          "instrument_status": "offline"
-        }
-      ],
-      "non_stable_earn": [
-        {
-          "coin": "SOL",
-          "symbol": "SOLUSDT",
-          "qty": "20",
-          "usd_value": "3000",
-          "redeemable_usdt": "2900",
-          "instrument_status": "trading"
-        }
-      ],
-      "perp_future_positions": [
-        {
-          "symbol": "BTCUSDT",
-          "side": "long",
-          "size": "0.10",
-          "usd_value": "1000",
-          "notional_usd": "10000",
-          "instrument_status": "trading"
-        }
-      ],
-      "long_options": [
-        {
-          "symbol": "BTC-260626-100000-C",
-          "side": "long",
-          "size": "1",
-          "usd_value": "500",
-          "notional_usd": "500",
-          "instrument_status": "trading"
-        }
-      ],
-      "short_options": [
-        {
-          "symbol": "BTC-260626-80000-P",
-          "side": "short",
-          "size": "1",
-          "usd_value": "300",
-          "notional_usd": "300",
-          "instrument_status": "trading"
-        }
-      ]
-    },
-    "summary": {
-      "total_portfolio_value_usdt": "12345.67"
-    }
+  "snapshot_ts": "2026-06-06T12:00:00+00:00",
+  "cash": {
+    "unified_usdt_available": "100",
+    "fund_wallet_usdt_available": "25",
+    "usdt_earn_available": "1000",
+    "usdt_earn_redeemable": "250"
+  },
+  "assets": {
+    "spot": [
+      {
+        "coin": "ETH",
+        "symbol": "ETHUSDT",
+        "qty": "1.5",
+        "usd_value": "4500",
+        "instrument_status": "trading"
+      },
+      {
+        "coin": "ZERO",
+        "symbol": "ZEROUSDT",
+        "qty": "10",
+        "usd_value": "0",
+        "instrument_status": "trading"
+      },
+      {
+        "coin": null,
+        "symbol": null,
+        "qty": "5",
+        "usd_value": "100",
+        "instrument_status": "trading"
+      },
+      {
+        "coin": "HALT",
+        "symbol": "HALTUSDT",
+        "qty": "10",
+        "usd_value": "100",
+        "instrument_status": "offline"
+      }
+    ],
+    "non_stable_earn": [
+      {
+        "coin": "SOL",
+        "symbol": "SOLUSDT",
+        "qty": "20",
+        "usd_value": "3000",
+        "redeemable_usdt": "2900",
+        "instrument_status": "trading"
+      }
+    ],
+    "perp_future_positions": [
+      {
+        "symbol": "BTCUSDT",
+        "side": "long",
+        "size": "0.10",
+        "usd_value": "1000",
+        "notional_usd": "10000",
+        "instrument_status": "trading"
+      }
+    ],
+    "long_options": [
+      {
+        "symbol": "BTC-260626-100000-C",
+        "side": "long",
+        "size": "1",
+        "usd_value": "500",
+        "notional_usd": "500",
+        "instrument_status": "trading"
+      }
+    ],
+    "short_options": [
+      {
+        "symbol": "BTC-260626-80000-P",
+        "side": "short",
+        "size": "1",
+        "usd_value": "300",
+        "notional_usd": "300",
+        "instrument_status": "trading"
+      }
+    ]
+  },
+  "summary": {
+    "total_portfolio_value_usdt": "12345.67"
   }
+}

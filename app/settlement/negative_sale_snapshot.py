@@ -55,11 +55,17 @@ class NegativeSaleSnapshot:
     snapshot_ts: datetime
     raw_snapshot_json: dict[str, Any]
 
+    def usdt_earn_used_as_buffer(self) -> Decimal:
+        return max(
+            min(self.usdt_earn_available, self.usdt_earn_redeemable),
+            ZERO,
+        )
+
     def total_cash_like_available_usdt(self) -> Decimal:
         return (
             self.unified_usdt_available
             + self.fund_wallet_usdt_available
-            + self.usdt_earn_available
+            + self.usdt_earn_used_as_buffer()
         )
 
     def all_assets(self) -> list[NegativeSaleAsset]:
@@ -77,6 +83,8 @@ class NegativeSaleSnapshot:
             "fund_wallet_usdt_available": str(self.fund_wallet_usdt_available),
             "usdt_earn_available": str(self.usdt_earn_available),
             "usdt_earn_redeemable": str(self.usdt_earn_redeemable),
+            "usdt_earn_used_as_buffer": str(self.usdt_earn_used_as_buffer()),
+            "cash_like_available_for_plan": str(self.total_cash_like_available_usdt()),
             "total_cash_like_available_usdt": str(self.total_cash_like_available_usdt()),
             "spot_holdings": [item.to_dict() for item in self.spot_holdings],
             "non_stable_earn_holdings": [
@@ -424,7 +432,7 @@ def normalize_negative_sale_snapshot(raw_snapshot: dict[str, Any]) -> NegativeSa
                 "earn.usdt_redeemable",
                 "earn.usdt_redeemable_usdt",
             ],
-            default=str(usdt_earn_available),
+            default="0",
         )
     )
 
