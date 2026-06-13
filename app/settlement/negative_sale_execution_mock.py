@@ -13,6 +13,7 @@ from app.settlement.negative_sale_execution_types import (
     ZERO,
     EarnExecutionMock,
     ExtraSaleExecutionMock,
+    NegativeSaleExecutionError,
     NegativeSaleExecutionMock,
     SymbolExecutionMock,
 )
