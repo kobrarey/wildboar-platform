@@ -803,6 +803,26 @@ class FundNegativeSaleBatch(Base):
     snapshot_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     plan_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
+    # stage 23.3: mock sale execution / reconciliation
+    execution_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    execution_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    available_usdt_before_execution: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    initial_cash_like_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    usdt_earn_redeemed_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    initial_sale_executed_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    available_usdt_after_initial_sales: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    shortage_after_initial_sales_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    extra_sale_required_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    extra_sale_target_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    extra_sale_executed_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    final_available_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    final_shortage_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    final_surplus_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    execution_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    reconciliation_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,
@@ -897,6 +917,40 @@ class FundNegativeSaleLeg(Base):
     planned_execution_mode: Mapped[str | None] = mapped_column(String(64), nullable=True)
     order_link_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     strategy_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    # stage 23.3: mock sale leg execution / fills
+    actual_execution_mode: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    execution_round: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    deterministic_key: Mapped[str | None] = mapped_column(String(160), nullable=True)
+
+    bybit_order_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    bybit_strategy_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    planned_suborders: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    executed_suborders: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    suborders_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    mock_execution_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    last_price: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    best_bid: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    best_ask: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    corridor_pct: Mapped[Decimal | None] = mapped_column(Numeric(18, 10), nullable=True)
+
+    available_liquidity_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    available_liquidity_qty: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+
+    filled_qty: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    filled_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    avg_fill_price: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    fill_ratio: Mapped[Decimal | None] = mapped_column(Numeric(18, 10), nullable=True)
+    unfilled_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    fee_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    cash_delta_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    execution_error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     status: Mapped[str] = mapped_column(
         String(64),

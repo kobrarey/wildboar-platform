@@ -1,0 +1,94 @@
+{
+  "mock_id": "stage23_3_wb_test_execution_mock",
+  "mock_only": true,
+  "safety": {
+    "no_real_bybit_calls": true,
+    "no_trades": true,
+    "no_real_strategy_orders": true,
+    "no_bybit_transfers_or_withdrawals": true,
+    "no_bsc_transfers": true,
+    "no_accounting_finalization": true,
+    "no_server_deploy": true
+  },
+  "execution_policy": {
+    "sell_corridor_pct": "1",
+    "fill_acceptance_pct": "98",
+    "slices": 10,
+    "max_active_strategy_orders": 5,
+    "extra_largest_asset_buffer_pct": "10"
+  },
+  "usdt_earn": {
+    "initial_redeemable_usdt": "250",
+    "initial_redeem_fill_usdt": "250",
+    "additional_redeemable_usdt": "0",
+    "additional_redeem_fill_usdt": "0"
+  },
+  "symbols": {
+    "ETHUSDT": {
+      "category": "spot",
+      "last_price": "3000",
+      "best_bid": "2985",
+      "best_ask": "3002",
+      "available_liquidity_usdt": "100000",
+      "available_liquidity_qty": "33.333333333333333333",
+      "native_strategy_supported": true,
+      "mock_fill_ratio": "1.0",
+      "fee_usdt": "0"
+    },
+    "SOLUSDT": {
+      "category": "spot",
+      "last_price": "150",
+      "best_bid": "148.80",
+      "best_ask": "150.10",
+      "available_liquidity_usdt": "10",
+      "available_liquidity_qty": "0.066666666666666667",
+      "native_strategy_supported": true,
+      "mock_fill_ratio": "0.985",
+      "fee_usdt": "0"
+    },
+    "BTCUSDT": {
+      "category": "linear",
+      "last_price": "100000",
+      "best_bid": "98900",
+      "best_ask": "100050",
+      "available_liquidity_usdt": "10",
+      "available_liquidity_qty": "0.0001",
+      "native_strategy_supported": true,
+      "mock_fill_ratio": "0.97",
+      "fee_usdt": "0"
+    },
+    "BTC-260626-100000-C": {
+      "category": "option",
+      "last_price": "500",
+      "best_bid": "490",
+      "best_ask": "505",
+      "available_liquidity_usdt": "0",
+      "available_liquidity_qty": "0",
+      "native_strategy_supported": false,
+      "mock_fill_ratio": "1.0",
+      "fee_usdt": "0"
+    },
+    "BTC-260626-80000-P": {
+      "category": "option",
+      "last_price": "300",
+      "best_bid": "290",
+      "best_ask": "305",
+      "available_liquidity_usdt": "0",
+      "available_liquidity_qty": "0",
+      "native_strategy_supported": false,
+      "mock_fill_ratio": "0",
+      "fee_usdt": "0"
+    }
+  },
+  "extra_sale": {
+    "enabled": true,
+    "preferred_symbol": "ETHUSDT",
+    "last_price": "3000",
+    "best_bid": "2985",
+    "best_ask": "3002",
+    "available_liquidity_usdt": "100000",
+    "available_liquidity_qty": "33.333333333333333333",
+    "mock_fill_ratio": "1.0",
+    "fee_usdt": "0"
+  }
+}

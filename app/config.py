@@ -111,6 +111,14 @@ class Settings(BaseSettings):
     NEGATIVE_NET_EXTRA_LARGEST_ASSET_BUFFER_PCT: Decimal = Decimal("0.10")
     NEGATIVE_NET_SALE_PLAN_USE_READONLY_BYBIT: bool = False
 
+    # --- stage 23.3: negative-net sale execution ---
+    NEGATIVE_NET_SALE_EXECUTION_MOCK_ONLY: bool = True
+    NEGATIVE_NET_SALE_FILL_ACCEPTANCE_PCT: Decimal = Decimal("98")
+    NEGATIVE_NET_SALE_CORRIDOR_PCT: Decimal = Decimal("1")
+    NEGATIVE_NET_SALE_SLICES: int = 10
+    NEGATIVE_NET_SALE_MAX_ACTIVE_STRATEGY_ORDERS: int = 5
+    NEGATIVE_NET_SALE_ALLOW_LIVE_EXECUTION: bool = False
+
     # --- fee wallet daily USDT -> BNB swap ---
     FEE_WALLET_SWAP_ENABLED: bool = True
     FEE_WALLET_SWAP_INTERVAL_SEC: int = 3600
