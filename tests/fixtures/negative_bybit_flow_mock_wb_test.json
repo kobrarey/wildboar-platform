@@ -1,0 +1,25 @@
+{
+    "mock_only": true,
+    "mock_id": "stage23_4_wb_test_happy_path",
+    "master_uid": "master_mock",
+    "fund_sub_uid": "sub_mock_wb_test",
+    "universal_transfer": {
+      "status": "SUCCESS",
+      "reconcile_status": "SUCCESS"
+    },
+    "withdrawal": {
+      "status": "SUCCESS",
+      "reconcile_status": "SUCCESS",
+      "withdrawal_id": "mock-withdrawal-id",
+      "tx_hash": "0xmockwithdrawaltx",
+      "fee_type": 0
+    },
+    "settlement_wallet_receipt": {
+      "status": "CONFIRMED",
+      "received_amount_matches": true
+    },
+    "whitelist": {
+      "internal_db_whitelist_passed": true,
+      "bybit_address_whitelist_mock_passed": true
+    }
+  }

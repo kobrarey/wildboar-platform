@@ -22,11 +22,28 @@ BATCH_STATUS_NEGATIVE_NET_TARGETS_CALCULATED = "negative_net_targets_calculated"
 BATCH_STATUS_NEGATIVE_NET_SALE_PLANNED = "negative_net_sale_planned"
 BATCH_STATUS_NEGATIVE_NET_SALE_PROCESSING = "negative_net_sale_processing"
 BATCH_STATUS_NEGATIVE_NET_SALE_EXECUTED = "negative_net_sale_executed"
+BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING = "negative_net_master_flow_processing"
+BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_PENDING = "negative_net_withdrawal_pending"
+BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING = "negative_net_withdrawal_reconciling"
+BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT = "negative_net_cash_ready_for_payout"
 BATCH_STATUS_AWAITING_BYBIT_WITHDRAWAL = "awaiting_bybit_withdrawal"
 BATCH_STATUS_BYBIT_WITHDRAWAL_CONFIRMED = "bybit_withdrawal_confirmed"
 BATCH_STATUS_SELLER_PAYOUT_PROCESSING = "seller_payout_processing"
 BATCH_STATUS_NEGATIVE_NET_ACCOUNTING_FINALIZED = "negative_net_accounting_finalized"
 BATCH_STATUS_NEGATIVE_CASH_SETTLEMENT_COMPLETED = "negative_cash_settlement_completed"
+
+
+# fund_negative_bybit_flows.status
+BYBIT_FLOW_STATUS_CREATED = "created"
+BYBIT_FLOW_STATUS_PREFLIGHT_PASSED = "preflight_passed"
+BYBIT_FLOW_STATUS_PREFLIGHT_FAILED_REQUIRES_REVIEW = "preflight_failed_requires_review"
+BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_MOCKED = "universal_transfer_mocked"
+BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED = "universal_transfer_reconciled"
+BYBIT_FLOW_STATUS_WITHDRAWAL_MOCKED = "withdrawal_mocked"
+BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILED = "withdrawal_reconciled"
+BYBIT_FLOW_STATUS_SETTLEMENT_WALLET_RECEIPT_CONFIRMED = "settlement_wallet_receipt_confirmed"
+BYBIT_FLOW_STATUS_COMPLETED = "completed"
+BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW = "failed_requires_review"
 
 # fund_negative_sale_batches.status
 SALE_BATCH_STATUS_SNAPSHOT_CREATED = "snapshot_created"

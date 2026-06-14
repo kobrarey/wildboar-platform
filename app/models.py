@@ -856,6 +856,140 @@ class FundNegativeSaleBatch(Base):
     )
 
 
+class FundNegativeBybitFlow(Base):
+    __tablename__ = "fund_negative_bybit_flows"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    settlement_batch_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_settlement_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    sale_batch_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_negative_sale_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=sa_text("'created'"),
+    )
+
+    coin: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=sa_text("'USDT'"),
+    )
+    chain: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=sa_text("'BSC'"),
+    )
+
+    required_master_usdt: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+    withdrawal_request_amount_usdt: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+    bybit_withdrawal_fee_usdt: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+    retained_fees_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    settlement_wallet_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_wallets.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    settlement_wallet_address: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    preflight_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    preflight_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    preflight_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    from_sub_uid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    to_master_uid: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    from_account_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    to_account_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+
+    universal_transfer_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    universal_transfer_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    universal_transfer_amount_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    universal_transfer_coin: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    universal_transfer_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    universal_transfer_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    universal_transfer_mock_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    universal_transfer_reconciliation_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    withdrawal_request_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    withdrawal_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    withdrawal_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    withdrawal_amount_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    withdrawal_fee_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    withdrawal_coin: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    withdrawal_chain: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    withdrawal_address: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    withdrawal_tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    withdrawal_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    withdrawal_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    withdrawal_mock_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    withdrawal_record_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    withdrawal_reconciliation_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    settlement_wallet_receipt_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    settlement_wallet_received_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    settlement_wallet_receipt_tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    settlement_wallet_receipt_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    settlement_wallet_receipt_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    reconciliation_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    report_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    settlement_batch: Mapped["FundSettlementBatch"] = relationship(
+        "FundSettlementBatch",
+        foreign_keys=[settlement_batch_id],
+    )
+    sale_batch: Mapped["FundNegativeSaleBatch"] = relationship(
+        "FundNegativeSaleBatch",
+        foreign_keys=[sale_batch_id],
+    )
+    fund: Mapped["Fund"] = relationship(
+        "Fund",
+        foreign_keys=[fund_id],
+    )
+    settlement_wallet: Mapped["FundWallet | None"] = relationship(
+        "FundWallet",
+        foreign_keys=[settlement_wallet_id],
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "settlement_batch_id",
+            name="fund_negative_bybit_flows_settlement_uq",
+        ),
+        UniqueConstraint(
+            "sale_batch_id",
+            name="fund_negative_bybit_flows_sale_batch_uq",
+        ),
+    )
+
+
 class FundNegativeSaleLeg(Base):
     __tablename__ = "fund_negative_sale_legs"
 

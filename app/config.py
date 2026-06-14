@@ -119,6 +119,15 @@ class Settings(BaseSettings):
     NEGATIVE_NET_SALE_MAX_ACTIVE_STRATEGY_ORDERS: int = 5
     NEGATIVE_NET_SALE_ALLOW_LIVE_EXECUTION: bool = False
 
+    # --- stage 23.4: negative-net Bybit master flow mock/preflight ---
+    NEGATIVE_NET_BYBIT_FLOW_MOCK_ONLY: bool = True
+    NEGATIVE_NET_BYBIT_FLOW_ALLOW_LIVE: bool = False
+    NEGATIVE_NET_BYBIT_FLOW_COIN: str = "USDT"
+    NEGATIVE_NET_BYBIT_FLOW_CHAIN: str = "BSC"
+    NEGATIVE_NET_WITHDRAWAL_FEE_TYPE: int = 0
+    NEGATIVE_NET_REQUIRE_ACTIVE_SETTLEMENT_WALLET: bool = True
+    NEGATIVE_NET_REQUIRE_INTERNAL_SETTLEMENT_WALLET_WHITELIST: bool = True
+
     # --- fee wallet daily USDT -> BNB swap ---
     FEE_WALLET_SWAP_ENABLED: bool = True
     FEE_WALLET_SWAP_INTERVAL_SEC: int = 3600
