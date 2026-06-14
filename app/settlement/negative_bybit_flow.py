@@ -445,67 +445,365 @@ def _receipt_confirmed(value: str | None) -> bool:
     return str(value or "").strip().upper() == "CONFIRMED"
 
 
-def _raw_optional_str(raw: dict[str, Any], *keys: str) -> str | None:
-    for key in keys:
-        value = raw.get(key)
-        if value is not None and str(value).strip() != "":
-            return str(value).strip()
+def _required_record(
+    raw: dict[str, Any],
+    *,
+    record_name: str,
+) -> dict[str, Any]:
+    record = raw.get("record")
+    if not isinstance(record, dict):
+        raise NegativeBybitFlowError(f"{record_name} record is required")
 
-    return None
+    return record
 
 
-def _raw_optional_decimal(raw: dict[str, Any], *keys: str) -> Decimal | None:
-    value = _raw_optional_str(raw, *keys)
-    if value is None:
-        return None
+def _required_record_field(
+    record: dict[str, Any],
+    *,
+    record_name: str,
+    field_name: str,
+) -> Any:
+    if field_name not in record:
+        raise NegativeBybitFlowError(
+            f"{record_name} record missing required field: {field_name}"
+        )
+
+    value = record.get(field_name)
+    if value is None or str(value).strip() == "":
+        raise NegativeBybitFlowError(
+            f"{record_name} record missing required field: {field_name}"
+        )
+
+    return value
+
+
+def _resolve_auto(value: Any, *, expected: Any) -> Any:
+    if isinstance(value, str) and value.strip().upper() == "AUTO":
+        return expected
+
+    return value
+
+
+def _required_record_str(
+    record: dict[str, Any],
+    *,
+    record_name: str,
+    field_name: str,
+    expected: str | None = None,
+) -> str:
+    value = _required_record_field(
+        record,
+        record_name=record_name,
+        field_name=field_name,
+    )
+    if expected is not None:
+        value = _resolve_auto(value, expected=expected)
+
+    return str(value).strip()
+
+
+def _required_record_decimal(
+    record: dict[str, Any],
+    *,
+    record_name: str,
+    field_name: str,
+    expected: Decimal | None = None,
+) -> Decimal:
+    value = _required_record_field(
+        record,
+        record_name=record_name,
+        field_name=field_name,
+    )
+    if expected is not None:
+        value = _resolve_auto(value, expected=expected)
 
     return dec(value)
 
 
-def _validate_optional_withdrawal_record_fields(
+def _required_receipt_field(
+    raw: dict[str, Any],
+    *,
+    field_name: str,
+) -> Any:
+    if field_name not in raw:
+        raise NegativeBybitFlowError(
+            f"Settlement wallet receipt missing required field: {field_name}"
+        )
+
+    value = raw.get(field_name)
+    if value is None or str(value).strip() == "":
+        raise NegativeBybitFlowError(
+            f"Settlement wallet receipt missing required field: {field_name}"
+        )
+
+    return value
+
+
+def _required_receipt_str(
+    raw: dict[str, Any],
+    *,
+    field_name: str,
+    expected: str | None = None,
+) -> str:
+    value = _required_receipt_field(raw, field_name=field_name)
+    if expected is not None:
+        value = _resolve_auto(value, expected=expected)
+
+    return str(value).strip()
+
+
+def _required_receipt_decimal(
+    raw: dict[str, Any],
+    *,
+    field_name: str,
+    expected: Decimal | None = None,
+) -> Decimal:
+    value = _required_receipt_field(raw, field_name=field_name)
+    if expected is not None:
+        value = _resolve_auto(value, expected=expected)
+
+    return dec(value)
+
+
+def _validate_universal_transfer_record(
+    *,
+    raw: dict[str, Any],
+    expected_transfer_id: str,
+    expected_amount_usdt: Decimal,
+    expected_coin: str,
+    expected_from_sub_uid: str,
+    expected_to_master_uid: str,
+) -> dict[str, Any]:
+    record_name = "Universal Transfer"
+    record = _required_record(raw, record_name=record_name)
+
+    transfer_id = _required_record_str(
+        record,
+        record_name=record_name,
+        field_name="transferId",
+        expected=expected_transfer_id,
+    )
+    if transfer_id != expected_transfer_id:
+        raise NegativeBybitFlowError("Universal Transfer transferId mismatch")
+
+    amount_usdt = _required_record_decimal(
+        record,
+        record_name=record_name,
+        field_name="amount_usdt",
+        expected=expected_amount_usdt,
+    )
+    if not _same_decimal(amount_usdt, expected_amount_usdt):
+        raise NegativeBybitFlowError("Universal Transfer amount mismatch")
+
+    coin = _required_record_str(
+        record,
+        record_name=record_name,
+        field_name="coin",
+        expected=expected_coin,
+    )
+    if coin != expected_coin:
+        raise NegativeBybitFlowError("Universal Transfer coin mismatch")
+
+    from_sub_uid = _required_record_str(
+        record,
+        record_name=record_name,
+        field_name="from_sub_uid",
+        expected=expected_from_sub_uid,
+    )
+    if from_sub_uid != expected_from_sub_uid:
+        raise NegativeBybitFlowError("Universal Transfer from_sub_uid mismatch")
+
+    to_master_uid = _required_record_str(
+        record,
+        record_name=record_name,
+        field_name="to_master_uid",
+        expected=expected_to_master_uid,
+    )
+    if to_master_uid != expected_to_master_uid:
+        raise NegativeBybitFlowError("Universal Transfer to_master_uid mismatch")
+
+    status = _required_record_str(
+        record,
+        record_name=record_name,
+        field_name="status",
+        expected="SUCCESS",
+    )
+    if not _mock_success(status):
+        raise NegativeBybitFlowError("Universal Transfer status mismatch")
+
+    return _json_dict(
+        {
+            "transferId": transfer_id,
+            "amount_usdt": amount_usdt,
+            "coin": coin,
+            "from_sub_uid": from_sub_uid,
+            "to_master_uid": to_master_uid,
+            "status": status,
+            "raw": record,
+        }
+    )
+
+
+def _validate_withdrawal_record(
     *,
     raw: dict[str, Any],
     expected_request_id: str,
+    expected_withdrawal_id: str,
     expected_amount_usdt: Decimal,
     expected_fee_usdt: Decimal,
     expected_coin: str,
     expected_chain: str,
     expected_address: str,
     expected_tx_hash: str,
-) -> None:
-    raw_request_id = _raw_optional_str(raw, "requestId", "request_id")
-    if raw_request_id is not None and raw_request_id != expected_request_id:
+) -> dict[str, Any]:
+    record_name = "Withdrawal"
+    record = _required_record(raw, record_name=record_name)
+
+    request_id = _required_record_str(
+        record,
+        record_name=record_name,
+        field_name="requestId",
+        expected=expected_request_id,
+    )
+    if request_id != expected_request_id:
         raise NegativeBybitFlowError("Withdrawal requestId mismatch")
 
-    raw_amount = _raw_optional_decimal(raw, "amount_usdt", "amount", "withdrawal_amount_usdt")
-    if raw_amount is not None and not _same_decimal(raw_amount, expected_amount_usdt):
+    withdrawal_id = _required_record_str(
+        record,
+        record_name=record_name,
+        field_name="withdrawal_id",
+        expected=expected_withdrawal_id,
+    )
+    if withdrawal_id != expected_withdrawal_id:
+        raise NegativeBybitFlowError("Withdrawal ID mismatch")
+
+    amount_usdt = _required_record_decimal(
+        record,
+        record_name=record_name,
+        field_name="amount_usdt",
+        expected=expected_amount_usdt,
+    )
+    if not _same_decimal(amount_usdt, expected_amount_usdt):
         raise NegativeBybitFlowError("Withdrawal amount mismatch")
 
-    raw_fee = _raw_optional_decimal(raw, "fee_usdt", "fee", "withdrawal_fee_usdt")
-    if raw_fee is not None and not _same_decimal(raw_fee, expected_fee_usdt):
+    fee_usdt = _required_record_decimal(
+        record,
+        record_name=record_name,
+        field_name="fee_usdt",
+        expected=expected_fee_usdt,
+    )
+    if not _same_decimal(fee_usdt, expected_fee_usdt):
         raise NegativeBybitFlowError("Withdrawal fee mismatch")
 
-    raw_coin = _raw_optional_str(raw, "coin", "withdrawal_coin")
-    if raw_coin is not None and raw_coin != expected_coin:
+    coin = _required_record_str(
+        record,
+        record_name=record_name,
+        field_name="coin",
+        expected=expected_coin,
+    )
+    if coin != expected_coin:
         raise NegativeBybitFlowError("Withdrawal coin mismatch")
 
-    raw_chain = _raw_optional_str(raw, "chain", "withdrawal_chain")
-    if raw_chain is not None and raw_chain != expected_chain:
+    chain = _required_record_str(
+        record,
+        record_name=record_name,
+        field_name="chain",
+        expected=expected_chain,
+    )
+    if chain != expected_chain:
         raise NegativeBybitFlowError("Withdrawal chain mismatch")
 
-    raw_address = _raw_optional_str(raw, "address", "withdrawal_address")
-    if raw_address is not None and raw_address != expected_address:
+    address = _required_record_str(
+        record,
+        record_name=record_name,
+        field_name="address",
+        expected=expected_address,
+    )
+    if address != expected_address:
         raise NegativeBybitFlowError("Withdrawal address mismatch")
 
-    raw_tx_hash = _raw_optional_str(
-        raw,
-        "record_tx_hash",
-        "withdrawal_record_tx_hash",
-        "tx_hash",
-        "withdrawal_tx_hash",
+    tx_hash = _required_record_str(
+        record,
+        record_name=record_name,
+        field_name="tx_hash",
+        expected=expected_tx_hash,
     )
-    if raw_tx_hash is not None and raw_tx_hash != expected_tx_hash:
-        raise NegativeBybitFlowError("Withdrawal tx hash mismatch")
+    if tx_hash != expected_tx_hash:
+        raise NegativeBybitFlowError("Withdrawal tx_hash mismatch")
+
+    status = _required_record_str(
+        record,
+        record_name=record_name,
+        field_name="status",
+        expected="SUCCESS",
+    )
+    if not _mock_success(status):
+        raise NegativeBybitFlowError("Withdrawal status mismatch")
+
+    return _json_dict(
+        {
+            "requestId": request_id,
+            "withdrawal_id": withdrawal_id,
+            "amount_usdt": amount_usdt,
+            "fee_usdt": fee_usdt,
+            "coin": coin,
+            "chain": chain,
+            "address": address,
+            "tx_hash": tx_hash,
+            "status": status,
+            "raw": record,
+        }
+    )
+
+
+def _validate_settlement_wallet_receipt(
+    *,
+    raw: dict[str, Any],
+    expected_address: str,
+    expected_received_amount_usdt: Decimal,
+    expected_tx_hash: str,
+) -> dict[str, Any]:
+    status = _required_receipt_str(
+        raw,
+        field_name="status",
+        expected="CONFIRMED",
+    )
+    if not _receipt_confirmed(status):
+        raise NegativeBybitFlowError("Settlement wallet receipt status mismatch")
+
+    address = _required_receipt_str(
+        raw,
+        field_name="address",
+        expected=expected_address,
+    )
+    if address != expected_address:
+        raise NegativeBybitFlowError("Settlement wallet receipt address mismatch")
+
+    received_amount_usdt = _required_receipt_decimal(
+        raw,
+        field_name="received_amount_usdt",
+        expected=expected_received_amount_usdt,
+    )
+    if not _same_decimal(received_amount_usdt, expected_received_amount_usdt):
+        raise NegativeBybitFlowError("Settlement wallet received amount mismatch")
+
+    tx_hash = _required_receipt_str(
+        raw,
+        field_name="tx_hash",
+        expected=expected_tx_hash,
+    )
+    if tx_hash != expected_tx_hash:
+        raise NegativeBybitFlowError("Settlement wallet receipt tx_hash mismatch")
+
+    return _json_dict(
+        {
+            "status": status,
+            "address": address,
+            "received_usdt": received_amount_usdt,
+            "tx_hash": tx_hash,
+            "raw": raw,
+        }
+    )
 
 
 def execute_negative_bybit_flow_mock(
@@ -723,16 +1021,21 @@ def execute_negative_bybit_flow_mock(
                 "Universal Transfer reconcile_status is not SUCCESS"
             )
 
+        universal_transfer_record = _validate_universal_transfer_record(
+            raw=mock_flow.universal_transfer.raw,
+            expected_transfer_id=transfer_id,
+            expected_amount_usdt=amounts["required_master_usdt"],
+            expected_coin=coin,
+            expected_from_sub_uid=mock_flow.fund_sub_uid,
+            expected_to_master_uid=mock_flow.master_uid,
+        )
+
         flow.universal_transfer_confirmed_at = now
         flow.universal_transfer_reconciliation_json = _json_dict(
             {
                 "ok": True,
-                "transferId": transfer_id,
-                "amount_usdt": amounts["required_master_usdt"],
-                "coin": coin,
-                "from_sub_uid": mock_flow.fund_sub_uid,
-                "to_master_uid": mock_flow.master_uid,
-                "status": mock_flow.universal_transfer.reconcile_status,
+                "reconcile_status": mock_flow.universal_transfer.reconcile_status,
+                "record": universal_transfer_record,
             }
         )
         flow.status = BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED
@@ -746,17 +1049,6 @@ def execute_negative_bybit_flow_mock(
 
         if mock_flow.withdrawal.tx_hash is None:
             raise NegativeBybitFlowError("Withdrawal mock tx_hash is required")
-
-        _validate_optional_withdrawal_record_fields(
-            raw=mock_flow.withdrawal.raw,
-            expected_request_id=request_id,
-            expected_amount_usdt=amounts["withdrawal_request_amount_usdt"],
-            expected_fee_usdt=amounts["bybit_withdrawal_fee_usdt"],
-            expected_coin=coin,
-            expected_chain=chain,
-            expected_address=settlement_wallet_address,
-            expected_tx_hash=mock_flow.withdrawal.tx_hash,
-        )
 
         flow.withdrawal_id = mock_flow.withdrawal.withdrawal_id
         flow.withdrawal_status = mock_flow.withdrawal.status
@@ -788,20 +1080,20 @@ def execute_negative_bybit_flow_mock(
         if not _mock_success(mock_flow.withdrawal.reconcile_status):
             raise NegativeBybitFlowError("Withdrawal record not found or not SUCCESS")
 
-        flow.withdrawal_confirmed_at = now
-        flow.withdrawal_record_json = _json_dict(
-            {
-                "requestId": request_id,
-                "withdrawal_id": mock_flow.withdrawal.withdrawal_id,
-                "amount_usdt": amounts["withdrawal_request_amount_usdt"],
-                "fee_usdt": amounts["bybit_withdrawal_fee_usdt"],
-                "coin": coin,
-                "chain": chain,
-                "address": settlement_wallet_address,
-                "tx_hash": mock_flow.withdrawal.tx_hash,
-                "status": mock_flow.withdrawal.reconcile_status,
-            }
+        withdrawal_record = _validate_withdrawal_record(
+            raw=mock_flow.withdrawal.raw,
+            expected_request_id=request_id,
+            expected_withdrawal_id=mock_flow.withdrawal.withdrawal_id,
+            expected_amount_usdt=amounts["withdrawal_request_amount_usdt"],
+            expected_fee_usdt=amounts["bybit_withdrawal_fee_usdt"],
+            expected_coin=coin,
+            expected_chain=chain,
+            expected_address=settlement_wallet_address,
+            expected_tx_hash=mock_flow.withdrawal.tx_hash,
         )
+
+        flow.withdrawal_confirmed_at = now
+        flow.withdrawal_record_json = withdrawal_record
         flow.withdrawal_reconciliation_json = _json_dict(
             {
                 "ok": True,
@@ -813,48 +1105,24 @@ def execute_negative_bybit_flow_mock(
                 "matched_fee": True,
                 "matched_address": True,
                 "matched_tx_hash": True,
+                "reconcile_status": mock_flow.withdrawal.reconcile_status,
             }
         )
         flow.status = BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILED
 
         # 5) Mock settlement wallet receipt. No BSC call here.
-        if not _receipt_confirmed(mock_flow.settlement_wallet_receipt.status):
-            raise NegativeBybitFlowError("Settlement wallet receipt is not CONFIRMED")
-
-        if not mock_flow.settlement_wallet_receipt.received_amount_matches:
-            raise NegativeBybitFlowError("Settlement wallet receipt amount mismatch")
-
-        receipt_amount = (
-            mock_flow.settlement_wallet_receipt.received_amount_usdt
-            if mock_flow.settlement_wallet_receipt.received_amount_usdt is not None
-            else amounts["withdrawal_request_amount_usdt"]
+        receipt_record = _validate_settlement_wallet_receipt(
+            raw=mock_flow.settlement_wallet_receipt.raw,
+            expected_address=settlement_wallet_address,
+            expected_received_amount_usdt=amounts["withdrawal_request_amount_usdt"],
+            expected_tx_hash=mock_flow.withdrawal.tx_hash,
         )
-        if not _same_decimal(receipt_amount, amounts["withdrawal_request_amount_usdt"]):
-            raise NegativeBybitFlowError("Settlement wallet received amount mismatch")
 
-        receipt_tx_hash = (
-            mock_flow.settlement_wallet_receipt.tx_hash
-            or mock_flow.withdrawal.tx_hash
-        )
-        if receipt_tx_hash != mock_flow.withdrawal.tx_hash:
-            raise NegativeBybitFlowError("Settlement wallet receipt tx_hash mismatch")
-
-        flow.settlement_wallet_receipt_status = (
-            mock_flow.settlement_wallet_receipt.status
-        )
-        flow.settlement_wallet_received_usdt = receipt_amount
-        flow.settlement_wallet_receipt_tx_hash = receipt_tx_hash
+        flow.settlement_wallet_receipt_status = receipt_record["status"]
+        flow.settlement_wallet_received_usdt = dec(receipt_record["received_usdt"])
+        flow.settlement_wallet_receipt_tx_hash = receipt_record["tx_hash"]
         flow.settlement_wallet_receipt_confirmed_at = now
-        flow.settlement_wallet_receipt_json = _json_dict(
-            {
-                "status": mock_flow.settlement_wallet_receipt.status,
-                "address": settlement_wallet_address,
-                "received_usdt": receipt_amount,
-                "expected_usdt": amounts["withdrawal_request_amount_usdt"],
-                "tx_hash": receipt_tx_hash,
-                "raw": mock_flow.settlement_wallet_receipt.raw,
-            }
-        )
+        flow.settlement_wallet_receipt_json = receipt_record
         flow.status = BYBIT_FLOW_STATUS_SETTLEMENT_WALLET_RECEIPT_CONFIRMED
 
         # Final Stage 23.4 success.

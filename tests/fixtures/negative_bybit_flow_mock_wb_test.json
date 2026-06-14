@@ -5,17 +5,39 @@
     "fund_sub_uid": "sub_mock_wb_test",
     "universal_transfer": {
       "status": "SUCCESS",
-      "reconcile_status": "SUCCESS"
+      "reconcile_status": "SUCCESS",
+      "record": {
+        "transferId": "AUTO",
+        "amount_usdt": "AUTO",
+        "coin": "USDT",
+        "from_sub_uid": "sub_mock_wb_test",
+        "to_master_uid": "master_mock",
+        "status": "SUCCESS"
+      }
     },
     "withdrawal": {
       "status": "SUCCESS",
       "reconcile_status": "SUCCESS",
       "withdrawal_id": "mock-withdrawal-id",
       "tx_hash": "0xmockwithdrawaltx",
-      "fee_type": 0
+      "fee_type": 0,
+      "record": {
+        "requestId": "AUTO",
+        "withdrawal_id": "mock-withdrawal-id",
+        "amount_usdt": "AUTO",
+        "fee_usdt": "AUTO",
+        "coin": "USDT",
+        "chain": "BSC",
+        "address": "AUTO",
+        "tx_hash": "0xmockwithdrawaltx",
+        "status": "SUCCESS"
+      }
     },
     "settlement_wallet_receipt": {
       "status": "CONFIRMED",
+      "address": "AUTO",
+      "received_amount_usdt": "AUTO",
+      "tx_hash": "0xmockwithdrawaltx",
       "received_amount_matches": true
     },
     "whitelist": {

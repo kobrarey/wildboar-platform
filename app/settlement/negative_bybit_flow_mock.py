@@ -58,10 +58,14 @@ def _nested_dict(raw: dict[str, Any], key: str) -> dict[str, Any]:
 
 
 def _receipt_amount(raw: dict[str, Any]):
-    if raw.get("received_amount_usdt") is None:
+    value = raw.get("received_amount_usdt")
+    if value is None:
         return None
 
-    return dec(raw.get("received_amount_usdt"))
+    if isinstance(value, str) and value.strip().upper() == "AUTO":
+        return None
+
+    return dec(value)
 
 
 def normalize_negative_bybit_flow_mock(raw: dict[str, Any]) -> NegativeBybitFlowMock:
