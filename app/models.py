@@ -990,6 +990,273 @@ class FundNegativeBybitFlow(Base):
     )
 
 
+class FundNegativePayoutBatch(Base):
+    __tablename__ = "fund_negative_payout_batches"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    settlement_batch_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_settlement_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    bybit_flow_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_negative_bybit_flows.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=sa_text("'created'"),
+    )
+    coin: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=sa_text("'USDT'"),
+    )
+    chain: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=sa_text("'BSC'"),
+    )
+
+    settlement_wallet_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_wallets.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    settlement_wallet_address: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    expected_total_payout_usdt: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+    planned_total_payout_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    confirmed_total_payout_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    payout_leg_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    confirmed_payout_leg_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    gas_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    settlement_wallet_bnb_before: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    settlement_wallet_bnb_required: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    settlement_wallet_bnb_after: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    ok_gas_wallet_bnb_available: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    gas_topup_required_bnb: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    gas_topup_amount_bnb: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    gas_topup_tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    gas_topup_mock_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    gas_reconciliation_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    operator_action_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_operator_actions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    pause_reason: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    payout_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    payout_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    settlement_wallet_usdt_before: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    settlement_wallet_usdt_after: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    balance_refresh_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    balance_refresh_started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    balance_refresh_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    balance_refresh_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    payout_plan_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    payout_execution_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    reconciliation_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    report_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    settlement_batch: Mapped["FundSettlementBatch"] = relationship(
+        "FundSettlementBatch",
+        foreign_keys=[settlement_batch_id],
+    )
+    bybit_flow: Mapped["FundNegativeBybitFlow"] = relationship(
+        "FundNegativeBybitFlow",
+        foreign_keys=[bybit_flow_id],
+    )
+    fund: Mapped["Fund"] = relationship(
+        "Fund",
+        foreign_keys=[fund_id],
+    )
+    settlement_wallet: Mapped["FundWallet | None"] = relationship(
+        "FundWallet",
+        foreign_keys=[settlement_wallet_id],
+    )
+    payout_legs: Mapped[list["FundNegativePayoutLeg"]] = relationship(
+        "FundNegativePayoutLeg",
+        back_populates="payout_batch",
+        cascade="all, delete-orphan",
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "settlement_batch_id",
+            name="fund_negative_payout_batches_settlement_uq",
+        ),
+        UniqueConstraint(
+            "bybit_flow_id",
+            name="fund_negative_payout_batches_bybit_flow_uq",
+        ),
+    )
+
+
+class FundNegativePayoutLeg(Base):
+    __tablename__ = "fund_negative_payout_legs"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    payout_batch_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_negative_payout_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    settlement_batch_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_settlement_batches.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    bybit_flow_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_negative_bybit_flows.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+
+    user_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    user_wallet_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("user_wallets.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=sa_text("'planned'"),
+    )
+    coin: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+        server_default=sa_text("'USDT'"),
+    )
+    chain: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=sa_text("'BSC'"),
+    )
+
+    from_settlement_wallet_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_wallets.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    from_address: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    to_user_wallet_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("user_wallets.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    to_address: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    amount_usdt: Mapped[Decimal] = mapped_column(Numeric(30, 10), nullable=False)
+
+    order_ids_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    order_allocations_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    deterministic_key: Mapped[str | None] = mapped_column(String(192), nullable=True)
+    tx_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    confirmations: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    failed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    wallet_balance_before_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+    wallet_balance_after_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    payout_mock_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    confirmation_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    balance_refresh_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    payout_batch: Mapped["FundNegativePayoutBatch"] = relationship(
+        "FundNegativePayoutBatch",
+        back_populates="payout_legs",
+        foreign_keys=[payout_batch_id],
+    )
+    settlement_batch: Mapped["FundSettlementBatch"] = relationship(
+        "FundSettlementBatch",
+        foreign_keys=[settlement_batch_id],
+    )
+    bybit_flow: Mapped["FundNegativeBybitFlow"] = relationship(
+        "FundNegativeBybitFlow",
+        foreign_keys=[bybit_flow_id],
+    )
+    fund: Mapped["Fund"] = relationship(
+        "Fund",
+        foreign_keys=[fund_id],
+    )
+    user: Mapped["User"] = relationship(
+        "User",
+        foreign_keys=[user_id],
+    )
+    user_wallet: Mapped["UserWallet | None"] = relationship(
+        "UserWallet",
+        foreign_keys=[user_wallet_id],
+    )
+    to_user_wallet: Mapped["UserWallet | None"] = relationship(
+        "UserWallet",
+        foreign_keys=[to_user_wallet_id],
+    )
+    settlement_wallet: Mapped["FundWallet | None"] = relationship(
+        "FundWallet",
+        foreign_keys=[from_settlement_wallet_id],
+    )
+
+
 class FundNegativeSaleLeg(Base):
     __tablename__ = "fund_negative_sale_legs"
 

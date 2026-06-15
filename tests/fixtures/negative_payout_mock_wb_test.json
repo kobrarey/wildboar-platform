@@ -1,0 +1,24 @@
+{
+    "mock_only": true,
+    "mock_id": "stage23_5_wb_test_happy_path",
+    "chain": "BSC",
+    "coin": "USDT",
+    "gas": {
+      "settlement_wallet_bnb_before": "0.001",
+      "required_bnb": "0.003",
+      "ok_gas_wallet_bnb_available": "1.0",
+      "topup_amount_bnb": "0.005",
+      "topup_tx_hash": "0xmockgastopup",
+      "topup_status": "CONFIRMED"
+    },
+    "payouts": {
+      "default_confirmations": 12,
+      "tx_hash_prefix": "0xmockpayout",
+      "all_confirmed": true
+    },
+    "balance_refresh": {
+      "settlement_wallet_usdt_before": "AUTO",
+      "settlement_wallet_usdt_after": "AUTO",
+      "user_wallet_balances": "AUTO"
+    }
+  }

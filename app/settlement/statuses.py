@@ -26,6 +26,8 @@ BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING = "negative_net_master_flow_pro
 BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_PENDING = "negative_net_withdrawal_pending"
 BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING = "negative_net_withdrawal_reconciling"
 BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT = "negative_net_cash_ready_for_payout"
+BATCH_STATUS_NEGATIVE_NET_PAYOUT_PROCESSING = "negative_net_payout_processing"
+BATCH_STATUS_NEGATIVE_NET_PAYOUTS_CONFIRMED = "negative_net_payouts_confirmed"
 BATCH_STATUS_AWAITING_BYBIT_WITHDRAWAL = "awaiting_bybit_withdrawal"
 BATCH_STATUS_BYBIT_WITHDRAWAL_CONFIRMED = "bybit_withdrawal_confirmed"
 BATCH_STATUS_SELLER_PAYOUT_PROCESSING = "seller_payout_processing"
@@ -44,6 +46,42 @@ BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILED = "withdrawal_reconciled"
 BYBIT_FLOW_STATUS_SETTLEMENT_WALLET_RECEIPT_CONFIRMED = "settlement_wallet_receipt_confirmed"
 BYBIT_FLOW_STATUS_COMPLETED = "completed"
 BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW = "failed_requires_review"
+
+# fund_negative_payout_batches.status
+PAYOUT_BATCH_STATUS_CREATED = "created"
+PAYOUT_BATCH_STATUS_GAS_CHECK_PASSED = "gas_check_passed"
+PAYOUT_BATCH_STATUS_GAS_TOPUP_MOCKED = "gas_topup_mocked"
+PAYOUT_BATCH_STATUS_GAS_READY = "gas_ready"
+PAYOUT_BATCH_STATUS_PAUSED_OPERATOR_ACTION_REQUIRED = "paused_operator_action_required"
+PAYOUT_BATCH_STATUS_PAYOUTS_PLANNED = "payouts_planned"
+PAYOUT_BATCH_STATUS_PAYOUTS_MOCKED = "payouts_mocked"
+PAYOUT_BATCH_STATUS_PAYOUTS_CONFIRMED = "payouts_confirmed"
+PAYOUT_BATCH_STATUS_BALANCE_REFRESH_MOCKED = "balance_refresh_mocked"
+PAYOUT_BATCH_STATUS_COMPLETED = "completed"
+PAYOUT_BATCH_STATUS_FAILED_REQUIRES_REVIEW = "failed_requires_review"
+
+# fund_negative_payout_legs.status
+PAYOUT_LEG_STATUS_PLANNED = "planned"
+PAYOUT_LEG_STATUS_PAYOUT_MOCKED = "payout_mocked"
+PAYOUT_LEG_STATUS_PAYOUT_CONFIRMED = "payout_confirmed"
+PAYOUT_LEG_STATUS_BALANCE_REFRESHED = "balance_refreshed"
+PAYOUT_LEG_STATUS_SKIPPED_ZERO_AMOUNT = "skipped_zero_amount"
+PAYOUT_LEG_STATUS_FAILED_REQUIRES_REVIEW = "failed_requires_review"
+
+# fund_negative_payout_batches.gas_status
+PAYOUT_GAS_STATUS_NOT_CHECKED = "not_checked"
+PAYOUT_GAS_STATUS_SUFFICIENT = "sufficient"
+PAYOUT_GAS_STATUS_TOPUP_REQUIRED = "topup_required"
+PAYOUT_GAS_STATUS_TOPUP_MOCKED = "topup_mocked"
+PAYOUT_GAS_STATUS_READY = "ready"
+PAYOUT_GAS_STATUS_INSUFFICIENT_OK_GAS = "insufficient_ok_gas"
+PAYOUT_GAS_STATUS_FAILED_REQUIRES_REVIEW = "failed_requires_review"
+
+# fund_negative_payout_batches.balance_refresh_status
+PAYOUT_BALANCE_REFRESH_STATUS_NOT_STARTED = "not_started"
+PAYOUT_BALANCE_REFRESH_STATUS_MOCKED = "mocked"
+PAYOUT_BALANCE_REFRESH_STATUS_CONFIRMED = "confirmed"
+PAYOUT_BALANCE_REFRESH_STATUS_FAILED_REQUIRES_REVIEW = "failed_requires_review"
 
 # fund_negative_sale_batches.status
 SALE_BATCH_STATUS_SNAPSHOT_CREATED = "snapshot_created"
