@@ -19,6 +19,10 @@ from app.models import (
     UserFundPosition,
     UserWallet,
 )
+from app.operation_guard.hooks import (
+    require_bsc_redeem_payout_guard,
+    require_bsc_settlement_gas_topup_guard,
+)
 from app.settlement.negative_payout_flow_types import (
     NegativePayoutFlowError,
     NegativePayoutMock,
@@ -114,6 +118,67 @@ def deterministic_payout_tx_hash(
 ) -> str:
     cleaned_prefix = str(prefix or "0xmockpayout").strip() or "0xmockpayout"
     return f"{cleaned_prefix}{int(payout_batch_id)}_{int(payout_leg_id)}"
+
+
+def require_stage24_bsc_settlement_gas_topup_guard(
+    db: Session,
+    *,
+    fund_id: int,
+    settlement_batch_id: int,
+    request_id: str,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """
+    Stage 24 integration hook.
+
+    This must be called immediately before any future real settlement-wallet gas top-up.
+    Stage 24 does not execute BSC gas top-up; Stage 25 live path must call this before
+    the external action is attempted.
+    """
+    require_bsc_settlement_gas_topup_guard(
+        db,
+        fund_id=int(fund_id),
+        settlement_batch_id=int(settlement_batch_id),
+        request_id=request_id,
+        amount_usdt=None,
+        metadata={
+            "source": "negative_payout_flow",
+            "boundary": "future_real_settlement_wallet_gas_topup",
+            "no_real_bsc_call_in_stage24": True,
+            **(metadata or {}),
+        },
+    )
+
+
+def require_stage24_bsc_redeem_payout_guard(
+    db: Session,
+    *,
+    fund_id: int,
+    settlement_batch_id: int,
+    amount_usdt: Decimal,
+    request_id: str,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """
+    Stage 24 integration hook.
+
+    This must be called immediately before any future real BSC redeem payout.
+    Stage 24 does not execute BSC payout; Stage 25 live path must call this before
+    the external action is attempted.
+    """
+    require_bsc_redeem_payout_guard(
+        db,
+        fund_id=int(fund_id),
+        settlement_batch_id=int(settlement_batch_id),
+        amount_usdt=amount_usdt,
+        request_id=request_id,
+        metadata={
+            "source": "negative_payout_flow",
+            "boundary": "future_real_bsc_redeem_payout",
+            "no_real_bsc_call_in_stage24": True,
+            **(metadata or {}),
+        },
+    )
 
 
 def _validate_stage23_5_safety(mock_payout: NegativePayoutMock) -> None:
@@ -1130,6 +1195,16 @@ def _apply_gas_check_or_pause(
             diagnostics=payload,
         )
 
+    # Stage 24 Operation Guard live-boundary hook.
+    # Future real settlement-wallet gas top-up must call:
+    # require_stage24_bsc_settlement_gas_topup_guard(
+    #     db,
+    #     fund_id=int(fund.id),
+    #     settlement_batch_id=int(settlement_batch.id),
+    #     request_id=f"neg-net-gas-topup:{int(settlement_batch.id)}:{int(batch.id)}",
+    #     metadata={"equivalent_bnb_amount": "..."},
+    # )
+
     if not mock_payout.gas.topup_tx_hash:
         raise NegativePayoutFlowError("Gas top-up tx_hash is required")
 
@@ -1316,6 +1391,19 @@ def execute_negative_payout_flow_mock(
         batch.payout_started_at = now
         batch.status = PAYOUT_BATCH_STATUS_PAYOUTS_MOCKED
         for leg in legs:
+            # Stage 24 Operation Guard live-boundary hook.
+            # Future real BSC redeem payout must call:
+            # require_stage24_bsc_redeem_payout_guard(
+            #     db,
+            #     fund_id=int(fund.id),
+            #     settlement_batch_id=int(settlement_batch.id),
+            #     amount_usdt=leg.amount_usdt,
+            #     request_id=deterministic_payout_key(
+            #         settlement_batch_id=int(settlement_batch.id),
+            #         user_wallet_id=int(leg.user_wallet_id),
+            #         amount_usdt=leg.amount_usdt,
+            #     ),
+            # )
             _mock_payout_leg(
                 batch=batch,
                 leg=leg,

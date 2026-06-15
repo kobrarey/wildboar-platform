@@ -145,6 +145,16 @@ class Settings(BaseSettings):
     NEGATIVE_NET_FINALIZATION_UNLOCK_PRICING: bool = True
     NEGATIVE_NET_FINALIZATION_SEND_TELEGRAM_ALERTS: bool = True
 
+    # --- stage 24: operation guard / withdrawal kill switch ---
+    OPERATION_GUARD_ENABLED: bool = True
+    OPERATION_GUARD_FAIL_CLOSED: bool = True
+    OPERATION_GUARD_DEFAULT_MODE: str = "blocked"
+    OPERATION_GUARD_OVERRIDE_DEFAULT_TTL_MINUTES: int = 15
+    OPERATION_GUARD_OVERRIDE_MAX_TTL_MINUTES: int = 60
+    OPERATION_GUARD_REQUIRE_MANAGER_ACCOUNT: bool = True
+    OPERATION_GUARD_LOG_ALLOWED_EVENTS: bool = True
+    OPERATION_GUARD_LOG_BLOCKED_EVENTS: bool = True
+
     # --- fee wallet daily USDT -> BNB swap ---
     FEE_WALLET_SWAP_ENABLED: bool = True
     FEE_WALLET_SWAP_INTERVAL_SEC: int = 3600

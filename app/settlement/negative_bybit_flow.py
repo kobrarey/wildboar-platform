@@ -13,6 +13,10 @@ from app.models import (
     FundSettlementBatch,
     FundWallet,
 )
+from app.operation_guard.hooks import (
+    require_bybit_master_withdrawal_guard,
+    require_bybit_universal_transfer_guard,
+)
 from app.settlement.negative_bybit_flow_mock import load_negative_bybit_flow_mock_file
 from app.settlement.negative_bybit_flow_types import (
     NegativeBybitFlowError,
@@ -88,6 +92,64 @@ def deterministic_withdrawal_request_id(
         f"{int(fund_id)}:"
         f"{settlement_wallet_address}:"
         f"{_q10(withdrawal_request_amount_usdt)}"
+    )
+
+
+def require_stage24_bybit_universal_transfer_guard(
+    db: Session,
+    *,
+    fund_id: int,
+    settlement_batch_id: int,
+    required_master_usdt: Decimal,
+    universal_transfer_id: str,
+) -> None:
+    """
+    Stage 24 integration hook.
+
+    This must be called immediately before any future real Bybit Universal Transfer.
+    Stage 24 does not execute the real transfer; Stage 25 live path must call this
+    before the external action is attempted.
+    """
+    require_bybit_universal_transfer_guard(
+        db,
+        fund_id=int(fund_id),
+        settlement_batch_id=int(settlement_batch_id),
+        amount_usdt=required_master_usdt,
+        request_id=universal_transfer_id,
+        metadata={
+            "source": "negative_bybit_flow",
+            "boundary": "future_real_universal_transfer",
+            "no_real_bybit_call_in_stage24": True,
+        },
+    )
+
+
+def require_stage24_bybit_master_withdrawal_guard(
+    db: Session,
+    *,
+    fund_id: int,
+    settlement_batch_id: int,
+    withdrawal_request_amount_usdt: Decimal,
+    withdrawal_request_id: str,
+) -> None:
+    """
+    Stage 24 integration hook.
+
+    This must be called immediately before any future real Bybit master withdrawal.
+    Stage 24 does not execute the real withdrawal; Stage 25 live path must call this
+    before the external action is attempted.
+    """
+    require_bybit_master_withdrawal_guard(
+        db,
+        fund_id=int(fund_id),
+        settlement_batch_id=int(settlement_batch_id),
+        amount_usdt=withdrawal_request_amount_usdt,
+        request_id=withdrawal_request_id,
+        metadata={
+            "source": "negative_bybit_flow",
+            "boundary": "future_real_master_withdrawal",
+            "no_real_bybit_call_in_stage24": True,
+        },
     )
 
 
@@ -992,6 +1054,16 @@ def execute_negative_bybit_flow_mock(
         settlement_batch.status = BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING
         settlement_batch.updated_at = now
 
+        # Stage 24 Operation Guard live-boundary hook.
+        # Future real Bybit Universal Transfer must call:
+        # require_stage24_bybit_universal_transfer_guard(
+        #     db,
+        #     fund_id=int(fund.id),
+        #     settlement_batch_id=int(settlement_batch.id),
+        #     required_master_usdt=amounts["required_master_usdt"],
+        #     universal_transfer_id=transfer_id,
+        # )
+
         # 1) Mock Universal Transfer fund subaccount -> master.
         if not _mock_success(mock_flow.universal_transfer.status):
             raise NegativeBybitFlowError("Universal Transfer mock status is not SUCCESS")
@@ -1039,6 +1111,16 @@ def execute_negative_bybit_flow_mock(
             }
         )
         flow.status = BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED
+
+        # Stage 24 Operation Guard live-boundary hook.
+        # Future real Bybit master withdrawal must call:
+        # require_stage24_bybit_master_withdrawal_guard(
+        #     db,
+        #     fund_id=int(fund.id),
+        #     settlement_batch_id=int(settlement_batch.id),
+        #     withdrawal_request_amount_usdt=amounts["withdrawal_request_amount_usdt"],
+        #     withdrawal_request_id=request_id,
+        # )
 
         # 3) Mock master withdrawal to settlement wallet.
         if not _mock_success(mock_flow.withdrawal.status):

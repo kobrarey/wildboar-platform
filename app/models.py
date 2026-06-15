@@ -1394,6 +1394,222 @@ class FundNegativeFinalizationBatch(Base):
     )
 
 
+class FundOperationGuardState(Base):
+    __tablename__ = "fund_operation_guard_state"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    scope_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    fund_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+
+    action_type: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    mode: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=sa_text("'blocked'"),
+    )
+
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    updated_by_user_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    fund: Mapped["Fund | None"] = relationship(
+        "Fund",
+        foreign_keys=[fund_id],
+    )
+    updated_by_user: Mapped["User | None"] = relationship(
+        "User",
+        foreign_keys=[updated_by_user_id],
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "scope_key",
+            "action_type",
+            name="fund_operation_guard_state_scope_action_uq",
+        ),
+    )
+
+
+class FundOperationGuardOverride(Base):
+    __tablename__ = "fund_operation_guard_overrides"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    scope_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    fund_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+
+    action_type: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=sa_text("'active'"),
+    )
+
+    manager_user_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("users.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+
+    settlement_batch_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_settlement_batches.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    request_id: Mapped[str | None] = mapped_column(String(192), nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(192), nullable=False)
+
+    max_amount_usdt: Mapped[Decimal | None] = mapped_column(
+        Numeric(30, 10),
+        nullable=True,
+    )
+
+    starts_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    payload_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    result_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    fund: Mapped["Fund | None"] = relationship(
+        "Fund",
+        foreign_keys=[fund_id],
+    )
+    manager_user: Mapped["User"] = relationship(
+        "User",
+        foreign_keys=[manager_user_id],
+    )
+    settlement_batch: Mapped["FundSettlementBatch | None"] = relationship(
+        "FundSettlementBatch",
+        foreign_keys=[settlement_batch_id],
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "idempotency_key",
+            name="fund_operation_guard_overrides_idempotency_uq",
+        ),
+    )
+
+
+class FundOperationGuardEvent(Base):
+    __tablename__ = "fund_operation_guard_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    action_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    scope_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    scope_type: Mapped[str] = mapped_column(String(16), nullable=False)
+
+    fund_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    settlement_batch_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_settlement_batches.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    request_id: Mapped[str | None] = mapped_column(String(192), nullable=True)
+    amount_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
+
+    decision: Mapped[str] = mapped_column(String(32), nullable=False)
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    guard_state_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_operation_guard_state.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    override_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("fund_operation_guard_overrides.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    mode_snapshot: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    metadata_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    fund: Mapped["Fund | None"] = relationship(
+        "Fund",
+        foreign_keys=[fund_id],
+    )
+    settlement_batch: Mapped["FundSettlementBatch | None"] = relationship(
+        "FundSettlementBatch",
+        foreign_keys=[settlement_batch_id],
+    )
+    guard_state: Mapped["FundOperationGuardState | None"] = relationship(
+        "FundOperationGuardState",
+        foreign_keys=[guard_state_id],
+    )
+    override: Mapped["FundOperationGuardOverride | None"] = relationship(
+        "FundOperationGuardOverride",
+        foreign_keys=[override_id],
+    )
+
+
 class FundNegativeSaleLeg(Base):
     __tablename__ = "fund_negative_sale_legs"
 
