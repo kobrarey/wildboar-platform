@@ -197,6 +197,11 @@
     if (!wrap) return;
 
     const isAuthenticated = wrap.dataset.authenticated === "1";
+    const orderEntryEnabled = wrap.dataset.orderEntryEnabled === "1";
+    const orderEntryDisabledMessage = wrap.dataset.orderEntryDisabledMessage || L(
+      "Торговля временно доступна только для тестового фонда.",
+      "Trading is temporarily available only for the test fund."
+    );
     const fundCode = wrap.dataset.fundCode || getCurrentFundCode();
     const fundName = wrap.dataset.fundName || "-";
 
@@ -232,12 +237,39 @@
       if (redOk) redOk.textContent = "";
     }
 
+    function setOrderEntryDisabledMessage() {
+      if (buyErr) buyErr.textContent = orderEntryDisabledMessage;
+      if (redErr) redErr.textContent = orderEntryDisabledMessage;
+    }
+
+    function applyOrderEntryGateUI() {
+      if (orderEntryEnabled) return;
+
+      if (buyBtn) {
+        buyBtn.disabled = true;
+        buyBtn.setAttribute("aria-disabled", "true");
+        buyBtn.dataset.orderEntryDisabled = "1";
+      }
+
+      if (redBtn) {
+        redBtn.disabled = true;
+        redBtn.setAttribute("aria-disabled", "true");
+        redBtn.dataset.orderEntryDisabled = "1";
+      }
+
+      setOrderEntryDisabledMessage();
+    }
+
     function setSide(name) {
       tabBuy && tabBuy.classList.toggle("is-active", name === "buy");
       tabRed && tabRed.classList.toggle("is-active", name === "redeem");
       pBuy && pBuy.classList.toggle("hidden", name !== "buy");
       pRed && pRed.classList.toggle("hidden", name !== "redeem");
-      resetMsgs();
+      if (orderEntryEnabled) {
+        resetMsgs();
+      } else {
+        setOrderEntryDisabledMessage();
+      }
     }
 
     tabBuy && tabBuy.addEventListener("click", () => setSide("buy"));
@@ -341,7 +373,7 @@
       }
 
       if (buyBtn) {
-        buyBtn.disabled = !canEnableBuyButton() || buyPending;
+        buyBtn.disabled = !orderEntryEnabled || !canEnableBuyButton() || buyPending;
       }
     }
 
@@ -357,7 +389,7 @@
       }
 
       if (redBtn) {
-        redBtn.disabled = !canEnableRedeemButton() || redeemPending;
+        redBtn.disabled = !orderEntryEnabled || !canEnableRedeemButton() || redeemPending;
       }
     }
 
@@ -520,6 +552,7 @@
     }
 
     function canEnableBuyButton() {
+      if (!orderEntryEnabled) return false;
       if (!buyIn) return false;
 
       const raw = buyIn.value;
@@ -541,6 +574,7 @@
     }
 
     function canEnableRedeemButton() {
+      if (!orderEntryEnabled) return false;
       if (!redIn) return false;
 
       const raw = redIn.value;
@@ -586,12 +620,24 @@
     }
 
     buyIn && buyIn.addEventListener("input", () => {
+      if (!orderEntryEnabled) {
+        if (buyBtn) buyBtn.disabled = true;
+        setOrderEntryDisabledMessage();
+        return;
+      }
+
       if (buyErr) buyErr.textContent = "";
       if (buyOk) buyOk.textContent = "";
       if (buyBtn) buyBtn.disabled = !canEnableBuyButton() || buyPending;
     });
 
     redIn && redIn.addEventListener("input", () => {
+      if (!orderEntryEnabled) {
+        if (redBtn) redBtn.disabled = true;
+        setOrderEntryDisabledMessage();
+        return;
+      }
+
       if (redErr) redErr.textContent = "";
       if (redOk) redOk.textContent = "";
       if (redBtn) redBtn.disabled = !canEnableRedeemButton() || redeemPending;
@@ -602,6 +648,12 @@
 
       buyBtn.addEventListener("click", async () => {
         if (buyPending) return;
+
+        if (!orderEntryEnabled) {
+          if (buyBtn) buyBtn.disabled = true;
+          if (buyErr) buyErr.textContent = orderEntryDisabledMessage;
+          return;
+        }
 
         if (!isAuthenticated) {
           if (buyErr) buyErr.textContent = L("Войдите в аккаунт, чтобы купить паи.", "Log in to buy fund shares.");
@@ -653,7 +705,7 @@
           if (buyErr) buyErr.textContent = L("Ошибка сети.", "Network error.");
         } finally {
           buyPending = false;
-          if (buyBtn) buyBtn.disabled = !canEnableBuyButton();
+          if (buyBtn) buyBtn.disabled = !orderEntryEnabled || !canEnableBuyButton();
         }
       });
     }
@@ -663,6 +715,12 @@
 
       redBtn.addEventListener("click", async () => {
         if (redeemPending) return;
+
+        if (!orderEntryEnabled) {
+          if (redBtn) redBtn.disabled = true;
+          if (redErr) redErr.textContent = orderEntryDisabledMessage;
+          return;
+        }
 
         if (!isAuthenticated) {
           if (redErr) redErr.textContent = L("Войдите в аккаунт, чтобы погасить паи.", "Log in to redeem fund shares.");
@@ -714,10 +772,12 @@
           if (redErr) redErr.textContent = L("Ошибка сети.", "Network error.");
         } finally {
           redeemPending = false;
-          if (redBtn) redBtn.disabled = !canEnableRedeemButton();
+          if (redBtn) redBtn.disabled = !orderEntryEnabled || !canEnableRedeemButton();
         }
       });
     }
+
+    applyOrderEntryGateUI();
   }
 
   // ---------------- live terminal summary ----------------

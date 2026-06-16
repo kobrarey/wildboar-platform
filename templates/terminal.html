@@ -5,11 +5,11 @@
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>WildBoar — {{ current_fund.short_name if current_fund and current_fund.short_name else 'Terminal' }}</title>
 
-  <link rel="stylesheet" href="/static/css/app.css?v=20_1" />
-  <link rel="stylesheet" href="/static/css/terminal.css?v=20_1" />
+<link rel="stylesheet" href="/static/css/app.css?v=25_1" />
+<link rel="stylesheet" href="/static/css/terminal.css?v=25_1" />
 
-  <script defer src="/static/js/app.js?v=20_1"></script>
-  <script defer src="/static/js/terminal.js?v=20_1"></script>
+<script defer src="/static/js/app.js?v=25_1"></script>
+<script defer src="/static/js/terminal.js?v=25_1"></script>
   <script defer src="/static/charting_library/charting_library.standalone.js"></script>
   <script defer src="/static/js/terminal_chart.js?v=stage13_5"></script>
 </head>
@@ -329,6 +329,9 @@
     <div class="term-right">
       <div class="term-order"
            data-authenticated="{{ '1' if is_authenticated else '0' }}"
+           data-order-entry-enabled="{{ '1' if order_entry_enabled else '0' }}"
+           data-order-entry-enabled-fund-codes="{{ (order_entry_enabled_fund_codes|default([], true))|join(',') }}"
+           data-order-entry-disabled-message="{{ 'Торговля временно доступна только для тестового фонда.' if lang=='ru' else 'Trading is temporarily available only for the test fund.' }}"
            data-fund-code="{{ current_fund.fund_code if current_fund and current_fund.fund_code else chart_config.fund_code }}"
            data-fund-name="{{ current_fund.short_name|default(current_fund.name|default('-', true), true) }}"
            data-avail-usdt="{{ form_state.available_usdt|default(0, true) }}"

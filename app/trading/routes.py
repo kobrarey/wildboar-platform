@@ -25,6 +25,7 @@ from app.trading.order_service import (
     create_buy_order,
     create_redeem_order,
 )
+from app.trading.order_gate import get_order_entry_enabled_fund_codes
 
 router = APIRouter()
 
@@ -157,6 +158,10 @@ def terminal_fund_page(
         or request.cookies.get("app_theme")
     )
 
+    order_entry_enabled_fund_codes = sorted(get_order_entry_enabled_fund_codes())
+    current_fund_code = str(payload["current_fund"].get("fund_code") or "").strip().lower()
+    order_entry_enabled = current_fund_code in set(order_entry_enabled_fund_codes)
+
     return templates.TemplateResponse(
         "terminal.html",
         {
@@ -174,6 +179,8 @@ def terminal_fund_page(
             "fund_info": payload["fund_info"],
             "form_state": payload["form_state"],
             "chart_config": payload["chart_config"],
+            "order_entry_enabled_fund_codes": order_entry_enabled_fund_codes,
+            "order_entry_enabled": order_entry_enabled,
         },
     )
 
