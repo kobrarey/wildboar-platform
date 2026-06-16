@@ -62,6 +62,16 @@ def _trading_error_response(lang: str, error_key: str, status_code: int = 400) -
     )
 
 
+def _trading_error_status_code(error_key: str) -> int:
+    if error_key == "not_authenticated":
+        return 401
+
+    if error_key == "order_entry_disabled":
+        return 423
+
+    return 400
+
+
 @router.post("/api/trading/orders/buy")
 def api_create_buy_order(
     payload: TradingBuyOrderIn,
@@ -80,8 +90,11 @@ def api_create_buy_order(
             lang=lang,
         )
     except TradingOrderError as exc:
-        status_code = 401 if exc.error_key == "not_authenticated" else 400
-        return _trading_error_response(lang, exc.error_key, status_code=status_code)
+        return _trading_error_response(
+            lang,
+            exc.error_key,
+            status_code=_trading_error_status_code(exc.error_key),
+        )
 
 
 @router.post("/api/trading/orders/redeem")
@@ -102,8 +115,11 @@ def api_create_redeem_order(
             lang=lang,
         )
     except TradingOrderError as exc:
-        status_code = 401 if exc.error_key == "not_authenticated" else 400
-        return _trading_error_response(lang, exc.error_key, status_code=status_code)
+        return _trading_error_response(
+            lang,
+            exc.error_key,
+            status_code=_trading_error_status_code(exc.error_key),
+        )
 
 
 @router.get("/terminal")

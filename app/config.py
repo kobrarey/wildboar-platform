@@ -50,6 +50,12 @@ class Settings(BaseSettings):
     UVICORN_PROXY_HEADERS: bool = True
     UVICORN_FORWARDED_ALLOW_IPS: str = "127.0.0.1"
 
+    # --- stage 25: production readiness / order entry gates ---
+    ORDER_ENTRY_ENABLED_FUND_CODES: str = "wb_test"
+    ORDER_ENTRY_DISABLED_MODE: str = "reject"
+    BYBIT_WITHDRAWALS_ENABLED: bool = False
+    POSITIVE_NET_LIVE_TRANSFER_ENABLED: bool = False
+
     # --- wallets / bsc ---
     BSC_RPC_URL: str = ""
     BSC_WS_URL: str = ""
@@ -152,6 +158,7 @@ class Settings(BaseSettings):
     OPERATION_GUARD_OVERRIDE_DEFAULT_TTL_MINUTES: int = 15
     OPERATION_GUARD_OVERRIDE_MAX_TTL_MINUTES: int = 60
     OPERATION_GUARD_REQUIRE_MANAGER_ACCOUNT: bool = True
+    OPERATION_GUARD_REQUIRE_FUND_STATE_FOR_FUND_ACTIONS: bool = True
     OPERATION_GUARD_LOG_ALLOWED_EVENTS: bool = True
     OPERATION_GUARD_LOG_BLOCKED_EVENTS: bool = True
 

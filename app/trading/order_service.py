@@ -14,6 +14,10 @@ from app.models import (
     UserFundPosition,
     UserWallet,
 )
+from app.trading.order_gate import (
+    ORDER_ENTRY_DISABLED_ERROR_KEY,
+    is_order_entry_enabled_for_fund_code,
+)
 
 
 class TradingOrderError(ValueError):
@@ -70,6 +74,18 @@ def _get_active_fund(db: Session, fund_code: str) -> Fund:
         raise TradingOrderError("fund_not_found")
 
     return fund
+
+
+def _enforce_order_entry_enabled(fund: Fund) -> None:
+    """
+    Stage 25 backend enforcement.
+
+    Buy/Redeem order creation is temporarily allowed only for funds listed in
+    ORDER_ENTRY_ENABLED_FUND_CODES. This is backend protection against direct
+    POST bypass; it runs before reserves, fund_orders or settlement state changes.
+    """
+    if not is_order_entry_enabled_for_fund_code(fund.code):
+        raise TradingOrderError(ORDER_ENTRY_DISABLED_ERROR_KEY)
 
 
 def _validate_user_for_buy(user: User) -> None:
@@ -212,6 +228,7 @@ def create_buy_order(
 
     amount = _to_decimal(amount_usdt, error_key="invalid_amount")
     fund = _get_active_fund(db, fund_code)
+    _enforce_order_entry_enabled(fund)
 
     try:
         wallet = _lock_active_user_wallet(db, user.id)
@@ -281,6 +298,7 @@ def create_redeem_order(
 
     shares_dec = _to_decimal(shares, error_key="invalid_shares")
     fund = _get_active_fund(db, fund_code)
+    _enforce_order_entry_enabled(fund)
 
     try:
         position = _lock_user_position(

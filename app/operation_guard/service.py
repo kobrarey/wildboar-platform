@@ -525,6 +525,62 @@ def check_operation_allowed(
                 now=now,
             )
 
+        if (
+            fund_id is not None
+            and settings.OPERATION_GUARD_REQUIRE_FUND_STATE_FOR_FUND_ACTIONS
+            and fund_state is None
+        ):
+            override = _find_valid_override(
+                db,
+                action_type=action_type,
+                fund_id=fund_id,
+                request_id=request_id,
+                amount_usdt=amount,
+                now=now,
+            )
+            if override is not None:
+                return _build_decision(
+                    db,
+                    allowed=True,
+                    decision=OP_GUARD_DECISION_ALLOWED,
+                    reason="missing fund guard state but valid manager override exists",
+                    action_type=action_type,
+                    fund_id=fund_id,
+                    settlement_batch_id=settlement_batch_id,
+                    request_id=request_id,
+                    amount_usdt=amount,
+                    scope_key=scope_key,
+                    scope_type=scope_type,
+                    guard_state_id=None,
+                    override_id=int(override.id),
+                    mode_snapshot=None,
+                    global_mode=global_mode,
+                    fund_mode=fund_mode,
+                    metadata=metadata,
+                    now=now,
+                )
+
+            return _build_decision(
+                db,
+                allowed=False,
+                decision=OP_GUARD_DECISION_BLOCKED,
+                reason="missing fund guard state: fail-closed",
+                action_type=action_type,
+                fund_id=fund_id,
+                settlement_batch_id=settlement_batch_id,
+                request_id=request_id,
+                amount_usdt=amount,
+                scope_key=scope_key,
+                scope_type=scope_type,
+                guard_state_id=None,
+                override_id=None,
+                mode_snapshot=None,
+                global_mode=global_mode,
+                fund_mode=fund_mode,
+                metadata=metadata,
+                now=now,
+            )
+
         if fund_state is not None and fund_state.mode == OP_GUARD_MODE_BLOCKED:
             override = _find_valid_override(
                 db,
@@ -561,6 +617,28 @@ def check_operation_allowed(
                 allowed=False,
                 decision=OP_GUARD_DECISION_BLOCKED,
                 reason="fund guard mode is blocked",
+                action_type=action_type,
+                fund_id=fund_id,
+                settlement_batch_id=settlement_batch_id,
+                request_id=request_id,
+                amount_usdt=amount,
+                scope_key=scope_key,
+                scope_type=scope_type,
+                guard_state_id=int(fund_state.id),
+                override_id=None,
+                mode_snapshot=fund_state.mode,
+                global_mode=global_mode,
+                fund_mode=fund_mode,
+                metadata=metadata,
+                now=now,
+            )
+
+        if fund_state is not None and fund_state.mode != OP_GUARD_MODE_LIVE_ALLOWED:
+            return _build_decision(
+                db,
+                allowed=False,
+                decision=OP_GUARD_DECISION_BLOCKED,
+                reason=f"unsupported fund guard mode: {fund_state.mode}",
                 action_type=action_type,
                 fund_id=fund_id,
                 settlement_batch_id=settlement_batch_id,
