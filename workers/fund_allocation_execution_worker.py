@@ -9,6 +9,8 @@ from typing import Any
 from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 
+from app.config import settings
+from app.lifecycle import evaluate_live_gate
 from app.allocation.derivative_handlers import handle_derivative_leg_mock
 from app.allocation.execution_engine import prepare_execution_for_leg
 from app.allocation.residual_service import process_residual_leg_mock
@@ -47,7 +49,7 @@ class MockAllocationExecutionClient:
     - get_last_price
     - get_orderbook
 
-    Any POST is forbidden.
+    Any POST is not allowed in mock mode.
     """
 
     def __init__(self):
@@ -85,7 +87,7 @@ class MockAllocationExecutionClient:
     def post(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         payload = payload or {}
         self.post_calls.append((path, dict(payload)))
-        raise RuntimeError(f"POST is forbidden in Stage 22.5 mock execution worker: {path}")
+        raise RuntimeError(f"POST is not allowed in mock execution worker: {path}")
 
     def _wallet_balance(self, params: dict[str, Any]) -> dict[str, Any]:
         return {
@@ -297,7 +299,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--live-execution",
         action="store_true",
-        help="Reserved for a later approved stage. Blocked in Stage 22.5.",
+        help="Live execution is safe-gated by env + CLI flags; no external action is sent when the gate is disabled.",
     )
 
     parser.add_argument(
@@ -332,21 +334,41 @@ def _normalize_fund_code(value: str | None) -> str | None:
     return code
 
 
-def _validate_stage22_5_args(args: argparse.Namespace) -> None:
+def _validate_stage22_5_args(args: argparse.Namespace) -> bool:
+    if int(args.limit) <= 0:
+        raise RuntimeError("--limit must be positive")
+
+    if int(args.sleep_sec) <= 0:
+        raise RuntimeError("--sleep-sec must be positive")
+
     if args.live_execution:
+        gate = evaluate_live_gate(
+            feature="allocation_execution",
+            env_enabled=(
+                bool(settings.LIFECYCLE_WORKERS_PRODUCTION_LIVE_ENABLED)
+                and bool(settings.ALLOCATION_EXECUTION_ENABLED)
+                and bool(settings.ALLOCATION_EXECUTION_ALLOW_LIVE)
+            ),
+            cli_enabled=True,
+        )
+        if not gate.allowed:
+            log.info(
+                "Allocation execution live gate blocked. No changes. gate=%s",
+                gate.to_dict(),
+            )
+            return False
+
         raise RuntimeError(
-            "--live-execution is blocked in Stage 22.5. "
-            "Use --mock-market-data for mocked/local checks only."
+            "allocation_execution live Bybit/Strategy/Earn execution is not implemented yet; "
+            "no real Bybit order, Strategy order, Earn stake or transfer was sent"
         )
 
     if not args.mock_market_data:
         raise RuntimeError(
-            "--mock-market-data is required in Stage 22.5. "
-            "Real Bybit execution and real market-data execution are blocked."
+            "--mock-market-data is required when --live-execution is not used."
         )
 
-    if int(args.limit) <= 0:
-        raise RuntimeError("--limit must be positive")
+    return True
 
 
 def _find_candidate_leg_ids(
@@ -432,7 +454,7 @@ def _process_leg_in_own_session(
             )
 
         if client.post_calls:
-            raise RuntimeError(f"POST calls are forbidden: {client.post_calls}")
+            raise RuntimeError(f"Unexpected POST calls recorded: {client.post_calls}")
 
         if dry_run:
             db.rollback()
@@ -527,7 +549,7 @@ def _process_residual_batch_in_own_session(
         )
 
         if client.post_calls:
-            raise RuntimeError(f"POST calls are forbidden: {client.post_calls}")
+            raise RuntimeError(f"Unexpected POST calls recorded: {client.post_calls}")
 
         if dry_run:
             db.rollback()
@@ -681,7 +703,8 @@ def main() -> int:
     )
 
     args = parse_args()
-    _validate_stage22_5_args(args)
+    if not _validate_stage22_5_args(args):
+        return 0
 
     log.info(
         "Stage 22.5 allocation execution worker started. "

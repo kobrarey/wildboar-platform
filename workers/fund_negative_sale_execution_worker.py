@@ -5,7 +5,9 @@ import time
 from pathlib import Path
 from typing import Sequence
 
+from app.config import settings
 from app.db import SessionLocal
+from app.lifecycle import evaluate_live_gate
 from app.models import Fund, FundNegativeSaleBatch, FundSettlementBatch
 from app.settlement.negative_sale_execution import (
     execute_negative_sale_plan_mock,
@@ -27,19 +29,41 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument("--mock-execution-file", type=Path, default=None, help="Required Stage 23.3.1 mock execution fixture JSON file.")
     parser.add_argument("--fund-code", type=str, default=None, help="Optional fund code filter.")
     parser.add_argument("--sleep-seconds", type=int, default=10, help="Sleep interval for loop mode.")
-    parser.add_argument("--live-execution", action="store_true", help="Forbidden in Stage 23.3.1. Always hard-fails.")
+    parser.add_argument("--live-execution", action="store_true", help="Live execution is safe-gated by env + CLI flags; no external action is sent when the gate is disabled.")
     return parser
 
 
 def parse_worker_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
-    if args.live_execution:
-        parser.error("--live-execution is forbidden in Stage 23.3.1")
-    if args.mock_execution_file is None:
-        parser.error("--mock-execution-file is required in Stage 23.3.1")
+
     if args.sleep_seconds < 1:
         parser.error("--sleep-seconds must be >= 1")
+
+    if args.live_execution:
+        gate = evaluate_live_gate(
+            feature="negative_sale_execution",
+            env_enabled=(
+                bool(settings.LIFECYCLE_WORKERS_PRODUCTION_LIVE_ENABLED)
+                and bool(settings.NEGATIVE_NET_SALE_EXECUTION_ALLOW_LIVE)
+            ),
+            cli_enabled=True,
+        )
+        args.live_gate_allowed = bool(gate.allowed)
+        args.live_gate_reason = str(gate.reason)
+        args.live_gate = gate.to_dict()
+        return args
+
+    if args.mock_execution_file is None:
+        parser.error("--mock-execution-file is required when --live-execution is not used")
+
+    args.live_gate_allowed = False
+    args.live_gate_reason = "mock mode"
+    args.live_gate = {
+        "allowed": False,
+        "feature": "negative_sale_execution",
+        "reason": "mock mode",
+    }
     return args
 
 
@@ -97,10 +121,48 @@ def run_forever(*, mock_path: str | Path, fund_code: str | None = None, dry_run:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_worker_args(argv)
+
+    if args.live_execution:
+        if not bool(getattr(args, "live_gate_allowed", False)):
+            print(
+                {
+                    "worker": "fund_negative_sale_execution_worker",
+                    "live_execution": True,
+                    "skipped": True,
+                    "external_action": False,
+                    "reason": getattr(args, "live_gate_reason", "live gate blocked"),
+                }
+            )
+            return 0
+
+        print(
+            {
+                "worker": "fund_negative_sale_execution_worker",
+                "live_execution": True,
+                "ok": False,
+                "external_action": False,
+                "reason": (
+                    "negative_sale_execution live Bybit trading is not implemented yet; "
+                    "no real Bybit order was sent"
+                ),
+            }
+        )
+        return 1
+
     if args.run_once:
-        process_one_batch(mock_path=args.mock_execution_file, fund_code=args.fund_code, dry_run=args.dry_run)
+        process_one_batch(
+            mock_path=args.mock_execution_file,
+            fund_code=args.fund_code,
+            dry_run=args.dry_run,
+        )
         return 0
-    run_forever(mock_path=args.mock_execution_file, fund_code=args.fund_code, dry_run=args.dry_run, sleep_seconds=args.sleep_seconds)
+
+    run_forever(
+        mock_path=args.mock_execution_file,
+        fund_code=args.fund_code,
+        dry_run=args.dry_run,
+        sleep_seconds=args.sleep_seconds,
+    )
     return 0
 
 

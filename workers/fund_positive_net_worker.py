@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.bybit.client import BybitV5Client
 from app.config import settings
 from app.db import SessionLocal
+from app.lifecycle import evaluate_live_gate
 from app.models import Fund, FundSettlementBatch
 from app.settlement.positive_net_service import process_positive_net_batch
 from app.settlement.statuses import (
@@ -82,6 +83,16 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--live-execution",
+        action="store_true",
+        help=(
+            "Allow production positive-net external actions only when the matching "
+            "environment live flags are also enabled. Without this flag, real "
+            "non-mock execution is skipped safely."
+        ),
+    )
+
+    parser.add_argument(
         "--sleep-sec",
         type=int,
         default=60,
@@ -139,6 +150,38 @@ def _build_master_client_if_needed(
         api_secret=api_secret,
         recv_window_ms=settings.BYBIT_MASTER_RECV_WINDOW_MS,
     )
+
+
+def _is_real_positive_net_mode(args: argparse.Namespace) -> bool:
+    return (
+        not bool(args.dry_run)
+        and not bool(args.mock_chain)
+        and not bool(args.mock_bybit)
+    )
+
+
+def _validate_positive_net_live_gate(args: argparse.Namespace) -> bool:
+    if not _is_real_positive_net_mode(args):
+        return True
+
+    gate = evaluate_live_gate(
+        feature="positive_net_settlement",
+        env_enabled=(
+            bool(settings.LIFECYCLE_WORKERS_PRODUCTION_LIVE_ENABLED)
+            and bool(settings.POSITIVE_NET_SETTLEMENT_ENABLED)
+            and bool(settings.POSITIVE_NET_LIVE_TRANSFER_ENABLED)
+        ),
+        cli_enabled=bool(args.live_execution),
+    )
+
+    if not gate.allowed:
+        log.info(
+            "Positive-net settlement live gate blocked. No external action. gate=%s",
+            gate.to_dict(),
+        )
+        return False
+
+    return True
 
 
 def _find_candidate_batches(
@@ -265,6 +308,9 @@ def _process_batch_in_own_session(
 def _run_once(args: argparse.Namespace) -> int:
     fund_code = _normalize_fund_code(args.fund_code)
     finalize_accounting = not bool(args.no_finalize_accounting)
+
+    if not _validate_positive_net_live_gate(args):
+        return 0
 
     master_client = _build_master_client_if_needed(
         dry_run=bool(args.dry_run),

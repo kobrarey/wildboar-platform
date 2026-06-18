@@ -5,7 +5,9 @@ import logging
 import time
 from decimal import Decimal
 
+from app.config import settings
 from app.db import SessionLocal
+from app.lifecycle import evaluate_live_gate
 from app.settlement.operator_gas_retry import (
     process_pending_retry_settlement_gas_topup_actions_mock,
 )
@@ -27,7 +29,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Stage 22.7 settlement operator action worker. "
-            "Mock/local only. Processes DB operator actions for retrying "
+            "Safe by default. Processes DB operator actions for retrying "
             "settlement gas top-up after Telegram operator confirmation. "
             "No shell execution, no real Telegram calls, no real BSC transfer."
         )
@@ -55,7 +57,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--live-bsc",
         action="store_true",
-        help="Blocked in Stage 22.7. Present only as a hard-fail guard.",
+        help="Live BSC retry is safe-gated by env + CLI flags; no external action is sent when the gate is disabled.",
     )
     parser.add_argument(
         "--limit",
@@ -88,23 +90,38 @@ def _parse_decimal(value: str | None, *, name: str) -> Decimal:
     return result
 
 
-def _validate_stage22_7_args(args: argparse.Namespace) -> Decimal:
+def _validate_stage22_7_args(args: argparse.Namespace) -> Decimal | None:
+    if int(args.limit) <= 0:
+        raise RuntimeError("--limit must be positive")
+
+    if int(args.sleep_sec) <= 0:
+        raise RuntimeError("--sleep-sec must be positive")
+
     if args.live_bsc:
+        gate = evaluate_live_gate(
+            feature="settlement_operator_action_live_bsc",
+            env_enabled=(
+                bool(settings.LIFECYCLE_WORKERS_PRODUCTION_LIVE_ENABLED)
+                and bool(settings.SETTLEMENT_OPERATOR_ACTION_ALLOW_LIVE_BSC)
+            ),
+            cli_enabled=True,
+        )
+        if not gate.allowed:
+            log.info(
+                "Settlement operator action live-BSC gate blocked. No changes. gate=%s",
+                gate.to_dict(),
+            )
+            return None
+
         raise RuntimeError(
-            "--live-bsc is blocked in Stage 22.7. "
-            "The worker is mock/local only and must not execute real BSC transfers."
+            "settlement_operator_action live BSC retry is not implemented yet; "
+            "no real BNB transfer was sent"
         )
 
     mock_balance = _parse_decimal(
         args.mock_ok_gas_balance_bnb,
         name="--mock-ok-gas-balance-bnb",
     )
-
-    if int(args.limit) <= 0:
-        raise RuntimeError("--limit must be positive")
-
-    if int(args.sleep_sec) <= 0:
-        raise RuntimeError("--sleep-sec must be positive")
 
     return mock_balance
 
@@ -165,10 +182,12 @@ def main() -> int:
     args = parser.parse_args()
 
     mock_ok_gas_balance_bnb = _validate_stage22_7_args(args)
+    if mock_ok_gas_balance_bnb is None:
+        return 0
 
     log.info(
         "%s settlement operator action worker started. "
-        "Mock/local only. No shell execution, no real Telegram calls, "
+        "Safe by default. No shell execution, real Telegram calls, "
         "no real BSC calls, no real BNB transfer, no server deploy.",
         STAGE_NAME,
     )

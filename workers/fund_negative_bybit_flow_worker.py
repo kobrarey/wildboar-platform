@@ -5,7 +5,9 @@ import time
 from pathlib import Path
 from typing import Sequence
 
+from app.config import settings
 from app.db import SessionLocal
+from app.lifecycle import evaluate_live_gate
 from app.models import Fund, FundNegativeSaleBatch, FundSettlementBatch
 from app.settlement.negative_bybit_flow import execute_negative_bybit_flow_mock
 from app.settlement.negative_bybit_flow_mock import load_negative_bybit_flow_mock_file
@@ -55,7 +57,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--live-execution",
         action="store_true",
-        help="Forbidden in Stage 23.4. Always hard-fails.",
+        help="Live execution is safe-gated by env + CLI flags; no external Bybit call is sent when the gate is disabled.",
     )
     return parser
 
@@ -64,15 +66,33 @@ def parse_worker_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = build_arg_parser()
     args = parser.parse_args(argv)
 
-    if args.live_execution:
-        parser.error("--live-execution is forbidden in Stage 23.4")
-
-    if args.mock_flow_file is None:
-        parser.error("--mock-flow-file is required in Stage 23.4")
-
     if args.sleep_seconds < 1:
         parser.error("--sleep-seconds must be >= 1")
 
+    if args.live_execution:
+        gate = evaluate_live_gate(
+            feature="negative_bybit_flow",
+            env_enabled=(
+                bool(settings.LIFECYCLE_WORKERS_PRODUCTION_LIVE_ENABLED)
+                and bool(settings.NEGATIVE_NET_BYBIT_FLOW_ALLOW_LIVE_EXECUTION)
+            ),
+            cli_enabled=True,
+        )
+        args.live_gate_allowed = bool(gate.allowed)
+        args.live_gate_reason = str(gate.reason)
+        args.live_gate = gate.to_dict()
+        return args
+
+    if args.mock_flow_file is None:
+        parser.error("--mock-flow-file is required when --live-execution is not used")
+
+    args.live_gate_allowed = False
+    args.live_gate_reason = "mock mode"
+    args.live_gate = {
+        "allowed": False,
+        "feature": "negative_bybit_flow",
+        "reason": "mock mode",
+    }
     return args
 
 
@@ -169,6 +189,33 @@ def run_forever(
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = parse_worker_args(argv)
+
+    if args.live_execution:
+        if not bool(getattr(args, "live_gate_allowed", False)):
+            print(
+                {
+                    "worker": "fund_negative_bybit_flow_worker",
+                    "live_execution": True,
+                    "skipped": True,
+                    "external_action": False,
+                    "reason": getattr(args, "live_gate_reason", "live gate blocked"),
+                }
+            )
+            return 0
+
+        print(
+            {
+                "worker": "fund_negative_bybit_flow_worker",
+                "live_execution": True,
+                "ok": False,
+                "external_action": False,
+                "reason": (
+                    "negative_bybit_flow live Universal Transfer / master withdrawal "
+                    "is not implemented yet; no real Bybit call was sent"
+                ),
+            }
+        )
+        return 1
 
     if args.run_once:
         process_one_batch(

@@ -10,6 +10,7 @@ from dotenv import load_dotenv
 
 from app.config import settings
 from app.db import SessionLocal
+from app.lifecycle import evaluate_live_gate
 from app.models import FundSettlementBatch
 from app.settlement.batch_service import (
     get_default_settlement_date,
@@ -138,6 +139,15 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--live-bsc",
+        action="store_true",
+        help=(
+            "Allow real buy-side BSC collection only when the matching environment "
+            "live flags are enabled. Without this flag, buy collection is skipped safely."
+        ),
+    )
+
+    parser.add_argument(
         "--sleep-sec",
         type=int,
         default=60,
@@ -174,15 +184,51 @@ def _mark_batch_gas_ready(db, *, batch_id: int) -> FundSettlementBatch | None:
     return batch
 
 
+def _validate_buy_collection_live_gate(args: argparse.Namespace) -> bool:
+    if bool(args.skip_buy_collection):
+        return False
+
+    if bool(args.dry_run):
+        return True
+
+    gate = evaluate_live_gate(
+        feature="settlement_buy_collection_bsc",
+        env_enabled=(
+            bool(settings.LIFECYCLE_WORKERS_PRODUCTION_LIVE_ENABLED)
+            and bool(settings.SETTLEMENT_ENABLED)
+            and bool(settings.SETTLEMENT_BUY_COLLECTION_ALLOW_LIVE_BSC)
+        ),
+        cli_enabled=bool(args.live_bsc),
+    )
+
+    if not gate.allowed:
+        log.info(
+            "Settlement buy collection live-BSC gate blocked. "
+            "No user gas top-up or USDT collection will be sent. gate=%s",
+            gate.to_dict(),
+        )
+        return False
+
+    return True
+
+
 def _collect_buy_usdt_for_results(
     db,
     *,
     results,
     dry_run: bool,
     skip_buy_collection: bool,
+    allow_live_collection: bool,
 ) -> None:
     if skip_buy_collection:
         log.info("Buy-side USDT collection skipped by --skip-buy-collection.")
+        return
+
+    if not allow_live_collection:
+        log.info(
+            "Buy-side USDT collection skipped by live gate. "
+            "Settlement batches may be created, but no BSC external action is sent."
+        )
         return
 
     for result in results:
@@ -286,11 +332,14 @@ def _run_once(args: argparse.Namespace) -> int:
                 result.message,
             )
 
+        allow_live_collection = _validate_buy_collection_live_gate(args)
+
         _collect_buy_usdt_for_results(
             db,
             results=results,
             dry_run=bool(args.dry_run),
             skip_buy_collection=bool(args.skip_buy_collection),
+            allow_live_collection=allow_live_collection,
         )
 
         if args.dry_run:

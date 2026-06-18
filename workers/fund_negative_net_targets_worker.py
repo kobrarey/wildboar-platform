@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.db import SessionLocal
+from app.lifecycle import evaluate_live_gate
 from app.models import Fund, FundSettlementBatch
 from app.settlement.negative_net_targets import (
     calculate_and_store_negative_net_targets,
@@ -66,9 +67,18 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
+        "--static-bybit-withdrawal-fee-usdt",
+        type=str,
+        default=None,
+        help=(
+            "Approved static Bybit withdrawal fee in USDT for production-safe "
+            "negative-net target calculation. This does not call Bybit."
+        ),
+    )
+    parser.add_argument(
         "--live-execution",
         action="store_true",
-        help="Blocked in Stage 23.1.",
+        help="Live fee mode is safe-gated by env + CLI flags; no Bybit call is made when the gate is disabled.",
     )
     parser.add_argument(
         "--limit",
@@ -101,33 +111,47 @@ def _parse_decimal(value: str | None, *, name: str) -> Decimal:
     return result
 
 
-def _resolve_mock_bybit_withdrawal_fee(args: argparse.Namespace) -> Decimal:
-    raw = args.mock_bybit_withdrawal_fee_usdt
+def _resolve_bybit_withdrawal_fee(args: argparse.Namespace) -> Decimal:
+    raw = args.static_bybit_withdrawal_fee_usdt
+
+    if raw is None or str(raw).strip() == "":
+        raw = args.mock_bybit_withdrawal_fee_usdt
 
     if raw is None or str(raw).strip() == "":
         raw = str(settings.NEGATIVE_NET_MOCK_BYBIT_WITHDRAWAL_FEE_USDT)
 
     return _parse_decimal(
         raw,
-        name="--mock-bybit-withdrawal-fee-usdt",
+        name="--static-bybit-withdrawal-fee-usdt / --mock-bybit-withdrawal-fee-usdt",
     )
 
 
-def _validate_stage23_1_args(args: argparse.Namespace) -> Decimal:
-    if args.live_execution:
-        raise RuntimeError(
-            "--live-execution is blocked in Stage 23.1. "
-            "This worker is mock/local only and must not execute real Bybit, "
-            "BSC transfers or accounting finalization."
-        )
-
+def _validate_stage23_1_args(args: argparse.Namespace) -> Decimal | None:
     if int(args.limit) <= 0:
         raise RuntimeError("--limit must be positive")
 
     if int(args.sleep_sec) <= 0:
         raise RuntimeError("--sleep-sec must be positive")
 
-    return _resolve_mock_bybit_withdrawal_fee(args)
+    if args.live_execution:
+        gate = evaluate_live_gate(
+            feature="negative_net_targets_fee",
+            env_enabled=(
+                bool(settings.LIFECYCLE_WORKERS_PRODUCTION_LIVE_ENABLED)
+                and bool(settings.NEGATIVE_NET_TARGETS_ALLOW_LIVE_FEE)
+            ),
+            cli_enabled=True,
+        )
+        if not gate.allowed:
+            log.info(
+                "Negative-net targets live fee gate blocked. No changes. gate=%s",
+                gate.to_dict(),
+            )
+            return None
+
+        return _resolve_bybit_withdrawal_fee(args)
+
+    return _resolve_bybit_withdrawal_fee(args)
 
 
 def _find_candidate_batch_ids(
@@ -261,10 +285,12 @@ def main() -> int:
     args = parser.parse_args()
 
     bybit_withdrawal_fee_usdt = _validate_stage23_1_args(args)
+    if bybit_withdrawal_fee_usdt is None:
+        return 0
 
     log.info(
         "%s negative-net targets worker started. "
-        "Mock/local only. No real Bybit calls, no Bybit transfers, "
+        "Safe by default. No real Bybit calls, Bybit transfers, "
         "no BSC transfers, no accounting finalization, no server deploy.",
         STAGE_NAME,
     )

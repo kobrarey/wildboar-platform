@@ -6,7 +6,9 @@ import time
 
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.db import SessionLocal
+from app.lifecycle import evaluate_live_gate
 from app.models import Fund, FundSettlementBatch
 from app.settlement.negative_sale_plan import create_negative_sale_plan
 from app.settlement.negative_sale_snapshot import build_negative_sale_snapshot_mock
@@ -31,7 +33,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Stage 23.2 negative sale plan worker. "
-            "Mock/local only. Creates sell-side snapshot and sale plan. "
+            "Safe by default. Creates sell-side snapshot and sale plan. "
             "No real Bybit calls, no trades, no transfers, no withdrawals, "
             "no BSC transfers, no accounting finalization."
         )
@@ -62,12 +64,12 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--live-read-only",
         action="store_true",
-        help="Blocked in Stage 23.2.",
+        help="Live mode is safe-gated by env + CLI flags; no external action is sent when the gate is disabled.",
     )
     parser.add_argument(
         "--live-execution",
         action="store_true",
-        help="Blocked in Stage 23.2.",
+        help="Live mode is safe-gated by env + CLI flags; no external action is sent when the gate is disabled.",
     )
     parser.add_argument(
         "--limit",
@@ -85,31 +87,59 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _validate_stage23_2_args(args: argparse.Namespace) -> str:
-    if args.live_read_only:
-        raise RuntimeError(
-            "--live-read-only is blocked in Stage 23.2. "
-            "Use --mock-snapshot-file only."
-        )
-
-    if args.live_execution:
-        raise RuntimeError(
-            "--live-execution is blocked in Stage 23.2. "
-            "This worker must not execute trades, transfers, withdrawals, "
-            "BSC transfers or accounting finalization."
-        )
-
-    if not args.mock_snapshot_file or not str(args.mock_snapshot_file).strip():
-        raise RuntimeError(
-            "--mock-snapshot-file is required in Stage 23.2. "
-            "No real Bybit calls are allowed."
-        )
-
+def _validate_stage23_2_args(args: argparse.Namespace) -> str | None:
     if int(args.limit) <= 0:
         raise RuntimeError("--limit must be positive")
 
     if int(args.sleep_sec) <= 0:
         raise RuntimeError("--sleep-sec must be positive")
+
+    if args.live_execution:
+        gate = evaluate_live_gate(
+            feature="negative_sale_plan_live_execution",
+            env_enabled=(
+                bool(settings.LIFECYCLE_WORKERS_PRODUCTION_LIVE_ENABLED)
+                and bool(settings.NEGATIVE_NET_SALE_EXECUTION_ALLOW_LIVE)
+            ),
+            cli_enabled=True,
+        )
+        if not gate.allowed:
+            log.info(
+                "Negative sale plan live-execution gate blocked. No changes. gate=%s",
+                gate.to_dict(),
+            )
+            return None
+
+        raise RuntimeError(
+            "negative_sale_plan_live_execution is not implemented in this worker. "
+            "Sale execution must be handled by workers.fund_negative_sale_execution_worker."
+        )
+
+    if args.live_read_only:
+        gate = evaluate_live_gate(
+            feature="negative_sale_plan_live_read_only",
+            env_enabled=(
+                bool(settings.LIFECYCLE_WORKERS_PRODUCTION_LIVE_ENABLED)
+                and bool(settings.NEGATIVE_NET_SALE_PLAN_ALLOW_LIVE_READONLY)
+            ),
+            cli_enabled=True,
+        )
+        if not gate.allowed:
+            log.info(
+                "Negative sale plan live-read-only gate blocked. No changes. gate=%s",
+                gate.to_dict(),
+            )
+            return None
+
+        raise RuntimeError(
+            "negative_sale_plan_live_read_only is not implemented yet: "
+            "no production Bybit negative-sale snapshot reader is wired for this worker."
+        )
+
+    if not args.mock_snapshot_file or not str(args.mock_snapshot_file).strip():
+        raise RuntimeError(
+            "--mock-snapshot-file is required when --live-read-only is not used."
+        )
 
     return str(args.mock_snapshot_file).strip()
 
@@ -254,10 +284,12 @@ def main() -> int:
     args = parser.parse_args()
 
     mock_snapshot_file = _validate_stage23_2_args(args)
+    if mock_snapshot_file is None:
+        return 0
 
     log.info(
         "%s negative sale plan worker started. "
-        "Mock/local only. No real Bybit calls, no trades, no transfers, "
+        "Safe by default. No real Bybit calls, trades, transfers, "
         "no withdrawals, no BSC transfers, no accounting finalization, "
         "no server deploy.",
         STAGE_NAME,

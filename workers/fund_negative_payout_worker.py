@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 import time
+from typing import Sequence
 
+from app.config import settings
 from app.db import SessionLocal
+from app.lifecycle import evaluate_live_gate
 from app.models import Fund, FundNegativeBybitFlow, FundSettlementBatch
 from app.settlement.negative_payout_flow import execute_negative_payout_flow_mock
 from app.settlement.negative_payout_flow_mock import load_negative_payout_mock_file
@@ -13,9 +16,9 @@ from app.settlement.statuses import (
 )
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Stage 23.5 negative-net payout mock worker"
+        description="Stage 23.5 negative-net payout worker"
     )
     parser.add_argument("--run-once", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -23,7 +26,37 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--fund-code", default=None)
     parser.add_argument("--sleep-seconds", type=int, default=30)
     parser.add_argument("--live-execution", action="store_true")
-    return parser.parse_args()
+
+    args = parser.parse_args(argv)
+
+    if int(args.sleep_seconds) < 1:
+        parser.error("--sleep-seconds must be >= 1")
+
+    if args.live_execution:
+        gate = evaluate_live_gate(
+            feature="negative_payout",
+            env_enabled=(
+                bool(settings.LIFECYCLE_WORKERS_PRODUCTION_LIVE_ENABLED)
+                and bool(settings.NEGATIVE_NET_PAYOUT_ALLOW_LIVE_EXECUTION)
+            ),
+            cli_enabled=True,
+        )
+        args.live_gate_allowed = bool(gate.allowed)
+        args.live_gate_reason = str(gate.reason)
+        args.live_gate = gate.to_dict()
+        return args
+
+    if not args.mock_payout_file:
+        parser.error("--mock-payout-file is required when --live-execution is not used")
+
+    args.live_gate_allowed = False
+    args.live_gate_reason = "mock mode"
+    args.live_gate = {
+        "allowed": False,
+        "feature": "negative_payout",
+        "reason": "mock mode",
+    }
+    return args
 
 
 def _load_candidates(db, *, fund_code: str | None):
@@ -106,14 +139,35 @@ def _run_once(*, mock_payout_file: str, dry_run: bool, fund_code: str | None) ->
         db.close()
 
 
-def main() -> None:
-    args = _parse_args()
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parse_args(argv)
 
     if args.live_execution:
-        raise SystemExit("--live-execution is forbidden in Stage 23.5")
+        if not bool(getattr(args, "live_gate_allowed", False)):
+            print(
+                {
+                    "worker": "fund_negative_payout_worker",
+                    "live_execution": True,
+                    "skipped": True,
+                    "external_action": False,
+                    "reason": getattr(args, "live_gate_reason", "live gate blocked"),
+                }
+            )
+            return 0
 
-    if not args.mock_payout_file:
-        raise SystemExit("--mock-payout-file is required in Stage 23.5")
+        print(
+            {
+                "worker": "fund_negative_payout_worker",
+                "live_execution": True,
+                "ok": False,
+                "external_action": False,
+                "reason": (
+                    "negative payout live BSC gas top-up / USDT payout is not "
+                    "implemented yet; no real BSC transaction was sent"
+                ),
+            }
+        )
+        return 1
 
     while True:
         _run_once(
@@ -127,6 +181,8 @@ def main() -> None:
 
         time.sleep(max(int(args.sleep_seconds), 1))
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

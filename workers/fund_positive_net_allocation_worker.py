@@ -11,6 +11,7 @@ from app.allocation.orchestrator import process_positive_net_allocation_batch_mo
 from app.allocation.statuses import RETRYABLE_ALLOCATION_BATCH_STATUSES
 from app.config import settings
 from app.db import SessionLocal
+from app.lifecycle import evaluate_live_gate
 from app.models import Fund, FundAllocationBatch
 from workers.fund_allocation_execution_worker import MockAllocationExecutionClient
 
@@ -36,7 +37,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Stage 22.6 positive-net allocation integration worker. "
-            "Mock/local only. No real Bybit trades, no Strategy orders, "
+            "Safe by default. No real Bybit trades, Strategy orders, "
             "no Earn stake, no transfers."
         )
     )
@@ -65,7 +66,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--live-execution",
         action="store_true",
-        help="Blocked in Stage 22.6. Present only as a hard-fail guard.",
+        help="Live execution is safe-gated by env + CLI flags; no external action is sent when the gate is disabled.",
     )
     parser.add_argument(
         "--limit",
@@ -83,34 +84,46 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _validate_stage22_6_args(args: argparse.Namespace) -> None:
-    if args.live_execution:
-        raise RuntimeError(
-            "--live-execution is blocked in Stage 22.6. "
-            "Full real end-to-end execution is reserved for Stage 24."
-        )
-
-    if not args.mock_allocation:
-        raise RuntimeError(
-            "--mock-allocation is required in Stage 22.6. "
-            "Real positive-net allocation mode is blocked."
-        )
-
-    if not settings.POSITIVE_NET_ALLOCATION_MOCK_ONLY:
-        raise RuntimeError(
-            "POSITIVE_NET_ALLOCATION_MOCK_ONLY must remain true in Stage 22.6."
-        )
-
-    if not args.mock_allocation and not settings.POSITIVE_NET_ALLOCATION_ENABLED:
-        raise RuntimeError(
-            "POSITIVE_NET_ALLOCATION_ENABLED=false blocks non-mock allocation mode."
-        )
-
+def _validate_stage22_6_args(args: argparse.Namespace) -> bool:
     if int(args.limit) <= 0:
         raise RuntimeError("--limit must be positive")
 
     if int(args.sleep_sec) <= 0:
         raise RuntimeError("--sleep-sec must be positive")
+
+    if args.live_execution:
+        gate = evaluate_live_gate(
+            feature="positive_net_allocation",
+            env_enabled=(
+                bool(settings.LIFECYCLE_WORKERS_PRODUCTION_LIVE_ENABLED)
+                and bool(settings.POSITIVE_NET_ALLOCATION_ENABLED)
+                and not bool(settings.POSITIVE_NET_ALLOCATION_MOCK_ONLY)
+            ),
+            cli_enabled=True,
+        )
+        if not gate.allowed:
+            log.info(
+                "Positive-net allocation live-execution gate blocked. No changes. gate=%s",
+                gate.to_dict(),
+            )
+            return False
+
+        raise RuntimeError(
+            "positive_net_allocation live execution is not implemented yet; "
+            "no real Bybit order, Strategy order, Earn stake or transfer was sent"
+        )
+
+    if not args.mock_allocation:
+        raise RuntimeError(
+            "--mock-allocation is required when --live-execution is not used."
+        )
+
+    if not settings.POSITIVE_NET_ALLOCATION_MOCK_ONLY:
+        raise RuntimeError(
+            "Mock allocation mode requires POSITIVE_NET_ALLOCATION_MOCK_ONLY=true."
+        )
+
+    return True
 
 
 def _build_client(args: argparse.Namespace) -> MockAllocationExecutionClient:
@@ -163,7 +176,7 @@ def _process_batch_in_own_session(
         )
 
         if client.post_calls:
-            raise RuntimeError(f"POST calls are forbidden: {client.post_calls}")
+            raise RuntimeError(f"Unexpected POST calls recorded: {client.post_calls}")
 
         if dry_run:
             db.rollback()
@@ -267,11 +280,12 @@ def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
 
-    _validate_stage22_6_args(args)
+    if not _validate_stage22_6_args(args):
+        return 0
 
     log.info(
         "%s positive-net allocation worker started. "
-        "Mock allocation only. No real Bybit orders, no Strategy orders, "
+        "Safe by default. No real Bybit orders, Strategy orders, "
         "no transfers, no Earn stake, no server deploy.",
         STAGE_NAME,
     )

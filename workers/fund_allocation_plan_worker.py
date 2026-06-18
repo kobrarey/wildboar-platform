@@ -11,7 +11,9 @@ from sqlalchemy.orm import Session
 from app.allocation.bybit_snapshot_reader import build_allocation_snapshot_from_bybit
 from app.allocation.plan_service import build_allocation_plan_for_settlement_batch
 from app.allocation.snapshot_service import build_allocation_snapshot_from_fixture_file
+from app.config import settings
 from app.db import SessionLocal
+from app.lifecycle import evaluate_live_gate
 from app.models import Fund, FundSettlementBatch
 from app.settlement.statuses import BATCH_STATUS_POSITIVE_CASH_SETTLEMENT_COMPLETED
 
@@ -95,22 +97,35 @@ def _normalize_fund_code(value: str | None) -> str | None:
     return code
 
 
-def _validate_stage22_2_args(args: argparse.Namespace) -> None:
+def _validate_stage22_2_args(args: argparse.Namespace) -> bool:
     if args.live_read_only:
-        raise RuntimeError(
-            "--live-read-only code path exists via build_allocation_snapshot_from_bybit(...), "
-            "but real Bybit reads are still blocked in Stage 22.2.1. "
-            "Use --mock-snapshot-file for mocked/non-live checks."
+        gate = evaluate_live_gate(
+            feature="allocation_plan_live_read_only",
+            env_enabled=(
+                bool(settings.LIFECYCLE_WORKERS_PRODUCTION_LIVE_ENABLED)
+                and bool(settings.ALLOCATION_PLAN_ALLOW_LIVE_READONLY)
+            ),
+            cli_enabled=True,
         )
+        if not gate.allowed:
+            log.info(
+                "Allocation plan live-read-only gate blocked. No changes. gate=%s",
+                gate.to_dict(),
+            )
+            return False
+
+        return True
 
     if not args.mock_snapshot_file:
         raise RuntimeError(
-            "--mock-snapshot-file is required while --live-read-only is blocked."
+            "--mock-snapshot-file is required when --live-read-only is not used."
         )
 
     snapshot_path = Path(args.mock_snapshot_file)
     if not snapshot_path.exists():
         raise RuntimeError(f"Mock snapshot file not found: {snapshot_path}")
+
+    return True
 
 
 def _find_candidate_batches(
@@ -331,7 +346,8 @@ def main() -> int:
     )
 
     args = parse_args()
-    _validate_stage22_2_args(args)
+    if not _validate_stage22_2_args(args):
+        return 0
 
     log.info(
         "Stage 22.2.1 allocation plan worker started. "
