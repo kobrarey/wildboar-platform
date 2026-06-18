@@ -5,6 +5,15 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.bybit.asset_flows import (
+    BybitAssetFlowError,
+    BybitWithdrawalResult,
+    create_master_withdrawal,
+    create_universal_transfer,
+    query_master_withdrawal,
+    query_universal_transfer,
+)
+from app.bybit.client import BybitV5Client
 from app.config import settings
 from app.models import (
     Fund,
@@ -17,6 +26,9 @@ from app.operation_guard.hooks import (
     require_bybit_master_withdrawal_guard,
     require_bybit_universal_transfer_guard,
 )
+from app.operation_guard.service import OperationGuardBlockedError
+from app.settlement.gas_service import get_web3
+from app.settlement.transfer_service import _check_tx_confirmed
 from app.settlement.negative_bybit_flow_mock import load_negative_bybit_flow_mock_file
 from app.settlement.negative_bybit_flow_types import (
     NegativeBybitFlowError,
@@ -31,6 +43,8 @@ from app.settlement.statuses import (
     BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT,
     BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING,
     BATCH_STATUS_NEGATIVE_NET_SALE_EXECUTED,
+    BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_PENDING,
+    BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING,
     BYBIT_FLOW_STATUS_COMPLETED,
     BYBIT_FLOW_STATUS_CREATED,
     BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW,
@@ -47,6 +61,27 @@ from app.settlement.statuses import (
 
 
 ZERO = Decimal("0")
+
+BYBIT_SUCCESS_STATUSES = {"SUCCESS", "COMPLETED", "COMPLETE"}
+BYBIT_PENDING_STATUSES = {
+    "PENDING",
+    "PROCESSING",
+    "REVIEWING",
+    "TOBEconfirmed",
+    "TOBECONFIRMED",
+}
+
+
+def _bybit_status(value: str | None) -> str:
+    return str(value or "").strip().upper()
+
+
+def _is_bybit_success(value: str | None) -> bool:
+    return _bybit_status(value) in BYBIT_SUCCESS_STATUSES
+
+
+def _is_bybit_pending(value: str | None) -> bool:
+    return _bybit_status(value) in BYBIT_PENDING_STATUSES
 
 
 def _q10(value: Decimal) -> Decimal:
@@ -866,6 +901,707 @@ def _validate_settlement_wallet_receipt(
             "raw": raw,
         }
     )
+
+
+
+def execute_negative_bybit_flow_live(
+    db: Session,
+    *,
+    settlement_batch_id: int,
+    bybit_client: BybitV5Client,
+    fund_sub_uid: str,
+    master_uid: str,
+    now=None,
+) -> NegativeBybitFlowResult:
+    """
+    Real production-live negative-net Bybit flow:
+
+    1. fund subaccount -> master Universal Transfer;
+    2. master -> settlement wallet withdrawal;
+    3. withdrawal tx confirmation on BSC;
+    4. settlement batch becomes cash-ready for BSC payout only after reconciliation.
+
+    Does not commit. Caller controls transaction boundary.
+    """
+    if bybit_client is None:
+        raise NegativeBybitFlowError("bybit_client is required for live negative-net Bybit flow")
+
+    now = now or utcnow()
+
+    settlement_batch = _lock_settlement_batch(
+        db,
+        settlement_batch_id=int(settlement_batch_id),
+    )
+    settlement_status_before = str(settlement_batch.status)
+
+    sale_batch = _lock_sale_batch_for_settlement(
+        db,
+        settlement_batch_id=int(settlement_batch.id),
+    )
+
+    fund = _get_fund(db, fund_id=int(settlement_batch.fund_id))
+    amounts = _raw_target_amounts_from_settlement(
+        settlement_batch=settlement_batch,
+    )
+
+    existing_flow = _lock_existing_flow(
+        db,
+        settlement_batch_id=int(settlement_batch.id),
+    )
+
+    flow = _new_or_existing_flow(
+        db,
+        existing=existing_flow,
+        settlement_batch=settlement_batch,
+        sale_batch=sale_batch,
+        amounts=amounts,
+    )
+    status_before = str(flow.status)
+
+    try:
+        _validate_sale_batch_input(
+            settlement_batch=settlement_batch,
+            sale_batch=sale_batch,
+        )
+        amounts = _validate_target_fields(
+            settlement_batch=settlement_batch,
+            sale_batch=sale_batch,
+        )
+
+        wallet = _get_active_settlement_wallet(db, fund_id=int(fund.id))
+
+        coin = settings.NEGATIVE_NET_BYBIT_FLOW_COIN
+        chain = settings.NEGATIVE_NET_BYBIT_FLOW_CHAIN
+
+        if coin != "USDT":
+            raise NegativeBybitFlowError("Live negative-net Bybit flow coin must be USDT")
+
+        if chain != "BSC":
+            raise NegativeBybitFlowError("Live negative-net Bybit flow chain must be BSC")
+
+        if wallet.blockchain != chain:
+            raise NegativeBybitFlowError("Settlement wallet blockchain mismatch")
+
+        if wallet.wallet_type != "settlement":
+            raise NegativeBybitFlowError("Settlement wallet type must be settlement")
+
+        settlement_wallet_address = str(wallet.address)
+
+        transfer_id = deterministic_universal_transfer_id(
+            settlement_batch_id=int(settlement_batch.id),
+            fund_id=int(fund.id),
+            required_master_usdt=amounts["required_master_usdt"],
+        )
+        request_id = deterministic_withdrawal_request_id(
+            settlement_batch_id=int(settlement_batch.id),
+            fund_id=int(fund.id),
+            settlement_wallet_address=settlement_wallet_address,
+            withdrawal_request_amount_usdt=amounts["withdrawal_request_amount_usdt"],
+        )
+
+        if flow.status == BYBIT_FLOW_STATUS_COMPLETED:
+            if _completed_flow_matches(
+                flow=flow,
+                expected_transfer_id=transfer_id,
+                expected_request_id=request_id,
+                expected_required_master=amounts["required_master_usdt"],
+                expected_withdrawal_amount=amounts["withdrawal_request_amount_usdt"],
+                expected_withdrawal_fee=amounts["bybit_withdrawal_fee_usdt"],
+                expected_address=settlement_wallet_address,
+            ):
+                return NegativeBybitFlowResult(
+                    ok=True,
+                    flow_id=int(flow.id),
+                    settlement_batch_id=int(settlement_batch.id),
+                    sale_batch_id=int(sale_batch.id),
+                    fund_id=int(fund.id),
+                    fund_code=str(fund.code),
+                    status_before=status_before,
+                    status_after=flow.status,
+                    settlement_status_before=settlement_status_before,
+                    settlement_status_after=settlement_batch.status,
+                    universal_transfer_id=flow.universal_transfer_id,
+                    withdrawal_request_id=flow.withdrawal_request_id,
+                    settlement_wallet_address=flow.settlement_wallet_address,
+                    idempotent=True,
+                    diagnostics={"idempotent": True, "live": True},
+                )
+
+            return _set_failed(
+                flow=flow,
+                settlement_batch=settlement_batch,
+                fund=fund,
+                status_before=status_before,
+                settlement_status_before=settlement_status_before,
+                error=(
+                    "Existing completed live Bybit flow does not match expected "
+                    "transferId/requestId/amount/address"
+                ),
+                now=now,
+                diagnostics={
+                    "expected_transfer_id": transfer_id,
+                    "actual_transfer_id": flow.universal_transfer_id,
+                    "expected_request_id": request_id,
+                    "actual_request_id": flow.withdrawal_request_id,
+                    "expected_address": settlement_wallet_address,
+                    "actual_address": flow.settlement_wallet_address,
+                },
+            )
+
+        flow.coin = coin
+        flow.chain = chain
+        flow.required_master_usdt = amounts["required_master_usdt"]
+        flow.withdrawal_request_amount_usdt = amounts["withdrawal_request_amount_usdt"]
+        flow.bybit_withdrawal_fee_usdt = amounts["bybit_withdrawal_fee_usdt"]
+        flow.retained_fees_usdt = amounts["total_partial_month_fee_usdt"]
+        flow.settlement_wallet_id = int(wallet.id)
+        flow.settlement_wallet_address = settlement_wallet_address
+        flow.from_sub_uid = str(fund_sub_uid).strip()
+        flow.to_master_uid = str(master_uid).strip()
+        flow.from_account_type = "UNIFIED"
+        flow.to_account_type = "UNIFIED"
+        flow.universal_transfer_id = transfer_id
+        flow.withdrawal_request_id = request_id
+
+        if not flow.from_sub_uid:
+            raise NegativeBybitFlowError("fund_sub_uid is required for live Universal Transfer")
+
+        if not flow.to_master_uid:
+            raise NegativeBybitFlowError("master_uid is required for live Universal Transfer")
+
+        flow.preflight_passed = True
+        flow.preflight_error = None
+        flow.preflight_json = _json_dict(
+            {
+                "live": True,
+                "coin": coin,
+                "chain": chain,
+                "settlement_wallet_id": int(wallet.id),
+                "settlement_wallet_address": settlement_wallet_address,
+                "from_sub_uid": flow.from_sub_uid,
+                "to_master_uid": flow.to_master_uid,
+                "fee_type": settings.NEGATIVE_NET_WITHDRAWAL_FEE_TYPE,
+            }
+        )
+        flow.status = BYBIT_FLOW_STATUS_PREFLIGHT_PASSED
+        flow.updated_at = now
+
+        settlement_batch.status = BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING
+        settlement_batch.updated_at = now
+
+        db.add(flow)
+        db.add(settlement_batch)
+        db.flush()
+
+        # 1) Universal Transfer reconciliation before create:
+        # deterministic transferId prevents duplicate create on rerun.
+        transfer_record = query_universal_transfer(
+            bybit_client,
+            transfer_id=transfer_id,
+        )
+
+        prior_transfer_attempt = (
+            flow.universal_transfer_created_at is not None
+            or bool(flow.universal_transfer_status)
+        )
+
+        if transfer_record is None and prior_transfer_attempt:
+            return _set_failed(
+                flow=flow,
+                settlement_batch=settlement_batch,
+                fund=fund,
+                status_before=status_before,
+                settlement_status_before=settlement_status_before,
+                error="Universal Transfer status unknown after prior attempt; no resend",
+                now=now,
+                diagnostics={"transfer_id": transfer_id, "no_duplicate_resend": True},
+            )
+
+        if transfer_record is None:
+            try:
+                guard_decision = require_bybit_universal_transfer_guard(
+                    db,
+                    fund_id=int(fund.id),
+                    settlement_batch_id=int(settlement_batch.id),
+                    amount_usdt=amounts["required_master_usdt"],
+                    request_id=transfer_id,
+                    metadata={
+                        "source": "negative_bybit_flow_live",
+                        "boundary": "fund_subaccount_to_master_universal_transfer",
+                        "from_sub_uid": flow.from_sub_uid,
+                        "to_master_uid": flow.to_master_uid,
+                        "coin": coin,
+                    },
+                )
+            except OperationGuardBlockedError as exc:
+                return _set_failed(
+                    flow=flow,
+                    settlement_batch=settlement_batch,
+                    fund=fund,
+                    status_before=status_before,
+                    settlement_status_before=settlement_status_before,
+                    error=f"Operation Guard blocked Bybit Universal Transfer: {exc}",
+                    now=now,
+                    diagnostics={"transfer_id": transfer_id},
+                )
+
+            created_transfer = create_universal_transfer(
+                bybit_client,
+                transfer_id=transfer_id,
+                coin=coin,
+                amount_usdt=amounts["required_master_usdt"],
+                from_member_id=flow.from_sub_uid,
+                to_member_id=flow.to_master_uid,
+                from_account_type=flow.from_account_type,
+                to_account_type=flow.to_account_type,
+            )
+
+            flow.universal_transfer_status = created_transfer.status
+            flow.universal_transfer_amount_usdt = amounts["required_master_usdt"]
+            flow.universal_transfer_coin = coin
+            flow.universal_transfer_created_at = now
+            flow.universal_transfer_mock_json = _json_dict(
+                {
+                    "live": True,
+                    "transferId": transfer_id,
+                    "guard_event_id": guard_decision.event_id,
+                    "raw": created_transfer.raw,
+                }
+            )
+            flow.updated_at = now
+            db.add(flow)
+            db.flush()
+
+            transfer_record = query_universal_transfer(
+                bybit_client,
+                transfer_id=transfer_id,
+            )
+
+            if transfer_record is None:
+                settlement_batch.status = BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING
+                settlement_batch.updated_at = now
+                db.add(settlement_batch)
+                db.flush()
+
+                return NegativeBybitFlowResult(
+                    ok=False,
+                    flow_id=int(flow.id),
+                    settlement_batch_id=int(settlement_batch.id),
+                    sale_batch_id=int(sale_batch.id),
+                    fund_id=int(fund.id),
+                    fund_code=str(fund.code),
+                    status_before=status_before,
+                    status_after=flow.status,
+                    settlement_status_before=settlement_status_before,
+                    settlement_status_after=settlement_batch.status,
+                    universal_transfer_id=transfer_id,
+                    withdrawal_request_id=request_id,
+                    settlement_wallet_address=settlement_wallet_address,
+                    diagnostics={
+                        "live": True,
+                        "pending": "universal_transfer_record_not_found_yet",
+                        "no_duplicate_resend": True,
+                    },
+                )
+
+        if not _is_bybit_success(transfer_record.status):
+            if _is_bybit_pending(transfer_record.status):
+                flow.universal_transfer_status = transfer_record.status
+                flow.updated_at = now
+                settlement_batch.status = BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING
+                settlement_batch.updated_at = now
+                db.add(flow)
+                db.add(settlement_batch)
+                db.flush()
+
+                return NegativeBybitFlowResult(
+                    ok=False,
+                    flow_id=int(flow.id),
+                    settlement_batch_id=int(settlement_batch.id),
+                    sale_batch_id=int(sale_batch.id),
+                    fund_id=int(fund.id),
+                    fund_code=str(fund.code),
+                    status_before=status_before,
+                    status_after=flow.status,
+                    settlement_status_before=settlement_status_before,
+                    settlement_status_after=settlement_batch.status,
+                    universal_transfer_id=transfer_id,
+                    withdrawal_request_id=request_id,
+                    settlement_wallet_address=settlement_wallet_address,
+                    diagnostics={
+                        "live": True,
+                        "pending": "universal_transfer_pending",
+                        "status": transfer_record.status,
+                    },
+                )
+
+            return _set_failed(
+                flow=flow,
+                settlement_batch=settlement_batch,
+                fund=fund,
+                status_before=status_before,
+                settlement_status_before=settlement_status_before,
+                error=f"Universal Transfer unexpected status: {transfer_record.status}",
+                now=now,
+                diagnostics={"transfer_id": transfer_id, "status": transfer_record.status},
+            )
+
+        if transfer_record.coin != coin:
+            raise NegativeBybitFlowError("Universal Transfer coin mismatch")
+
+        if not _same_decimal(transfer_record.amount_usdt, amounts["required_master_usdt"]):
+            raise NegativeBybitFlowError("Universal Transfer amount mismatch")
+
+        flow.universal_transfer_status = transfer_record.status
+        flow.universal_transfer_amount_usdt = amounts["required_master_usdt"]
+        flow.universal_transfer_coin = coin
+        flow.universal_transfer_confirmed_at = now
+        flow.universal_transfer_reconciliation_json = _json_dict(
+            {
+                "live": True,
+                "ok": True,
+                "transferId": transfer_id,
+                "record": transfer_record.raw,
+            }
+        )
+        flow.status = BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED
+        flow.updated_at = now
+        db.add(flow)
+        db.flush()
+
+        # 2) Master withdrawal reconciliation before create:
+        # deterministic requestId prevents duplicate withdrawal on rerun.
+        withdrawal_record = query_master_withdrawal(
+            bybit_client,
+            request_id=request_id,
+        )
+
+        prior_withdrawal_attempt = (
+            flow.withdrawal_created_at is not None
+            or bool(flow.withdrawal_status)
+            or bool(flow.withdrawal_id)
+        )
+
+        if withdrawal_record is None and prior_withdrawal_attempt:
+            return _set_failed(
+                flow=flow,
+                settlement_batch=settlement_batch,
+                fund=fund,
+                status_before=status_before,
+                settlement_status_before=settlement_status_before,
+                error="Bybit withdrawal status unknown after prior attempt; no resend",
+                now=now,
+                diagnostics={"request_id": request_id, "no_duplicate_resend": True},
+            )
+
+        if withdrawal_record is None:
+            try:
+                guard_decision = require_bybit_master_withdrawal_guard(
+                    db,
+                    fund_id=int(fund.id),
+                    settlement_batch_id=int(settlement_batch.id),
+                    amount_usdt=amounts["withdrawal_request_amount_usdt"],
+                    request_id=request_id,
+                    metadata={
+                        "source": "negative_bybit_flow_live",
+                        "boundary": "master_to_settlement_wallet_withdrawal",
+                        "coin": coin,
+                        "chain": chain,
+                        "address": settlement_wallet_address,
+                    },
+                )
+            except OperationGuardBlockedError as exc:
+                return _set_failed(
+                    flow=flow,
+                    settlement_batch=settlement_batch,
+                    fund=fund,
+                    status_before=status_before,
+                    settlement_status_before=settlement_status_before,
+                    error=f"Operation Guard blocked Bybit master withdrawal: {exc}",
+                    now=now,
+                    diagnostics={"request_id": request_id},
+                )
+
+            created_withdrawal = create_master_withdrawal(
+                bybit_client,
+                request_id=request_id,
+                coin=coin,
+                chain=chain,
+                address=settlement_wallet_address,
+                amount_usdt=amounts["withdrawal_request_amount_usdt"],
+                fee_type=int(settings.NEGATIVE_NET_WITHDRAWAL_FEE_TYPE),
+            )
+
+            flow.withdrawal_id = created_withdrawal.withdrawal_id
+            flow.withdrawal_status = created_withdrawal.status
+            flow.withdrawal_amount_usdt = amounts["withdrawal_request_amount_usdt"]
+            flow.withdrawal_fee_usdt = amounts["bybit_withdrawal_fee_usdt"]
+            flow.withdrawal_coin = coin
+            flow.withdrawal_chain = chain
+            flow.withdrawal_address = settlement_wallet_address
+            flow.withdrawal_created_at = now
+            flow.withdrawal_mock_json = _json_dict(
+                {
+                    "live": True,
+                    "requestId": request_id,
+                    "guard_event_id": guard_decision.event_id,
+                    "raw": created_withdrawal.raw,
+                }
+            )
+            flow.status = BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED
+            flow.updated_at = now
+
+            settlement_batch.status = BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_PENDING
+            settlement_batch.updated_at = now
+
+            db.add(flow)
+            db.add(settlement_batch)
+            db.flush()
+
+            withdrawal_record = query_master_withdrawal(
+                bybit_client,
+                request_id=request_id,
+            )
+
+            if withdrawal_record is None:
+                return NegativeBybitFlowResult(
+                    ok=False,
+                    flow_id=int(flow.id),
+                    settlement_batch_id=int(settlement_batch.id),
+                    sale_batch_id=int(sale_batch.id),
+                    fund_id=int(fund.id),
+                    fund_code=str(fund.code),
+                    status_before=status_before,
+                    status_after=flow.status,
+                    settlement_status_before=settlement_status_before,
+                    settlement_status_after=settlement_batch.status,
+                    universal_transfer_id=transfer_id,
+                    withdrawal_request_id=request_id,
+                    settlement_wallet_address=settlement_wallet_address,
+                    diagnostics={
+                        "live": True,
+                        "pending": "withdrawal_record_not_found_yet",
+                        "no_duplicate_resend": True,
+                    },
+                )
+
+        if not _is_bybit_success(withdrawal_record.status):
+            if _is_bybit_pending(withdrawal_record.status):
+                flow.withdrawal_status = withdrawal_record.status
+                flow.withdrawal_record_json = _json_dict(
+                    {"live": True, "record": withdrawal_record.raw}
+                )
+                flow.updated_at = now
+                settlement_batch.status = BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_PENDING
+                settlement_batch.updated_at = now
+                db.add(flow)
+                db.add(settlement_batch)
+                db.flush()
+
+                return NegativeBybitFlowResult(
+                    ok=False,
+                    flow_id=int(flow.id),
+                    settlement_batch_id=int(settlement_batch.id),
+                    sale_batch_id=int(sale_batch.id),
+                    fund_id=int(fund.id),
+                    fund_code=str(fund.code),
+                    status_before=status_before,
+                    status_after=flow.status,
+                    settlement_status_before=settlement_status_before,
+                    settlement_status_after=settlement_batch.status,
+                    universal_transfer_id=transfer_id,
+                    withdrawal_request_id=request_id,
+                    settlement_wallet_address=settlement_wallet_address,
+                    diagnostics={
+                        "live": True,
+                        "pending": "withdrawal_pending",
+                        "status": withdrawal_record.status,
+                    },
+                )
+
+            return _set_failed(
+                flow=flow,
+                settlement_batch=settlement_batch,
+                fund=fund,
+                status_before=status_before,
+                settlement_status_before=settlement_status_before,
+                error=f"Withdrawal unexpected status: {withdrawal_record.status}",
+                now=now,
+                diagnostics={"request_id": request_id, "status": withdrawal_record.status},
+            )
+
+        if withdrawal_record.coin != coin:
+            raise NegativeBybitFlowError("Withdrawal coin mismatch")
+
+        if withdrawal_record.chain != chain:
+            raise NegativeBybitFlowError("Withdrawal chain mismatch")
+
+        if withdrawal_record.address != settlement_wallet_address:
+            raise NegativeBybitFlowError("Withdrawal address mismatch")
+
+        if not _same_decimal(
+            withdrawal_record.amount_usdt,
+            amounts["withdrawal_request_amount_usdt"],
+        ):
+            raise NegativeBybitFlowError("Withdrawal amount mismatch")
+
+        if not withdrawal_record.tx_hash:
+            return _set_failed(
+                flow=flow,
+                settlement_batch=settlement_batch,
+                fund=fund,
+                status_before=status_before,
+                settlement_status_before=settlement_status_before,
+                error="Withdrawal succeeded but tx_hash is missing",
+                now=now,
+                diagnostics={"request_id": request_id},
+            )
+
+        flow.withdrawal_id = withdrawal_record.withdrawal_id or flow.withdrawal_id
+        flow.withdrawal_status = withdrawal_record.status
+        flow.withdrawal_amount_usdt = amounts["withdrawal_request_amount_usdt"]
+        flow.withdrawal_fee_usdt = amounts["bybit_withdrawal_fee_usdt"]
+        flow.withdrawal_coin = coin
+        flow.withdrawal_chain = chain
+        flow.withdrawal_address = settlement_wallet_address
+        flow.withdrawal_tx_hash = withdrawal_record.tx_hash
+        flow.withdrawal_confirmed_at = now
+        flow.withdrawal_record_json = _json_dict(
+            {
+                "live": True,
+                "record": withdrawal_record.raw,
+            }
+        )
+        flow.withdrawal_reconciliation_json = _json_dict(
+            {
+                "live": True,
+                "ok": True,
+                "requestId": request_id,
+                "tx_hash": withdrawal_record.tx_hash,
+                "matched_coin": True,
+                "matched_chain": True,
+                "matched_amount": True,
+                "matched_address": True,
+            }
+        )
+        flow.status = BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILED
+        flow.updated_at = now
+
+        settlement_batch.status = BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING
+        settlement_batch.updated_at = now
+
+        db.add(flow)
+        db.add(settlement_batch)
+        db.flush()
+
+        w3 = get_web3()
+        if not _check_tx_confirmed(w3, withdrawal_record.tx_hash):
+            return NegativeBybitFlowResult(
+                ok=False,
+                flow_id=int(flow.id),
+                settlement_batch_id=int(settlement_batch.id),
+                sale_batch_id=int(sale_batch.id),
+                fund_id=int(fund.id),
+                fund_code=str(fund.code),
+                status_before=status_before,
+                status_after=flow.status,
+                settlement_status_before=settlement_status_before,
+                settlement_status_after=settlement_batch.status,
+                universal_transfer_id=transfer_id,
+                withdrawal_request_id=request_id,
+                settlement_wallet_address=settlement_wallet_address,
+                diagnostics={
+                    "live": True,
+                    "pending": "withdrawal_tx_not_confirmed_on_bsc",
+                    "tx_hash": withdrawal_record.tx_hash,
+                    "no_accounting_finalization": True,
+                    "no_payout_execution": True,
+                },
+            )
+
+        flow.settlement_wallet_receipt_status = "CONFIRMED"
+        flow.settlement_wallet_received_usdt = amounts["withdrawal_request_amount_usdt"]
+        flow.settlement_wallet_receipt_tx_hash = withdrawal_record.tx_hash
+        flow.settlement_wallet_receipt_confirmed_at = now
+        flow.settlement_wallet_receipt_json = _json_dict(
+            {
+                "live": True,
+                "status": "CONFIRMED",
+                "address": settlement_wallet_address,
+                "received_usdt": amounts["withdrawal_request_amount_usdt"],
+                "tx_hash": withdrawal_record.tx_hash,
+                "bsc_tx_confirmed": True,
+            }
+        )
+
+        flow.status = BYBIT_FLOW_STATUS_SETTLEMENT_WALLET_RECEIPT_CONFIRMED
+        flow.status = BYBIT_FLOW_STATUS_COMPLETED
+        flow.reconciliation_json = _json_dict(
+            {
+                "live": True,
+                "ok": True,
+                "universal_transfer_reconciled": True,
+                "withdrawal_reconciled": True,
+                "settlement_wallet_receipt_confirmed": True,
+                "no_seller_payouts": True,
+                "no_accounting_finalization": True,
+            }
+        )
+        flow.report_json = _json_dict(
+            {
+                "stage": "25",
+                "live": True,
+                "ok": True,
+                "required_master_usdt": amounts["required_master_usdt"],
+                "withdrawal_request_amount_usdt": amounts["withdrawal_request_amount_usdt"],
+                "bybit_withdrawal_fee_usdt": amounts["bybit_withdrawal_fee_usdt"],
+                "retained_fees_usdt": amounts["total_partial_month_fee_usdt"],
+                "settlement_wallet_address": settlement_wallet_address,
+                "status": BYBIT_FLOW_STATUS_COMPLETED,
+            }
+        )
+        flow.updated_at = now
+
+        settlement_batch.status = BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT
+        settlement_batch.updated_at = now
+
+        db.add(flow)
+        db.add(settlement_batch)
+        db.flush()
+
+        return NegativeBybitFlowResult(
+            ok=True,
+            flow_id=int(flow.id),
+            settlement_batch_id=int(settlement_batch.id),
+            sale_batch_id=int(sale_batch.id),
+            fund_id=int(fund.id),
+            fund_code=str(fund.code),
+            status_before=status_before,
+            status_after=flow.status,
+            settlement_status_before=settlement_status_before,
+            settlement_status_after=settlement_batch.status,
+            universal_transfer_id=flow.universal_transfer_id,
+            withdrawal_request_id=flow.withdrawal_request_id,
+            settlement_wallet_address=flow.settlement_wallet_address,
+            diagnostics={
+                "live": True,
+                "withdrawal_tx_hash": withdrawal_record.tx_hash,
+            },
+        )
+
+    except (
+        NegativeBybitFlowError,
+        BybitAssetFlowError,
+    ) as exc:
+        return _set_failed(
+            flow=flow,
+            settlement_batch=settlement_batch,
+            fund=fund,
+            status_before=status_before,
+            settlement_status_before=settlement_status_before,
+            error=str(exc),
+            now=now,
+        )
 
 
 def execute_negative_bybit_flow_mock(

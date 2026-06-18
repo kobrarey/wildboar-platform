@@ -13,6 +13,8 @@ from app.bybit.client import BybitApiError, BybitV5Client
 from app.bybit.credentials import get_active_fund_bybit_client
 from app.config import settings
 from app.models import FundSettlementBatch, FundSettlementTransfer, FundWallet
+from app.operation_guard.hooks import require_bsc_positive_net_to_bybit_guard
+from app.operation_guard.service import OperationGuardBlockedError
 from app.settlement.bybit_destination import get_active_bybit_deposit_destination
 from app.settlement.gas_service import get_web3
 from app.settlement.statuses import (
@@ -95,6 +97,26 @@ def _dec(value: Any) -> Decimal:
     if isinstance(value, Decimal):
         return value
     return Decimal(str(value))
+
+
+def _q10(value: Any) -> Decimal:
+    return _dec(value).quantize(Decimal("0.0000000001"))
+
+
+def deterministic_positive_net_transfer_request_id(
+    *,
+    batch_id: int,
+    fund_id: int,
+    amount_usdt: Decimal,
+    to_address: str,
+) -> str:
+    return (
+        f"positive-net-bsc-to-bybit:"
+        f"{int(batch_id)}:"
+        f"{int(fund_id)}:"
+        f"{_q10(amount_usdt)}:"
+        f"{str(to_address).strip()}"
+    )
 
 
 def _send_alert(text: str) -> None:
@@ -469,6 +491,59 @@ def send_or_confirm_positive_net_transfer(
                 bybit_deposit_confirmed=False,
                 message="Mock-confirm: positive net transfer marked confirmed.",
             )
+
+        request_id = deterministic_positive_net_transfer_request_id(
+            batch_id=int(batch.id),
+            fund_id=int(batch.fund_id),
+            amount_usdt=amount_usdt,
+            to_address=destination.deposit_address,
+        )
+
+        try:
+            guard_decision = require_bsc_positive_net_to_bybit_guard(
+                db,
+                fund_id=int(batch.fund_id),
+                settlement_batch_id=int(batch.id),
+                amount_usdt=amount_usdt,
+                request_id=request_id,
+                metadata={
+                    "source": "positive_net_transfer",
+                    "boundary": "settlement_wallet_to_bybit_deposit",
+                    "from_address": str(settlement_wallet.address),
+                    "to_address": str(destination.deposit_address),
+                    "bybit_sub_uid": str(destination.bybit_sub_uid),
+                    "chain_type": str(destination.chain_type),
+                },
+            )
+        except OperationGuardBlockedError as exc:
+            error = (
+                "Operation Guard blocked positive-net BSC transfer "
+                f"request_id={request_id}: {exc}"
+            )
+
+            _create_or_update_positive_net_transfer(
+                db,
+                existing=existing,
+                batch=batch,
+                from_address=settlement_wallet.address,
+                to_address=destination.deposit_address,
+                amount_usdt=amount_usdt,
+                status=TRANSFER_STATUS_FAILED_REQUIRES_REVIEW,
+                tx_hash=None,
+                error=error,
+            )
+            _mark_batch_failed_requires_review(db, batch=batch, error=error)
+
+            raise BybitDepositSettlementError(error) from exc
+
+        log.info(
+            "Operation Guard allowed positive-net BSC transfer "
+            "batch_id=%s fund_id=%s request_id=%s event_id=%s",
+            batch.id,
+            batch.fund_id,
+            request_id,
+            guard_decision.event_id,
+        )
 
         w3 = get_web3()
         private_key = decrypt_private_key(settlement_wallet.encrypted_private_key)

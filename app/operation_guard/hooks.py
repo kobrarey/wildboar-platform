@@ -7,6 +7,8 @@ from sqlalchemy.orm import Session
 
 from app.operation_guard.service import OperationGuardDecision, require_operation_allowed
 from app.operation_guard.statuses import (
+    OP_GUARD_ACTION_BSC_BUY_COLLECTION_GAS_TOPUP,
+    OP_GUARD_ACTION_BSC_BUY_COLLECTION_USDT_TO_SETTLEMENT,
     OP_GUARD_ACTION_BSC_POSITIVE_NET_TO_BYBIT,
     OP_GUARD_ACTION_BSC_REDEEM_PAYOUT,
     OP_GUARD_ACTION_BSC_SETTLEMENT_GAS_TOPUP,
@@ -134,6 +136,59 @@ def require_bsc_positive_net_to_bybit_guard(
         metadata={
             "stage24_hook": "bsc_positive_net_to_bybit",
             "live_external_action": True,
+            "whitelist_alone_is_insufficient": True,
+            **(metadata or {}),
+        },
+    )
+
+
+def require_bsc_buy_collection_gas_topup_guard(
+    db: Session,
+    *,
+    fund_id: int,
+    settlement_batch_id: int | None,
+    request_id: str,
+    amount_bnb: Decimal,
+    metadata: dict[str, Any] | None = None,
+) -> OperationGuardDecision:
+    return require_operation_allowed(
+        db,
+        action_type=OP_GUARD_ACTION_BSC_BUY_COLLECTION_GAS_TOPUP,
+        fund_id=int(fund_id),
+        settlement_batch_id=settlement_batch_id,
+        amount_usdt=None,
+        request_id=request_id,
+        metadata={
+            "stage25_hook": "bsc_buy_collection_gas_topup",
+            "live_external_action": True,
+            "asset": "BNB",
+            "amount_bnb": str(amount_bnb),
+            "whitelist_alone_is_insufficient": True,
+            **(metadata or {}),
+        },
+    )
+
+
+def require_bsc_buy_collection_usdt_to_settlement_guard(
+    db: Session,
+    *,
+    fund_id: int,
+    settlement_batch_id: int | None,
+    amount_usdt: Decimal,
+    request_id: str,
+    metadata: dict[str, Any] | None = None,
+) -> OperationGuardDecision:
+    return require_operation_allowed(
+        db,
+        action_type=OP_GUARD_ACTION_BSC_BUY_COLLECTION_USDT_TO_SETTLEMENT,
+        fund_id=int(fund_id),
+        settlement_batch_id=settlement_batch_id,
+        amount_usdt=amount_usdt,
+        request_id=request_id,
+        metadata={
+            "stage25_hook": "bsc_buy_collection_usdt_to_settlement",
+            "live_external_action": True,
+            "asset": "USDT",
             "whitelist_alone_is_insufficient": True,
             **(metadata or {}),
         },

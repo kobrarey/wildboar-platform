@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 from sqlalchemy.orm import Session
 
 from app.bybit.client import BybitV5Client
+from app.bybit.credentials import get_active_fund_bybit_client
 from app.config import settings
 from app.db import SessionLocal
 from app.lifecycle import evaluate_live_gate
@@ -152,6 +153,18 @@ def _build_master_client_if_needed(
     )
 
 
+def _build_fund_client(
+    db: Session,
+    fund_id: int,
+) -> BybitV5Client:
+    return get_active_fund_bybit_client(
+        db,
+        fund_id=int(fund_id),
+        coin="USDT",
+        chain_type="BSC",
+    )
+
+
 def _is_real_positive_net_mode(args: argparse.Namespace) -> bool:
     return (
         not bool(args.dry_run)
@@ -237,7 +250,7 @@ def _process_batch_in_own_session(
             db,
             batch_id=batch_id,
             master_client=master_client,
-            fund_client_factory=None,
+            fund_client_factory=_build_fund_client,
             dry_run=dry_run,
             mock_chain=mock_chain,
             mock_bybit=mock_bybit,

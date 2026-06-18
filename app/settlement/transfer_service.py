@@ -18,6 +18,11 @@ from app.models import (
     FundWallet,
     UserWallet,
 )
+from app.operation_guard.hooks import (
+    require_bsc_buy_collection_gas_topup_guard,
+    require_bsc_buy_collection_usdt_to_settlement_guard,
+)
+from app.operation_guard.service import OperationGuardBlockedError
 from app.settlement.gas_service import (
     WEI_PER_BNB,
     get_bnb_balance,
@@ -29,6 +34,7 @@ from app.settlement.statuses import (
     BATCH_STATUS_AWAITING_POSITIVE_NET_EXECUTION,
     BATCH_STATUS_COLLECTING_BUY_USDT,
     BATCH_STATUS_FAILED,
+    BATCH_STATUS_FAILED_REQUIRES_REVIEW,
     BATCH_STATUS_GAS_READY,
     BATCH_STATUS_BUY_USDT_COLLECTED,
     ORDER_SIDE_BUY,
@@ -37,9 +43,11 @@ from app.settlement.statuses import (
     ORDER_STATUS_AWAITING_POSITIVE_NET_EXECUTION,
     ORDER_STATUS_BUY_COLLECTED,
     ORDER_STATUS_BUY_COLLECTING,
+    ORDER_STATUS_FAILED_REQUIRES_REVIEW,
     ORDER_STATUS_SETTLING,
     TRANSFER_STATUS_CONFIRMED,
     TRANSFER_STATUS_FAILED,
+    TRANSFER_STATUS_FAILED_REQUIRES_REVIEW,
     TRANSFER_STATUS_PENDING,
     TRANSFER_STATUS_PROCESSING,
     TRANSFER_STATUS_SENT,
@@ -124,6 +132,50 @@ def _bnb_required_for_erc20_transfer(w3: Web3) -> Decimal:
 def _usdt_amount_to_raw(amount_usdt: Decimal) -> int:
     decimals = int(settings.BSC_USDT_DECIMALS)
     return int(amount_usdt * (Decimal(10) ** decimals))
+
+
+def _q10(value: Decimal) -> Decimal:
+    return Decimal(str(value)).quantize(Decimal("0.0000000001"))
+
+
+def _q18(value: Decimal) -> Decimal:
+    return Decimal(str(value)).quantize(Decimal("0.000000000000000001"))
+
+
+def deterministic_buy_collection_gas_topup_request_id(
+    *,
+    batch_id: int,
+    order_id: int,
+    user_wallet_id: int,
+    amount_bnb: Decimal,
+    to_address: str,
+) -> str:
+    return (
+        f"buy-collection-gas-topup:"
+        f"{int(batch_id)}:"
+        f"{int(order_id)}:"
+        f"{int(user_wallet_id)}:"
+        f"{_q18(amount_bnb)}:"
+        f"{str(to_address).strip()}"
+    )
+
+
+def deterministic_buy_collection_usdt_request_id(
+    *,
+    batch_id: int,
+    order_id: int,
+    user_wallet_id: int,
+    amount_usdt: Decimal,
+    to_address: str,
+) -> str:
+    return (
+        f"buy-collection-usdt:"
+        f"{int(batch_id)}:"
+        f"{int(order_id)}:"
+        f"{int(user_wallet_id)}:"
+        f"{_q10(amount_usdt)}:"
+        f"{str(to_address).strip()}"
+    )
 
 
 def _get_active_fund_settlement_wallet(db: Session, *, fund_id: int) -> FundWallet:
@@ -322,12 +374,13 @@ def _send_alert(text: str) -> None:
 
 def _mark_batch_failed(batch: FundSettlementBatch, *, error: str) -> None:
     now = utcnow()
-    batch.status = BATCH_STATUS_FAILED
+    batch.status = BATCH_STATUS_FAILED_REQUIRES_REVIEW
     batch.error = error
     batch.updated_at = now
 
 
 def _mark_order_failed(order: FundOrder, *, error: str) -> None:
+    order.status = ORDER_STATUS_FAILED_REQUIRES_REVIEW
     order.error = error
 
 
@@ -481,6 +534,63 @@ def _ensure_user_wallet_gas(
         )
         return True
 
+    request_id = deterministic_buy_collection_gas_topup_request_id(
+        batch_id=int(batch.id),
+        order_id=int(order.id),
+        user_wallet_id=int(user_wallet.id),
+        amount_bnb=amount_bnb,
+        to_address=user_address,
+    )
+
+    try:
+        guard_decision = require_bsc_buy_collection_gas_topup_guard(
+            db,
+            fund_id=int(batch.fund_id),
+            settlement_batch_id=int(batch.id),
+            request_id=request_id,
+            amount_bnb=amount_bnb,
+            metadata={
+                "source": "buy_collection",
+                "boundary": "ok_gas_wallet_to_user_wallet",
+                "order_id": int(order.id),
+                "user_id": int(order.user_id),
+                "user_wallet_id": int(user_wallet.id),
+                "from_address": str(ok_wallet_address),
+                "to_address": str(user_address),
+            },
+        )
+    except OperationGuardBlockedError as exc:
+        error = (
+            "Operation Guard blocked buy-collection BNB gas top-up "
+            f"request_id={request_id}: {exc}"
+        )
+
+        _create_or_update_transfer(
+            db,
+            existing=existing,
+            batch_id=batch.id,
+            order_id=order.id,
+            fund_id=batch.fund_id,
+            user_id=order.user_id,
+            transfer_type=TRANSFER_TYPE_USER_WALLET_GAS_TOPUP,
+            from_address=ok_wallet_address,
+            to_address=user_address,
+            amount_bnb=amount_bnb,
+            status=TRANSFER_STATUS_FAILED_REQUIRES_REVIEW,
+            error=error,
+        )
+
+        raise SettlementTransferError(error) from exc
+
+    log.info(
+        "Operation Guard allowed buy-collection BNB gas top-up "
+        "batch_id=%s order_id=%s request_id=%s event_id=%s",
+        batch.id,
+        order.id,
+        request_id,
+        guard_decision.event_id,
+    )
+
     tx_hash = send_native_bnb(
         w3,
         from_private_key=settings.FEE_WALLET_OK_PRIVATE_KEY,
@@ -594,6 +704,68 @@ def _collect_buy_order_usdt(
             error="dry_run: would send user USDT to settlement wallet",
         )
         return True
+
+    request_id = deterministic_buy_collection_usdt_request_id(
+        batch_id=int(batch.id),
+        order_id=int(order.id),
+        user_wallet_id=int(user_wallet.id),
+        amount_usdt=amount_usdt,
+        to_address=to_address,
+    )
+
+    try:
+        guard_decision = require_bsc_buy_collection_usdt_to_settlement_guard(
+            db,
+            fund_id=int(batch.fund_id),
+            settlement_batch_id=int(batch.id),
+            amount_usdt=amount_usdt,
+            request_id=request_id,
+            metadata={
+                "source": "buy_collection",
+                "boundary": "user_wallet_to_fund_settlement_wallet",
+                "order_id": int(order.id),
+                "user_id": int(order.user_id),
+                "user_wallet_id": int(user_wallet.id),
+                "from_address": str(from_address),
+                "to_address": str(to_address),
+            },
+        )
+    except OperationGuardBlockedError as exc:
+        error = (
+            "Operation Guard blocked buy-collection USDT transfer "
+            f"request_id={request_id}: {exc}"
+        )
+
+        _create_or_update_transfer(
+            db,
+            existing=existing,
+            batch_id=batch.id,
+            order_id=order.id,
+            fund_id=batch.fund_id,
+            user_id=order.user_id,
+            transfer_type=TRANSFER_TYPE_USER_BUY_USDT_TO_SETTLEMENT,
+            from_address=from_address,
+            to_address=to_address,
+            amount_usdt=amount_usdt,
+            status=TRANSFER_STATUS_FAILED_REQUIRES_REVIEW,
+            error=error,
+        )
+
+        order.status = ORDER_STATUS_FAILED_REQUIRES_REVIEW
+        order.error = error
+        db.add(order)
+        db.flush()
+
+        raise SettlementTransferError(error) from exc
+
+    log.info(
+        "Operation Guard allowed buy-collection USDT transfer "
+        "batch_id=%s order_id=%s request_id=%s event_id=%s",
+        batch.id,
+        order.id,
+        request_id,
+        guard_decision.event_id,
+    )
 
     private_key = decrypt_private_key(user_wallet.encrypted_private_key)
 

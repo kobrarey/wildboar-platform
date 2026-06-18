@@ -8,7 +8,10 @@ from app.config import settings
 from app.db import SessionLocal
 from app.lifecycle import evaluate_live_gate
 from app.models import Fund, FundNegativeBybitFlow, FundSettlementBatch
-from app.settlement.negative_payout_flow import execute_negative_payout_flow_mock
+from app.settlement.negative_payout_flow import (
+    execute_negative_payout_flow_live,
+    execute_negative_payout_flow_mock,
+)
 from app.settlement.negative_payout_flow_mock import load_negative_payout_mock_file
 from app.settlement.statuses import (
     BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT,
@@ -18,7 +21,10 @@ from app.settlement.statuses import (
 
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Stage 23.5 negative-net payout worker"
+        description=(
+            "Negative-net payout worker. Mock mode uses fixture files; "
+            "live mode executes guarded BSC gas top-up and guarded USDT payouts."
+        )
     )
     parser.add_argument("--run-once", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
@@ -139,6 +145,55 @@ def _run_once(*, mock_payout_file: str, dry_run: bool, fund_code: str | None) ->
         db.close()
 
 
+def _run_live_once(*, fund_code: str | None) -> int:
+    db = SessionLocal()
+    try:
+        candidates = _load_candidates(db, fund_code=fund_code)
+        processed = 0
+
+        for settlement_batch in candidates:
+            result = execute_negative_payout_flow_live(
+                db,
+                settlement_batch_id=int(settlement_batch.id),
+            )
+            processed += 1
+
+            print(
+                {
+                    "worker": "fund_negative_payout_worker",
+                    "live_execution": True,
+                    "settlement_batch_id": result.settlement_batch_id,
+                    "payout_batch_id": result.payout_batch_id,
+                    "ok": result.ok,
+                    "status_after": result.status_after,
+                    "settlement_status_after": result.settlement_status_after,
+                    "payout_leg_count": result.payout_leg_count,
+                    "confirmed_payout_leg_count": result.confirmed_payout_leg_count,
+                    "expected_total_payout_usdt": result.expected_total_payout_usdt,
+                    "confirmed_total_payout_usdt": result.confirmed_total_payout_usdt,
+                    "error": result.error,
+                    "diagnostics": result.diagnostics,
+                }
+            )
+
+        db.commit()
+        print(
+            {
+                "worker": "fund_negative_payout_worker",
+                "live_execution": True,
+                "committed": True,
+                "processed": processed,
+            }
+        )
+        return processed
+
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parse_args(argv)
 
@@ -155,19 +210,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
 
-        print(
-            {
-                "worker": "fund_negative_payout_worker",
-                "live_execution": True,
-                "ok": False,
-                "external_action": False,
-                "reason": (
-                    "negative payout live BSC gas top-up / USDT payout is not "
-                    "implemented yet; no real BSC transaction was sent"
-                ),
-            }
-        )
-        return 1
+        if args.dry_run:
+            print(
+                {
+                    "worker": "fund_negative_payout_worker",
+                    "live_execution": True,
+                    "ok": False,
+                    "external_action": False,
+                    "reason": "--dry-run is not allowed with --live-execution; use mock mode for dry-run checks",
+                }
+            )
+            return 2
+
+        while True:
+            _run_live_once(
+                fund_code=args.fund_code,
+            )
+
+            if args.run_once:
+                break
+
+            time.sleep(max(int(args.sleep_seconds), 1))
+
+        return 0
 
     while True:
         _run_once(
