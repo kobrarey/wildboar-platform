@@ -10,8 +10,12 @@ from app.config import settings
 from app.db import SessionLocal
 from app.lifecycle import evaluate_live_gate
 from app.models import Fund, FundSettlementBatch
+from app.settlement.negative_sale_bybit_snapshot import build_negative_sale_snapshot_from_bybit
 from app.settlement.negative_sale_plan import create_negative_sale_plan
-from app.settlement.negative_sale_snapshot import build_negative_sale_snapshot_mock
+from app.settlement.negative_sale_snapshot import (
+    NegativeSaleSnapshot,
+    build_negative_sale_snapshot_mock,
+)
 from app.settlement.statuses import (
     BATCH_STATUS_NEGATIVE_NET_TARGETS_CALCULATED,
 )
@@ -87,7 +91,7 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _validate_stage23_2_args(args: argparse.Namespace) -> str | None:
+def _validate_stage23_2_args(args: argparse.Namespace) -> bool:
     if int(args.limit) <= 0:
         raise RuntimeError("--limit must be positive")
 
@@ -108,7 +112,7 @@ def _validate_stage23_2_args(args: argparse.Namespace) -> str | None:
                 "Negative sale plan live-execution gate blocked. No changes. gate=%s",
                 gate.to_dict(),
             )
-            return None
+            return False
 
         raise RuntimeError(
             "negative_sale_plan_live_execution is not implemented in this worker. "
@@ -129,19 +133,16 @@ def _validate_stage23_2_args(args: argparse.Namespace) -> str | None:
                 "Negative sale plan live-read-only gate blocked. No changes. gate=%s",
                 gate.to_dict(),
             )
-            return None
+            return False
 
-        raise RuntimeError(
-            "negative_sale_plan_live_read_only is not implemented yet: "
-            "no production Bybit negative-sale snapshot reader is wired for this worker."
-        )
+        return True
 
     if not args.mock_snapshot_file or not str(args.mock_snapshot_file).strip():
         raise RuntimeError(
             "--mock-snapshot-file is required when --live-read-only is not used."
         )
 
-    return str(args.mock_snapshot_file).strip()
+    return True
 
 
 def _find_candidate_batch_ids(
@@ -171,10 +172,41 @@ def _find_candidate_batch_ids(
     )
 
     return [int(row[0]) for row in rows]
+
+
+def _get_fund(db: Session, *, fund_id: int) -> Fund:
+    fund = db.query(Fund).filter(Fund.id == int(fund_id)).first()
+    if fund is None:
+        raise RuntimeError(f"Fund not found: fund_id={fund_id}")
+    return fund
+
+
+def _build_snapshot(
+    db: Session,
+    *,
+    fund: Fund,
+    mock_snapshot_file: str | None,
+    live_read_only: bool,
+) -> NegativeSaleSnapshot:
+    if live_read_only:
+        return build_negative_sale_snapshot_from_bybit(
+            db,
+            fund_id=int(fund.id),
+        )
+
+    if not mock_snapshot_file:
+        raise RuntimeError("mock_snapshot_file is required when live_read_only=False")
+
+    return build_negative_sale_snapshot_mock(
+        mock_snapshot_file=mock_snapshot_file,
+    )
+
+
 def _run_once(
     args: argparse.Namespace,
     *,
-    mock_snapshot_file: str,
+    mock_snapshot_file: str | None,
+    live_read_only: bool,
 ) -> int:
     db = SessionLocal()
 
@@ -191,9 +223,10 @@ def _run_once(
 
         log.info(
             "Negative sale plan worker run_once started fund_code=%s "
-            "dry_run=%s mock_snapshot_file=%s candidate_batches=%s",
+            "dry_run=%s live_read_only=%s mock_snapshot_file=%s candidate_batches=%s",
             args.fund_code,
             args.dry_run,
+            live_read_only,
             mock_snapshot_file,
             candidate_batch_ids,
         )
@@ -208,12 +241,33 @@ def _run_once(
 
             return 0
 
-        snapshot = build_negative_sale_snapshot_mock(
-            mock_snapshot_file=mock_snapshot_file,
-        )
+        mock_snapshot: NegativeSaleSnapshot | None = None
+        if not live_read_only:
+            mock_snapshot = build_negative_sale_snapshot_mock(
+                mock_snapshot_file=mock_snapshot_file,
+            )
 
         for batch_id in candidate_batch_ids:
             total_count += 1
+
+            if live_read_only:
+                settlement_batch = (
+                    db.query(FundSettlementBatch)
+                    .filter(FundSettlementBatch.id == int(batch_id))
+                    .first()
+                )
+                if settlement_batch is None:
+                    raise RuntimeError(f"Settlement batch not found: {batch_id}")
+
+                fund = _get_fund(db, fund_id=int(settlement_batch.fund_id))
+                snapshot = _build_snapshot(
+                    db,
+                    fund=fund,
+                    mock_snapshot_file=None,
+                    live_read_only=True,
+                )
+            else:
+                snapshot = mock_snapshot
 
             result = create_negative_sale_plan(
                 db,
@@ -256,8 +310,9 @@ def _run_once(
         else:
             db.commit()
             log.info(
-                "Negative sale plan worker mock/local changes committed "
-                "ok=%s failed=%s total=%s",
+                "Negative sale plan worker changes committed "
+                "live_read_only=%s ok=%s failed=%s total=%s",
+                live_read_only,
                 ok_count,
                 failed_count,
                 total_count,
@@ -283,28 +338,37 @@ def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
 
-    mock_snapshot_file = _validate_stage23_2_args(args)
-    if mock_snapshot_file is None:
+    if not _validate_stage23_2_args(args):
         return 0
 
+    live_read_only = bool(args.live_read_only)
+    mock_snapshot_file = (
+        str(args.mock_snapshot_file).strip()
+        if args.mock_snapshot_file and str(args.mock_snapshot_file).strip()
+        else None
+    )
+    snapshot_mode = "bybit_readonly" if live_read_only else "mock_fixture"
+
     log.info(
-        "%s negative sale plan worker started. "
-        "Safe by default. No real Bybit calls, trades, transfers, "
-        "no withdrawals, no BSC transfers, no accounting finalization, "
-        "no server deploy.",
+        "%s negative sale plan worker started snapshot_mode=%s. "
+        "Safe by default. No trades, transfers, withdrawals, "
+        "BSC transfers, or accounting finalization.",
         STAGE_NAME,
+        snapshot_mode,
     )
 
     if args.run_once:
         return _run_once(
             args,
             mock_snapshot_file=mock_snapshot_file,
+            live_read_only=live_read_only,
         )
 
     while True:
         code = _run_once(
             args,
             mock_snapshot_file=mock_snapshot_file,
+            live_read_only=live_read_only,
         )
 
         if code != 0:
