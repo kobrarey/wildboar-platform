@@ -144,6 +144,7 @@ class Settings(BaseSettings):
     NEGATIVE_NET_WITHDRAWAL_FEE_TYPE: int = 0
     NEGATIVE_NET_REQUIRE_ACTIVE_SETTLEMENT_WALLET: bool = True
     NEGATIVE_NET_REQUIRE_INTERNAL_SETTLEMENT_WALLET_WHITELIST: bool = True
+    BYBIT_MASTER_RECV_WINDOW_MS: int = 5000
 
     # --- stage 23.5: negative-net settlement payout mock flow ---
     NEGATIVE_NET_PAYOUT_MOCK_ONLY: bool = True
@@ -263,7 +264,6 @@ class Settings(BaseSettings):
     ALLOCATION_FINALIZATION_REQUIRE_NO_ACTIVE_LEGS: bool = True
 
     # --- Bybit master API runtime settings ---
-    BYBIT_MASTER_RECV_WINDOW_MS: int = 30000
     BYBIT_MASTER_HTTP_TIMEOUT_SEC: int = 20
     BYBIT_MASTER_RETRIES: int = 3
     BYBIT_MASTER_BACKOFF_SEC: Decimal = Decimal("0.8")
