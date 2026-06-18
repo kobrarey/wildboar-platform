@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import argparse
 import time
+from typing import Sequence
 
+from app.config import settings
 from app.db import SessionLocal
+from app.lifecycle import evaluate_live_gate
 from app.models import Fund, FundNegativePayoutBatch, FundSettlementBatch
 from app.settlement.negative_finalization import finalize_negative_net_settlement
 from app.settlement.statuses import (
@@ -12,15 +15,41 @@ from app.settlement.statuses import (
 )
 
 
-def _parse_args() -> argparse.Namespace:
+def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Stage 23.6 negative-net final accounting worker"
+        description=(
+            "Negative-net finalization worker. "
+            "Finalizes order accounting, user positions, fund shares outstanding "
+            "and pricing lock state after confirmed negative-net payouts."
+        )
     )
     parser.add_argument("--run-once", action="store_true")
     parser.add_argument("--dry-run", action="store_true")
     parser.add_argument("--fund-code", default=None)
     parser.add_argument("--sleep-seconds", type=int, default=30)
-    return parser.parse_args()
+    parser.add_argument("--live-execution", action="store_true")
+
+    args = parser.parse_args(argv)
+
+    if int(args.sleep_seconds) < 1:
+        parser.error("--sleep-seconds must be >= 1")
+
+    if not args.live_execution:
+        parser.error("--live-execution is required for negative finalization worker")
+
+    gate = evaluate_live_gate(
+        feature="negative_finalization",
+        env_enabled=(
+            bool(settings.LIFECYCLE_WORKERS_PRODUCTION_LIVE_ENABLED)
+            and bool(settings.NEGATIVE_NET_FINALIZATION_ALLOW_LIVE_EXECUTION)
+        ),
+        cli_enabled=True,
+    )
+    args.live_gate_allowed = bool(gate.allowed)
+    args.live_gate_reason = str(gate.reason)
+    args.live_gate = gate.to_dict()
+
+    return args
 
 
 def _load_candidate(db, *, fund_code: str | None):
@@ -114,8 +143,21 @@ def _run_once(*, dry_run: bool, fund_code: str | None) -> int:
         db.close()
 
 
-def main() -> None:
-    args = _parse_args()
+def main(argv: Sequence[str] | None = None) -> int:
+    args = _parse_args(argv)
+
+    if not bool(getattr(args, "live_gate_allowed", False)):
+        print(
+            {
+                "worker": "fund_negative_finalization_worker",
+                "live_execution": True,
+                "skipped": True,
+                "external_action": False,
+                "accounting_action": False,
+                "reason": getattr(args, "live_gate_reason", "live gate blocked"),
+            }
+        )
+        return 0
 
     while True:
         _run_once(
@@ -128,6 +170,8 @@ def main() -> None:
 
         time.sleep(max(int(args.sleep_seconds), 1))
 
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
