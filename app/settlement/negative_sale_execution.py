@@ -10,6 +10,12 @@ import json
 
 from sqlalchemy.orm import Session
 
+from app.bybit.client import BybitV5Client
+from app.bybit.order_execution import (
+    BybitOrderResult,
+    create_market_sell_order,
+    query_order_by_link_id,
+)
 from app.config import settings
 from app.models import (
     Fund,
@@ -18,6 +24,7 @@ from app.models import (
     FundSettlementBatch,
 )
 from app.settlement.negative_sale_snapshot import dec
+from app.operation_guard.hooks import require_bybit_negative_sale_order_guard
 from app.settlement.statuses import (
     BATCH_STATUS_FAILED_REQUIRES_REVIEW,
     BATCH_STATUS_NEGATIVE_NET_SALE_EXECUTED,
@@ -161,6 +168,566 @@ def deterministic_leg_key(
     leg_index: int,
 ) -> str:
     return f"neg-sale:{sale_batch_id}:{leg_id}:{leg_index}"
+
+
+def deterministic_negative_sale_order_link_id(
+    *,
+    sale_batch_id: int,
+    leg_id: int,
+    leg_index: int,
+) -> str:
+    return f"wb-neg-sale-{int(sale_batch_id)}-{int(leg_id)}-{int(leg_index)}"
+
+
+def bybit_order_success_status(status: str | None) -> bool:
+    return str(status or "").strip() in {
+        "Filled",
+        "PartiallyFilled",
+    }
+
+
+def bybit_order_cash_delta_usdt(order: BybitOrderResult) -> Decimal:
+    return _max_zero(dec(order.cum_exec_value))
+
+
+def execute_live_market_sell_order_guarded(
+    db: Session,
+    *,
+    client: BybitV5Client,
+    sale_batch: FundNegativeSaleBatch,
+    settlement_batch: FundSettlementBatch,
+    leg: FundNegativeSaleLeg,
+    qty: Decimal,
+) -> BybitOrderResult:
+    if qty <= ZERO:
+        raise NegativeSaleExecutionError(
+            f"Live sale leg qty must be positive: leg_id={leg.id}"
+        )
+
+    if not leg.symbol:
+        raise NegativeSaleExecutionError(
+            f"Live sale leg has no symbol: leg_id={leg.id}"
+        )
+
+    category = str(leg.category or "").strip()
+    if not category:
+        raise NegativeSaleExecutionError(
+            f"Live sale leg has no category: leg_id={leg.id}"
+        )
+
+    order_link_id = deterministic_negative_sale_order_link_id(
+        sale_batch_id=int(sale_batch.id),
+        leg_id=int(leg.id),
+        leg_index=int(leg.leg_index),
+    )
+
+    existing = query_order_by_link_id(
+        client,
+        category=category,
+        symbol=str(leg.symbol),
+        order_link_id=order_link_id,
+    )
+    if existing is not None:
+        return existing
+
+    target_cash_usdt = _planned_cash_for_leg(leg)
+
+    require_bybit_negative_sale_order_guard(
+        db,
+        fund_id=int(sale_batch.fund_id),
+        settlement_batch_id=int(settlement_batch.id),
+        amount_usdt=target_cash_usdt,
+        request_id=order_link_id,
+        metadata={
+            "sale_batch_id": int(sale_batch.id),
+            "sale_leg_id": int(leg.id),
+            "leg_index": int(leg.leg_index),
+            "symbol": str(leg.symbol),
+            "category": category,
+            "qty": str(qty),
+            "target_cash_usdt": str(target_cash_usdt),
+        },
+    )
+
+    reduce_only = True if category.lower() in {"linear", "inverse"} else None
+
+    return create_market_sell_order(
+        client,
+        category=category,
+        symbol=str(leg.symbol),
+        qty=qty,
+        order_link_id=order_link_id,
+        reduce_only=reduce_only,
+    )
+
+
+def live_target_qty_for_leg(leg: FundNegativeSaleLeg) -> Decimal:
+    qty = dec(leg.target_qty)
+    if qty <= ZERO:
+        raise NegativeSaleExecutionError(
+            f"Live sale leg target_qty must be positive: leg_id={leg.id}"
+        )
+    return qty
+
+
+def live_order_status_for_leg(
+    *,
+    order: BybitOrderResult,
+    cash_delta_usdt: Decimal,
+) -> str:
+    if str(order.status or "").strip() == "Filled":
+        return SALE_LEG_STATUS_FILLED
+
+    if str(order.status or "").strip() == "PartiallyFilled" and cash_delta_usdt > ZERO:
+        return SALE_LEG_STATUS_PARTIAL_FILLED_ACCEPTED
+
+    return SALE_LEG_STATUS_PENDING_CONFIRMATION
+
+
+def apply_live_order_result_to_leg(
+    *,
+    sale_batch: FundNegativeSaleBatch,
+    leg: FundNegativeSaleLeg,
+    order: BybitOrderResult,
+    execution_round: str,
+    now: datetime,
+) -> dict[str, Any]:
+    target_cash_usdt = _planned_cash_for_leg(leg)
+    cash_delta_usdt = bybit_order_cash_delta_usdt(order)
+    filled_qty = order.cum_exec_qty
+    avg_fill_price = order.avg_price
+
+    fill_ratio = (
+        min(cash_delta_usdt / target_cash_usdt, ONE)
+        if target_cash_usdt > ZERO
+        else ZERO
+    )
+    unfilled_usdt = _max_zero(target_cash_usdt - cash_delta_usdt)
+
+    status = live_order_status_for_leg(
+        order=order,
+        cash_delta_usdt=cash_delta_usdt,
+    )
+
+    deterministic_key = deterministic_leg_key(
+        sale_batch_id=int(sale_batch.id),
+        leg_id=int(leg.id),
+        leg_index=int(leg.leg_index),
+    )
+
+    leg.actual_execution_mode = "live_market_sell"
+    leg.execution_round = execution_round
+    leg.deterministic_key = deterministic_key
+
+    leg.order_link_id = order.order_link_id
+    leg.bybit_order_id = order.order_id
+    leg.bybit_strategy_id = None
+
+    leg.planned_suborders = 1
+    leg.executed_suborders = 1 if cash_delta_usdt > ZERO else 0
+    leg.suborders_json = None
+
+    leg.mock_execution_json = {
+        "mock_only": False,
+        "live_bybit_order": True,
+        "category": order.category,
+        "symbol": order.symbol,
+        "order_id": order.order_id,
+        "order_link_id": order.order_link_id,
+        "order_status": order.status,
+        "side": order.side,
+        "order_type": order.order_type,
+        "qty": str(order.qty) if order.qty is not None else None,
+        "cum_exec_qty": (
+            str(order.cum_exec_qty)
+            if order.cum_exec_qty is not None
+            else None
+        ),
+        "cum_exec_value": (
+            str(order.cum_exec_value)
+            if order.cum_exec_value is not None
+            else None
+        ),
+        "avg_price": str(order.avg_price) if order.avg_price is not None else None,
+        "raw": order.raw,
+    }
+
+    leg.last_price = avg_fill_price
+    leg.best_bid = None
+    leg.best_ask = None
+    leg.corridor_pct = None
+
+    leg.available_liquidity_usdt = None
+    leg.available_liquidity_qty = None
+
+    leg.filled_qty = filled_qty
+    leg.filled_usdt = cash_delta_usdt
+    leg.avg_fill_price = avg_fill_price
+    leg.fill_ratio = fill_ratio
+    leg.unfilled_usdt = unfilled_usdt
+    leg.fee_usdt = ZERO
+    leg.cash_delta_usdt = cash_delta_usdt
+
+    leg.sent_at = now
+    leg.confirmed_at = now if cash_delta_usdt > ZERO else None
+    leg.failed_at = None
+    leg.execution_error = None
+
+    leg.status = status
+    leg.updated_at = now
+
+    return {
+        "leg_id": int(leg.id),
+        "leg_index": int(leg.leg_index),
+        "symbol": leg.symbol,
+        "category": leg.category,
+        "target_cash_usdt": str(target_cash_usdt),
+        "target_qty": str(leg.target_qty),
+        "cash_delta_usdt": str(cash_delta_usdt),
+        "filled_qty": str(filled_qty) if filled_qty is not None else None,
+        "avg_fill_price": str(avg_fill_price) if avg_fill_price is not None else None,
+        "status": status,
+        "order_id": order.order_id,
+        "order_link_id": order.order_link_id,
+        "order_status": order.status,
+    }
+
+
+def execute_initial_sale_legs_live(
+    db: Session,
+    *,
+    client: BybitV5Client,
+    sale_batch: FundNegativeSaleBatch,
+    settlement_batch: FundSettlementBatch,
+    legs: list[FundNegativeSaleLeg],
+    now: datetime,
+) -> list[dict[str, Any]]:
+    live_results: list[dict[str, Any]] = []
+
+    for leg in legs:
+        if not planned_executable_leg(leg):
+            continue
+
+        qty = live_target_qty_for_leg(leg)
+
+        order = execute_live_market_sell_order_guarded(
+            db,
+            client=client,
+            sale_batch=sale_batch,
+            settlement_batch=settlement_batch,
+            leg=leg,
+            qty=qty,
+        )
+
+        live_results.append(
+            apply_live_order_result_to_leg(
+                sale_batch=sale_batch,
+                leg=leg,
+                order=order,
+                execution_round="initial",
+                now=now,
+            )
+        )
+
+    return live_results
+
+
+def live_sale_cash_delta(results: list[dict[str, Any]]) -> Decimal:
+    total = ZERO
+    for item in results:
+        total += dec(item.get("cash_delta_usdt"))
+    return total
+
+
+def build_live_execution_json(
+    *,
+    live_results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    return {
+        "mock_only": False,
+        "stage": "25.1",
+        "initial_sale_legs": live_results,
+        "extra_sale": None,
+        "additional_earn_redeemed_usdt": "0",
+        "safety": {
+            "real_bybit_order_calls": True,
+            "operation_guard_required": True,
+            "no_bybit_transfers_or_withdrawals": True,
+            "no_bsc_transfers": True,
+            "no_accounting_finalization": True,
+        },
+    }
+
+
+def build_live_sale_reconciliation_values(
+    *,
+    required_master_usdt: Decimal,
+    initial_cash_usdt: Decimal,
+    live_results: list[dict[str, Any]],
+) -> dict[str, Decimal]:
+    initial_earn_redeemed_usdt = ZERO
+    initial_sale_executed_usdt = live_sale_cash_delta(live_results)
+
+    available_after_initial_sales = (
+        initial_cash_usdt
+        + initial_earn_redeemed_usdt
+        + initial_sale_executed_usdt
+    )
+
+    shortage_after_initial_sales = shortage_usdt(
+        required_master_usdt=required_master_usdt,
+        available_usdt=available_after_initial_sales,
+    )
+
+    additional_earn_redeemed_usdt = ZERO
+    extra_sale_required_usdt = shortage_after_initial_sales
+    extra_sale_target = ZERO
+    extra_sale_executed_usdt = ZERO
+
+    final_available_usdt = available_after_initial_sales
+    final_shortage_usdt = shortage_usdt(
+        required_master_usdt=required_master_usdt,
+        available_usdt=final_available_usdt,
+    )
+    final_surplus_usdt = _max_zero(final_available_usdt - required_master_usdt)
+
+    return {
+        "initial_earn_redeemed_usdt": initial_earn_redeemed_usdt,
+        "initial_sale_executed_usdt": initial_sale_executed_usdt,
+        "available_after_initial_sales": available_after_initial_sales,
+        "shortage_after_initial_sales": shortage_after_initial_sales,
+        "additional_earn_redeemed_usdt": additional_earn_redeemed_usdt,
+        "extra_sale_required_usdt": extra_sale_required_usdt,
+        "extra_sale_target": extra_sale_target,
+        "extra_sale_executed_usdt": extra_sale_executed_usdt,
+        "final_available_usdt": final_available_usdt,
+        "final_shortage_usdt": final_shortage_usdt,
+        "final_surplus_usdt": final_surplus_usdt,
+    }
+
+
+def apply_live_sale_reconciliation_to_batch(
+    *,
+    sale_batch: FundNegativeSaleBatch,
+    settlement_batch: FundSettlementBatch,
+    required_master_usdt: Decimal,
+    initial_cash_usdt: Decimal,
+    live_results: list[dict[str, Any]],
+    now: datetime,
+) -> dict[str, Any]:
+    values = build_live_sale_reconciliation_values(
+        required_master_usdt=required_master_usdt,
+        initial_cash_usdt=initial_cash_usdt,
+        live_results=live_results,
+    )
+
+    execution_json = build_live_execution_json(
+        live_results=live_results,
+    )
+
+    reconciliation_json = build_reconciliation_json(
+        required_master_usdt=required_master_usdt,
+        initial_cash_usdt=initial_cash_usdt,
+        initial_earn_redeemed_usdt=values["initial_earn_redeemed_usdt"],
+        initial_sale_executed_usdt=values["initial_sale_executed_usdt"],
+        available_after_initial_sales=values["available_after_initial_sales"],
+        shortage_after_initial_sales=values["shortage_after_initial_sales"],
+        additional_earn_redeemed_usdt=values["additional_earn_redeemed_usdt"],
+        extra_sale_required_usdt=values["extra_sale_required_usdt"],
+        extra_sale_target=values["extra_sale_target"],
+        extra_sale_executed_usdt=values["extra_sale_executed_usdt"],
+        final_available_usdt=values["final_available_usdt"],
+        final_shortage_usdt=values["final_shortage_usdt"],
+        final_surplus_usdt=values["final_surplus_usdt"],
+    )
+
+    apply_execution_reconciliation_to_batch(
+        sale_batch=sale_batch,
+        settlement_batch=settlement_batch,
+        initial_cash_usdt=initial_cash_usdt,
+        initial_earn_redeemed_usdt=values["initial_earn_redeemed_usdt"],
+        initial_sale_executed_usdt=values["initial_sale_executed_usdt"],
+        available_after_initial_sales=values["available_after_initial_sales"],
+        shortage_after_initial_sales=values["shortage_after_initial_sales"],
+        additional_earn_redeemed_usdt=values["additional_earn_redeemed_usdt"],
+        extra_sale_required_usdt=values["extra_sale_required_usdt"],
+        extra_sale_target=values["extra_sale_target"],
+        extra_sale_executed_usdt=values["extra_sale_executed_usdt"],
+        final_available_usdt=values["final_available_usdt"],
+        final_shortage_usdt=values["final_shortage_usdt"],
+        final_surplus_usdt=values["final_surplus_usdt"],
+        execution_json=execution_json,
+        reconciliation_json=reconciliation_json,
+        now=now,
+    )
+
+    return {
+        "values": values,
+        "execution_json": execution_json,
+        "reconciliation_json": reconciliation_json,
+    }
+
+
+def prepare_negative_sale_live_execution(
+    db: Session,
+    *,
+    sale_batch_id: int,
+    now: datetime,
+) -> tuple[
+    FundNegativeSaleBatch,
+    FundSettlementBatch,
+    Fund,
+    list[FundNegativeSaleLeg],
+    str,
+    str,
+]:
+    sale_batch = _lock_sale_batch(
+        db,
+        sale_batch_id=sale_batch_id,
+    )
+    status_before = str(sale_batch.status)
+
+    settlement_batch = _lock_settlement_batch(
+        db,
+        settlement_batch_id=int(sale_batch.settlement_batch_id),
+    )
+    settlement_status_before = str(settlement_batch.status)
+
+    fund = _get_fund(
+        db,
+        fund_id=int(sale_batch.fund_id),
+    )
+
+    legs = _load_sale_legs_for_update(
+        db,
+        sale_batch_id=int(sale_batch.id),
+    )
+
+    _validate_sale_execution_input(
+        sale_batch=sale_batch,
+        settlement_batch=settlement_batch,
+        legs=legs,
+    )
+
+    sale_batch.status = SALE_BATCH_STATUS_SALE_EXECUTION_PROCESSING
+    sale_batch.execution_started_at = sale_batch.execution_started_at or now
+    sale_batch.updated_at = now
+
+    settlement_batch.status = BATCH_STATUS_NEGATIVE_NET_SALE_PROCESSING
+    settlement_batch.updated_at = now
+
+    db.add(sale_batch)
+    db.add(settlement_batch)
+    db.flush()
+
+    return (
+        sale_batch,
+        settlement_batch,
+        fund,
+        legs,
+        status_before,
+        settlement_status_before,
+    )
+
+
+def build_negative_sale_live_result(
+    *,
+    sale_batch: FundNegativeSaleBatch,
+    settlement_batch: FundSettlementBatch,
+    fund: Fund,
+    status_before: str,
+    settlement_status_before: str,
+    values: dict[str, Decimal],
+    live_results: list[dict[str, Any]],
+) -> NegativeSaleExecutionResult:
+    final_shortage_usdt = values["final_shortage_usdt"]
+
+    return NegativeSaleExecutionResult(
+        ok=final_shortage_usdt <= ZERO,
+        sale_batch_id=int(sale_batch.id),
+        settlement_batch_id=int(settlement_batch.id),
+        fund_id=int(fund.id),
+        fund_code=str(fund.code),
+        status_before=status_before,
+        status_after=str(sale_batch.status),
+        settlement_status_before=settlement_status_before,
+        settlement_status_after=str(settlement_batch.status),
+        final_available_usdt=values["final_available_usdt"],
+        final_shortage_usdt=final_shortage_usdt,
+        final_surplus_usdt=values["final_surplus_usdt"],
+        executed_leg_count=len(live_results),
+        error=sale_batch.error,
+        diagnostics={
+            "mock_only": False,
+            "live_bybit_order_calls": True,
+            "operation_guard_required": True,
+            "initial_sale_executed_usdt": str(values["initial_sale_executed_usdt"]),
+            "shortage_after_initial_sales_usdt": str(
+                values["shortage_after_initial_sales"]
+            ),
+            "no_bybit_transfers_or_withdrawals": True,
+            "no_bsc_transfers": True,
+            "no_accounting_finalization": True,
+        },
+    )
+
+
+def execute_negative_sale_plan_live(
+    db: Session,
+    *,
+    sale_batch_id: int,
+    client: BybitV5Client,
+    now: datetime | None = None,
+) -> NegativeSaleExecutionResult:
+    now = now or utcnow()
+
+    (
+        sale_batch,
+        settlement_batch,
+        fund,
+        legs,
+        status_before,
+        settlement_status_before,
+    ) = prepare_negative_sale_live_execution(
+        db,
+        sale_batch_id=sale_batch_id,
+        now=now,
+    )
+
+    required_master_usdt = _max_zero(dec(sale_batch.required_master_usdt))
+    initial_cash_usdt = cash_available_from_cash_like_legs(legs)
+
+    live_results = execute_initial_sale_legs_live(
+        db,
+        client=client,
+        sale_batch=sale_batch,
+        settlement_batch=settlement_batch,
+        legs=legs,
+        now=now,
+    )
+
+    applied = apply_live_sale_reconciliation_to_batch(
+        sale_batch=sale_batch,
+        settlement_batch=settlement_batch,
+        required_master_usdt=required_master_usdt,
+        initial_cash_usdt=initial_cash_usdt,
+        live_results=live_results,
+        now=now,
+    )
+
+    db.add(sale_batch)
+    db.add(settlement_batch)
+    db.flush()
+
+    return build_negative_sale_live_result(
+        sale_batch=sale_batch,
+        settlement_batch=settlement_batch,
+        fund=fund,
+        status_before=status_before,
+        settlement_status_before=settlement_status_before,
+        values=applied["values"],
+        live_results=live_results,
+    )
 
 
 def sliced_ioc_suborders(

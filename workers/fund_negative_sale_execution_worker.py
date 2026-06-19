@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import os
 import time
 from pathlib import Path
 from typing import Sequence
 
+from app.bybit.client import BybitV5Client
 from app.config import settings
 from app.db import SessionLocal
 from app.lifecycle import evaluate_live_gate
 from app.models import Fund, FundNegativeSaleBatch, FundSettlementBatch
 from app.settlement.negative_sale_execution import (
+    execute_negative_sale_plan_live,
     execute_negative_sale_plan_mock,
     load_negative_sale_execution_mock_file,
 )
@@ -80,6 +83,24 @@ def _candidate_query(db, *, fund_code: str | None = None):
     return query.order_by(FundNegativeSaleBatch.id.asc()).with_for_update(skip_locked=True)
 
 
+def _build_trading_bybit_client() -> BybitV5Client:
+    api_key = (os.getenv("BYBIT_MASTER_API_KEY") or "").strip()
+    api_secret = (os.getenv("BYBIT_MASTER_API_SECRET") or "").strip()
+
+    if not api_key or not api_secret:
+        raise RuntimeError(
+            "BYBIT_MASTER_API_KEY / BYBIT_MASTER_API_SECRET are required "
+            "for live negative-net sale execution. Use a restricted master API key "
+            "with server IP whitelist."
+        )
+
+    return BybitV5Client(
+        api_key=api_key,
+        api_secret=api_secret,
+        recv_window_ms=settings.BYBIT_MASTER_RECV_WINDOW_MS,
+    )
+
+
 def process_one_batch(*, mock_path: str | Path, fund_code: str | None = None, dry_run: bool = False) -> bool:
     mock_execution = load_negative_sale_execution_mock_file(mock_path)
     db = SessionLocal()
@@ -112,9 +133,56 @@ def process_one_batch(*, mock_path: str | Path, fund_code: str | None = None, dr
         db.close()
 
 
+def process_one_live_batch(*, fund_code: str | None = None) -> bool:
+    db = SessionLocal()
+    try:
+        sale_batch = _candidate_query(db, fund_code=fund_code).first()
+        if sale_batch is None:
+            db.rollback()
+            return False
+
+        client = _build_trading_bybit_client()
+
+        result = execute_negative_sale_plan_live(
+            db,
+            sale_batch_id=int(sale_batch.id),
+            client=client,
+        )
+
+        db.commit()
+
+        print(
+            "fund_negative_sale_execution_worker_live:",
+            "action= commit",
+            "ok=", result.ok,
+            "sale_batch_id=", result.sale_batch_id,
+            "status_after=", result.status_after,
+            "settlement_status_after=", result.settlement_status_after,
+            "final_shortage_usdt=", result.final_shortage_usdt,
+            "executed_leg_count=", result.executed_leg_count,
+            "fund_code_filter=", fund_code or "",
+        )
+        return True
+
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def run_forever(*, mock_path: str | Path, fund_code: str | None = None, dry_run: bool = False, sleep_seconds: int = 10) -> None:
     while True:
         processed = process_one_batch(mock_path=mock_path, fund_code=fund_code, dry_run=dry_run)
+        if not processed:
+            time.sleep(sleep_seconds)
+
+
+def run_live_forever(*, fund_code: str | None = None, sleep_seconds: int = 10) -> None:
+    while True:
+        processed = process_one_live_batch(
+            fund_code=fund_code,
+        )
         if not processed:
             time.sleep(sleep_seconds)
 
@@ -135,19 +203,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
 
-        print(
-            {
-                "worker": "fund_negative_sale_execution_worker",
-                "live_execution": True,
-                "ok": False,
-                "external_action": False,
-                "reason": (
-                    "negative_sale_execution live Bybit trading is not implemented yet; "
-                    "no real Bybit order was sent"
-                ),
-            }
+        if args.dry_run:
+            print(
+                {
+                    "worker": "fund_negative_sale_execution_worker",
+                    "live_execution": True,
+                    "ok": False,
+                    "external_action": False,
+                    "reason": "--dry-run is not allowed with --live-execution; use mock mode for dry-run checks",
+                }
+            )
+            return 2
+
+        if args.run_once:
+            process_one_live_batch(
+                fund_code=args.fund_code,
+            )
+            return 0
+
+        run_live_forever(
+            fund_code=args.fund_code,
+            sleep_seconds=args.sleep_seconds,
         )
-        return 1
+        return 0
 
     if args.run_once:
         process_one_batch(
