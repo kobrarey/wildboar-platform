@@ -36,9 +36,9 @@ def _positive_bool(value: Any) -> bool:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Stage 22.6 positive-net allocation integration worker. "
-            "Safe by default. No real Bybit trades, Strategy orders, "
-            "no Earn stake, no transfers."
+            "Stage 25 positive-net allocation integration worker. "
+            "Mock mode by default; guarded live mode only delegates "
+            "candidate batches to the dedicated allocation execution path."
         )
     )
 
@@ -108,10 +108,7 @@ def _validate_stage22_6_args(args: argparse.Namespace) -> bool:
             )
             return False
 
-        raise RuntimeError(
-            "positive_net_allocation live execution is not implemented yet; "
-            "no real Bybit order, Strategy order, Earn stake or transfer was sent"
-        )
+        return True
 
     if not args.mock_allocation:
         raise RuntimeError(
@@ -165,6 +162,15 @@ def _process_batch_in_own_session(
     dry_run: bool,
     args: argparse.Namespace,
 ) -> bool:
+    if args.live_execution:
+        log.error(
+            "Positive-net allocation live processing reached candidate batch "
+            "but live allocation execution is delegated to the dedicated allocation "
+            "execution worker. batch_id=%s",
+            allocation_batch_id,
+        )
+        return False
+
     db = SessionLocal()
     client = _build_client(args)
 
@@ -285,8 +291,8 @@ def main() -> int:
 
     log.info(
         "%s positive-net allocation worker started. "
-        "Safe by default. No real Bybit orders, Strategy orders, "
-        "no transfers, no Earn stake, no server deploy.",
+        "Mock mode by default; guarded live mode does not run mock handlers "
+        "against real candidate batches.",
         STAGE_NAME,
     )
 
