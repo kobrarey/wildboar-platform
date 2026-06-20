@@ -19,7 +19,7 @@ from workers.fund_allocation_execution_worker import MockAllocationExecutionClie
 log = logging.getLogger(__name__)
 
 
-STAGE_NAME = "Stage 22.6"
+STAGE_NAME = "Stage 25"
 
 
 def _setup_logging() -> None:
@@ -61,7 +61,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--mock-allocation",
         action="store_true",
-        help="Required in Stage 22.6. Enables mock allocation mode.",
+        help="Enables mock allocation mode for safe local execution.",
     )
     parser.add_argument(
         "--live-execution",

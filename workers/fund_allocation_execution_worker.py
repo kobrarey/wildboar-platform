@@ -42,7 +42,7 @@ SUPPORTED_FUNDS = {
 
 class MockAllocationExecutionClient:
     """
-    Stage 22.5 mock market-data client.
+    Mock market-data client for safe execution checks.
 
     Supports only read-style public_get/get methods required by:
     - get_instrument_info
@@ -294,7 +294,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--mock-market-data",
         action="store_true",
-        help="Use built-in mock market-data client. Required in Stage 22.5.",
+        help="Use built-in mock market-data client for safe execution checks.",
     )
 
     parser.add_argument(
@@ -406,7 +406,7 @@ def _find_candidate_leg_ids(
 
 def _build_client(args: argparse.Namespace) -> MockAllocationExecutionClient:
     if not args.mock_market_data:
-        raise RuntimeError("Only mock market-data client is allowed in Stage 22.5")
+        raise RuntimeError("Only mock market-data client is allowed for mock execution paths")
 
     return MockAllocationExecutionClient()
 

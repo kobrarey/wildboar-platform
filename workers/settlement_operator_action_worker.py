@@ -15,7 +15,7 @@ from app.settlement.operator_gas_retry import (
 
 log = logging.getLogger(__name__)
 
-STAGE_NAME = "Stage 22.7"
+STAGE_NAME = "Stage 25"
 
 
 def _setup_logging() -> None:
@@ -49,7 +49,7 @@ def _build_parser() -> argparse.ArgumentParser:
         type=str,
         default=None,
         help=(
-            "Required in Stage 22.7. Mock OK gas wallet BNB balance used "
+            "Mock OK gas wallet BNB balance used "
             "to decide whether the retry can proceed."
         ),
     )
