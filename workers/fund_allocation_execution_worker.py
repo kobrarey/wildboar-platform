@@ -267,8 +267,9 @@ class MockAllocationExecutionClient:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Stage 22.5 allocation execution worker. "
-            "Mocked only: no real Bybit orders, no Strategy orders, no transfers, no Earn stake."
+            "Stage 25 allocation execution worker. "
+            "Mock mode by default; guarded live mode refuses candidate legs "
+            "until real execution adapters are enabled."
         )
     )
 
@@ -358,10 +359,7 @@ def _validate_stage22_5_args(args: argparse.Namespace) -> bool:
             )
             return False
 
-        raise RuntimeError(
-            "allocation_execution live Bybit/Strategy/Earn execution is not implemented yet; "
-            "no real Bybit order, Strategy order, Earn stake or transfer was sent"
-        )
+        return True
 
     if not args.mock_market_data:
         raise RuntimeError(
@@ -419,6 +417,15 @@ def _process_leg_in_own_session(
     dry_run: bool,
     args: argparse.Namespace,
 ) -> bool:
+    if args.live_execution:
+        log.error(
+            "Allocation execution live processing reached candidate leg "
+            "but real Bybit/Strategy/Earn execution is not wired in this worker yet. "
+            "leg_id=%s",
+            allocation_leg_id,
+        )
+        return False
+
     db = SessionLocal()
     client = _build_client(args)
 
@@ -538,6 +545,15 @@ def _process_residual_batch_in_own_session(
     dry_run: bool,
     args: argparse.Namespace,
 ) -> bool:
+    if args.live_execution:
+        log.error(
+            "Allocation execution live processing reached residual candidate batch "
+            "but real Earn residual execution is not wired in this worker yet. "
+            "allocation_batch_id=%s",
+            allocation_batch_id,
+        )
+        return False
+
     db = SessionLocal()
     client = _build_client(args)
 
@@ -707,8 +723,9 @@ def main() -> int:
         return 0
 
     log.info(
-        "Stage 22.5 allocation execution worker started. "
-        "Mocked only. No real Bybit orders, no Strategy orders, no transfers, no Earn stake."
+        "Stage 25 allocation execution worker started. "
+        "Mock mode by default; guarded live mode refuses candidate legs "
+        "until real execution adapters are enabled."
     )
 
     if args.run_once:
