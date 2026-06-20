@@ -202,7 +202,7 @@ def build_retry_settlement_gas_alert_decision_mock(
     available_bnb: Decimal,
 ) -> dict[str, Any]:
     """
-    Stage 22.7 mock alert decision only.
+    Stage 25 mock alert decision only.
     Does not call Telegram.
     """
     return {
@@ -225,7 +225,7 @@ def execute_existing_settlement_gas_topup_algorithm_mock(
     available_bnb: Decimal,
 ) -> dict[str, Any]:
     """
-    Stage 22.7 integration point.
+    Stage 25 guarded integration point.
 
     This is a mock wrapper for the existing settlement gas top-up algorithm.
     It intentionally does not call BSC and does not send BNB.
