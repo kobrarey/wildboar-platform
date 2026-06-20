@@ -25,7 +25,7 @@ from app.settlement.statuses import (
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m workers.fund_negative_sale_execution_worker",
-        description="Stage 23.3.1 negative-net sale execution worker. Mock-only.",
+        description="Stage 25.1 negative-net sale execution worker. Mock mode by default; guarded live execution behind explicit gates.",
     )
     parser.add_argument("--run-once", action="store_true", help="Process at most one sale batch and exit.")
     parser.add_argument("--dry-run", action="store_true", help="Rollback after successful mock execution instead of commit.")

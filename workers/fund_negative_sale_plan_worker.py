@@ -115,8 +115,9 @@ def _validate_stage23_2_args(args: argparse.Namespace) -> bool:
             return False
 
         raise RuntimeError(
-            "negative_sale_plan_live_execution is not implemented in this worker. "
-            "Sale execution must be handled by workers.fund_negative_sale_execution_worker."
+            "negative_sale_plan does not support live execution. "
+            "Use --live-read-only for live Bybit snapshot planning; "
+            "sale execution is handled by workers.fund_negative_sale_execution_worker."
         )
 
     if args.live_read_only:
