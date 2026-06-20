@@ -28,10 +28,9 @@ def _setup_logging() -> None:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Stage 22.7 settlement operator action worker. "
-            "Safe by default. Processes DB operator actions for retrying "
-            "settlement gas top-up after Telegram operator confirmation. "
-            "No shell execution, no real Telegram calls, no real BSC transfer."
+            "Stage 25 settlement operator action worker. "
+            "Mock mode by default; guarded live-bsc mode refuses processing "
+            "until real BSC retry execution is enabled."
         )
     )
 
@@ -113,10 +112,7 @@ def _validate_stage22_7_args(args: argparse.Namespace) -> Decimal | None:
             )
             return None
 
-        raise RuntimeError(
-            "settlement_operator_action live BSC retry is not implemented yet; "
-            "no real BNB transfer was sent"
-        )
+        return Decimal("0")
 
     mock_balance = _parse_decimal(
         args.mock_ok_gas_balance_bnb,
@@ -131,6 +127,14 @@ def _run_once(
     *,
     mock_ok_gas_balance_bnb: Decimal,
 ) -> int:
+    if args.live_bsc:
+        log.error(
+            "Settlement operator action live-bsc mode reached processing path, "
+            "but real BSC retry transfer execution is not wired in this worker yet. "
+            "No mock processor was executed."
+        )
+        return 1
+
     db = SessionLocal()
 
     try:
@@ -187,8 +191,8 @@ def main() -> int:
 
     log.info(
         "%s settlement operator action worker started. "
-        "Safe by default. No shell execution, real Telegram calls, "
-        "no real BSC calls, no real BNB transfer, no server deploy.",
+        "Mock mode by default; guarded live-bsc mode refuses processing "
+        "until real BSC retry execution is enabled.",
         STAGE_NAME,
     )
 
