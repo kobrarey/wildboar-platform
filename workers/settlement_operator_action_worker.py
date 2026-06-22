@@ -9,6 +9,7 @@ from app.config import settings
 from app.db import SessionLocal
 from app.lifecycle import evaluate_live_gate
 from app.settlement.operator_gas_retry import (
+    process_pending_retry_settlement_gas_topup_actions_live,
     process_pending_retry_settlement_gas_topup_actions_mock,
 )
 
@@ -29,8 +30,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Stage 25 settlement operator action worker. "
-            "Mock mode by default; guarded live-bsc mode refuses processing "
-            "until real BSC retry execution is enabled."
+            "Mock mode is local-only; guarded live-bsc mode processes real "
+            "settlement gas retry top-ups with Operation Guard."
         )
     )
 
@@ -127,17 +128,25 @@ def _run_once(
     *,
     mock_ok_gas_balance_bnb: Decimal,
 ) -> int:
-    if args.live_bsc:
-        log.error(
-            "Settlement operator action live-bsc mode reached processing path, "
-            "but real BSC retry transfer execution is not wired in this worker yet. "
-            "No mock processor was executed."
-        )
-        return 1
-
     db = SessionLocal()
 
     try:
+        if args.live_bsc:
+            result = process_pending_retry_settlement_gas_topup_actions_live(
+                db,
+                limit=int(args.limit),
+            )
+            db.commit()
+            log.info(
+                "Settlement operator action worker live-BSC decisions committed "
+                "ok=%s failed=%s total=%s decisions=%s",
+                result.ok_count,
+                result.failed_count,
+                result.total_count,
+                result.to_dict(),
+            )
+            return 0 if result.failed_count == 0 else 1
+
         result = process_pending_retry_settlement_gas_topup_actions_mock(
             db,
             mock_ok_gas_balance_bnb=mock_ok_gas_balance_bnb,
@@ -191,8 +200,8 @@ def main() -> int:
 
     log.info(
         "%s settlement operator action worker started. "
-        "Mock mode by default; guarded live-bsc mode refuses processing "
-        "until real BSC retry execution is enabled.",
+        "Mock mode is local-only; guarded live-bsc mode processes real "
+        "settlement gas retry top-ups with Operation Guard.",
         STAGE_NAME,
     )
 
