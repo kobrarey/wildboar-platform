@@ -2,12 +2,10 @@
 -- PostgreSQL database dump
 --
 
-\restrict jhDDrbHZ5nS45U0RHAcds3utY1avNaB00qkW6luZaozapr1Wr1mMbW0X1VefgBg
+\restrict d932lNlNqJIHW1kyeyAvbR9a5Uvm47PBMT0foOHwU2HGSWsixlyuMgJCIxpgW0f
 
 -- Dumped from database version 16.11
 -- Dumped by pg_dump version 16.11
-
--- Started on 2026-06-22 17:35:57
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -21,17 +19,16 @@ SET client_min_messages = warning;
 SET row_security = off;
 
 --
--- TOC entry 5 (class 2615 OID 32854)
--- Name: public; Type: SCHEMA; Schema: -; Owner: -
+-- Name: public; Type: SCHEMA; Schema: -; Owner: postgres
 --
 
 -- *not* creating schema, since initdb creates it
 
 
+ALTER SCHEMA public OWNER TO postgres;
+
 --
--- TOC entry 5587 (class 0 OID 0)
--- Dependencies: 5
--- Name: SCHEMA public; Type: COMMENT; Schema: -; Owner: -
+-- Name: SCHEMA public; Type: COMMENT; Schema: -; Owner: postgres
 --
 
 COMMENT ON SCHEMA public IS '';
@@ -42,8 +39,7 @@ SET default_tablespace = '';
 SET default_table_access_method = heap;
 
 --
--- TOC entry 247 (class 1259 OID 33190)
--- Name: fee_wallet_swaps; Type: TABLE; Schema: public; Owner: -
+-- Name: fee_wallet_swaps; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fee_wallet_swaps (
@@ -64,9 +60,10 @@ CREATE TABLE public.fee_wallet_swaps (
 );
 
 
+ALTER TABLE public.fee_wallet_swaps OWNER TO postgres;
+
 --
--- TOC entry 246 (class 1259 OID 33189)
--- Name: fee_wallet_swaps_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fee_wallet_swaps_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fee_wallet_swaps_id_seq
@@ -77,18 +74,17 @@ CREATE SEQUENCE public.fee_wallet_swaps_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fee_wallet_swaps_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5588 (class 0 OID 0)
--- Dependencies: 246
--- Name: fee_wallet_swaps_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fee_wallet_swaps_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fee_wallet_swaps_id_seq OWNED BY public.fee_wallet_swaps.id;
 
 
 --
--- TOC entry 261 (class 1259 OID 33423)
--- Name: fund_allocation_batches; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_allocation_batches; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_allocation_batches (
@@ -128,9 +124,10 @@ CREATE TABLE public.fund_allocation_batches (
 );
 
 
+ALTER TABLE public.fund_allocation_batches OWNER TO postgres;
+
 --
--- TOC entry 260 (class 1259 OID 33422)
--- Name: fund_allocation_batches_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_allocation_batches_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_allocation_batches_id_seq
@@ -141,18 +138,17 @@ CREATE SEQUENCE public.fund_allocation_batches_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_allocation_batches_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5589 (class 0 OID 0)
--- Dependencies: 260
--- Name: fund_allocation_batches_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_allocation_batches_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_allocation_batches_id_seq OWNED BY public.fund_allocation_batches.id;
 
 
 --
--- TOC entry 263 (class 1259 OID 33451)
--- Name: fund_allocation_legs; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_allocation_legs; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_allocation_legs (
@@ -230,9 +226,10 @@ CREATE TABLE public.fund_allocation_legs (
 );
 
 
+ALTER TABLE public.fund_allocation_legs OWNER TO postgres;
+
 --
--- TOC entry 262 (class 1259 OID 33450)
--- Name: fund_allocation_legs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_allocation_legs_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_allocation_legs_id_seq
@@ -243,18 +240,17 @@ CREATE SEQUENCE public.fund_allocation_legs_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_allocation_legs_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5590 (class 0 OID 0)
--- Dependencies: 262
--- Name: fund_allocation_legs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_allocation_legs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_allocation_legs_id_seq OWNED BY public.fund_allocation_legs.id;
 
 
 --
--- TOC entry 259 (class 1259 OID 33363)
--- Name: fund_bybit_accounts; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_bybit_accounts; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_bybit_accounts (
@@ -282,9 +278,10 @@ CREATE TABLE public.fund_bybit_accounts (
 );
 
 
+ALTER TABLE public.fund_bybit_accounts OWNER TO postgres;
+
 --
--- TOC entry 258 (class 1259 OID 33362)
--- Name: fund_bybit_accounts_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_bybit_accounts_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_bybit_accounts_id_seq
@@ -295,18 +292,17 @@ CREATE SEQUENCE public.fund_bybit_accounts_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_bybit_accounts_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5591 (class 0 OID 0)
--- Dependencies: 258
--- Name: fund_bybit_accounts_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_bybit_accounts_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_bybit_accounts_id_seq OWNED BY public.fund_bybit_accounts.id;
 
 
 --
--- TOC entry 241 (class 1259 OID 33121)
--- Name: fund_chart_daily; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_chart_daily; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_chart_daily (
@@ -321,9 +317,10 @@ CREATE TABLE public.fund_chart_daily (
 );
 
 
+ALTER TABLE public.fund_chart_daily OWNER TO postgres;
+
 --
--- TOC entry 240 (class 1259 OID 33120)
--- Name: fund_chart_daily_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_chart_daily_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_chart_daily_id_seq
@@ -334,18 +331,17 @@ CREATE SEQUENCE public.fund_chart_daily_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_chart_daily_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5592 (class 0 OID 0)
--- Dependencies: 240
--- Name: fund_chart_daily_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_chart_daily_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_chart_daily_id_seq OWNED BY public.fund_chart_daily.id;
 
 
 --
--- TOC entry 243 (class 1259 OID 33136)
--- Name: fund_chart_minute; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_chart_minute; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_chart_minute (
@@ -360,9 +356,10 @@ CREATE TABLE public.fund_chart_minute (
 );
 
 
+ALTER TABLE public.fund_chart_minute OWNER TO postgres;
+
 --
--- TOC entry 242 (class 1259 OID 33135)
--- Name: fund_chart_minute_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_chart_minute_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_chart_minute_id_seq
@@ -373,18 +370,17 @@ CREATE SEQUENCE public.fund_chart_minute_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_chart_minute_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5593 (class 0 OID 0)
--- Dependencies: 242
--- Name: fund_chart_minute_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_chart_minute_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_chart_minute_id_seq OWNED BY public.fund_chart_minute.id;
 
 
 --
--- TOC entry 250 (class 1259 OID 33221)
--- Name: fund_nav_guard_events; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_nav_guard_events; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_nav_guard_events (
@@ -409,9 +405,10 @@ CREATE TABLE public.fund_nav_guard_events (
 );
 
 
+ALTER TABLE public.fund_nav_guard_events OWNER TO postgres;
+
 --
--- TOC entry 249 (class 1259 OID 33220)
--- Name: fund_nav_guard_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_nav_guard_events_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_nav_guard_events_id_seq
@@ -422,18 +419,17 @@ CREATE SEQUENCE public.fund_nav_guard_events_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_nav_guard_events_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5594 (class 0 OID 0)
--- Dependencies: 249
--- Name: fund_nav_guard_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_nav_guard_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_nav_guard_events_id_seq OWNED BY public.fund_nav_guard_events.id;
 
 
 --
--- TOC entry 248 (class 1259 OID 33208)
--- Name: fund_nav_guard_state; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_nav_guard_state; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_nav_guard_state (
@@ -448,9 +444,10 @@ CREATE TABLE public.fund_nav_guard_state (
 );
 
 
+ALTER TABLE public.fund_nav_guard_state OWNER TO postgres;
+
 --
--- TOC entry 215 (class 1259 OID 32855)
--- Name: fund_nav_minute; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_nav_minute; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_nav_minute (
@@ -462,9 +459,10 @@ CREATE TABLE public.fund_nav_minute (
 );
 
 
+ALTER TABLE public.fund_nav_minute OWNER TO postgres;
+
 --
--- TOC entry 216 (class 1259 OID 32858)
--- Name: fund_nav_minute_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_nav_minute_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_nav_minute_id_seq
@@ -475,18 +473,17 @@ CREATE SEQUENCE public.fund_nav_minute_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_nav_minute_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5595 (class 0 OID 0)
--- Dependencies: 216
--- Name: fund_nav_minute_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_nav_minute_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_nav_minute_id_seq OWNED BY public.fund_nav_minute.id;
 
 
 --
--- TOC entry 271 (class 1259 OID 33643)
--- Name: fund_negative_bybit_flows; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_negative_bybit_flows; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_negative_bybit_flows (
@@ -546,9 +543,10 @@ CREATE TABLE public.fund_negative_bybit_flows (
 );
 
 
+ALTER TABLE public.fund_negative_bybit_flows OWNER TO postgres;
+
 --
--- TOC entry 270 (class 1259 OID 33642)
--- Name: fund_negative_bybit_flows_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_negative_bybit_flows_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_negative_bybit_flows_id_seq
@@ -559,18 +557,17 @@ CREATE SEQUENCE public.fund_negative_bybit_flows_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_negative_bybit_flows_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5596 (class 0 OID 0)
--- Dependencies: 270
--- Name: fund_negative_bybit_flows_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_negative_bybit_flows_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_negative_bybit_flows_id_seq OWNED BY public.fund_negative_bybit_flows.id;
 
 
 --
--- TOC entry 277 (class 1259 OID 33802)
--- Name: fund_negative_finalization_batches; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_negative_finalization_batches; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_negative_finalization_batches (
@@ -616,9 +613,10 @@ CREATE TABLE public.fund_negative_finalization_batches (
 );
 
 
+ALTER TABLE public.fund_negative_finalization_batches OWNER TO postgres;
+
 --
--- TOC entry 276 (class 1259 OID 33801)
--- Name: fund_negative_finalization_batches_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_negative_finalization_batches_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_negative_finalization_batches_id_seq
@@ -629,18 +627,17 @@ CREATE SEQUENCE public.fund_negative_finalization_batches_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_negative_finalization_batches_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5597 (class 0 OID 0)
--- Dependencies: 276
--- Name: fund_negative_finalization_batches_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_negative_finalization_batches_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_negative_finalization_batches_id_seq OWNED BY public.fund_negative_finalization_batches.id;
 
 
 --
--- TOC entry 273 (class 1259 OID 33690)
--- Name: fund_negative_payout_batches; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_negative_payout_batches; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_negative_payout_batches (
@@ -691,9 +688,10 @@ CREATE TABLE public.fund_negative_payout_batches (
 );
 
 
+ALTER TABLE public.fund_negative_payout_batches OWNER TO postgres;
+
 --
--- TOC entry 272 (class 1259 OID 33689)
--- Name: fund_negative_payout_batches_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_negative_payout_batches_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_negative_payout_batches_id_seq
@@ -704,18 +702,17 @@ CREATE SEQUENCE public.fund_negative_payout_batches_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_negative_payout_batches_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5598 (class 0 OID 0)
--- Dependencies: 272
--- Name: fund_negative_payout_batches_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_negative_payout_batches_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_negative_payout_batches_id_seq OWNED BY public.fund_negative_payout_batches.id;
 
 
 --
--- TOC entry 275 (class 1259 OID 33736)
--- Name: fund_negative_payout_legs; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_negative_payout_legs; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_negative_payout_legs (
@@ -755,9 +752,10 @@ CREATE TABLE public.fund_negative_payout_legs (
 );
 
 
+ALTER TABLE public.fund_negative_payout_legs OWNER TO postgres;
+
 --
--- TOC entry 274 (class 1259 OID 33735)
--- Name: fund_negative_payout_legs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_negative_payout_legs_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_negative_payout_legs_id_seq
@@ -768,18 +766,17 @@ CREATE SEQUENCE public.fund_negative_payout_legs_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_negative_payout_legs_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5599 (class 0 OID 0)
--- Dependencies: 274
--- Name: fund_negative_payout_legs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_negative_payout_legs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_negative_payout_legs_id_seq OWNED BY public.fund_negative_payout_legs.id;
 
 
 --
--- TOC entry 267 (class 1259 OID 33551)
--- Name: fund_negative_sale_batches; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_negative_sale_batches; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_negative_sale_batches (
@@ -829,9 +826,10 @@ CREATE TABLE public.fund_negative_sale_batches (
 );
 
 
+ALTER TABLE public.fund_negative_sale_batches OWNER TO postgres;
+
 --
--- TOC entry 266 (class 1259 OID 33550)
--- Name: fund_negative_sale_batches_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_negative_sale_batches_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_negative_sale_batches_id_seq
@@ -842,18 +840,17 @@ CREATE SEQUENCE public.fund_negative_sale_batches_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_negative_sale_batches_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5600 (class 0 OID 0)
--- Dependencies: 266
--- Name: fund_negative_sale_batches_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_negative_sale_batches_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_negative_sale_batches_id_seq OWNED BY public.fund_negative_sale_batches.id;
 
 
 --
--- TOC entry 269 (class 1259 OID 33575)
--- Name: fund_negative_sale_legs; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_negative_sale_legs; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_negative_sale_legs (
@@ -921,9 +918,10 @@ CREATE TABLE public.fund_negative_sale_legs (
 );
 
 
+ALTER TABLE public.fund_negative_sale_legs OWNER TO postgres;
+
 --
--- TOC entry 268 (class 1259 OID 33574)
--- Name: fund_negative_sale_legs_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_negative_sale_legs_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_negative_sale_legs_id_seq
@@ -934,18 +932,17 @@ CREATE SEQUENCE public.fund_negative_sale_legs_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_negative_sale_legs_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5601 (class 0 OID 0)
--- Dependencies: 268
--- Name: fund_negative_sale_legs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_negative_sale_legs_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_negative_sale_legs_id_seq OWNED BY public.fund_negative_sale_legs.id;
 
 
 --
--- TOC entry 283 (class 1259 OID 33915)
--- Name: fund_operation_guard_events; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_operation_guard_events; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_operation_guard_events (
@@ -971,9 +968,10 @@ CREATE TABLE public.fund_operation_guard_events (
 );
 
 
+ALTER TABLE public.fund_operation_guard_events OWNER TO postgres;
+
 --
--- TOC entry 282 (class 1259 OID 33914)
--- Name: fund_operation_guard_events_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_operation_guard_events_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_operation_guard_events_id_seq
@@ -984,18 +982,17 @@ CREATE SEQUENCE public.fund_operation_guard_events_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_operation_guard_events_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5602 (class 0 OID 0)
--- Dependencies: 282
--- Name: fund_operation_guard_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_operation_guard_events_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_operation_guard_events_id_seq OWNED BY public.fund_operation_guard_events.id;
 
 
 --
--- TOC entry 281 (class 1259 OID 33881)
--- Name: fund_operation_guard_overrides; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_operation_guard_overrides; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_operation_guard_overrides (
@@ -1026,9 +1023,10 @@ CREATE TABLE public.fund_operation_guard_overrides (
 );
 
 
+ALTER TABLE public.fund_operation_guard_overrides OWNER TO postgres;
+
 --
--- TOC entry 280 (class 1259 OID 33880)
--- Name: fund_operation_guard_overrides_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_operation_guard_overrides_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_operation_guard_overrides_id_seq
@@ -1039,18 +1037,17 @@ CREATE SEQUENCE public.fund_operation_guard_overrides_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_operation_guard_overrides_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5603 (class 0 OID 0)
--- Dependencies: 280
--- Name: fund_operation_guard_overrides_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_operation_guard_overrides_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_operation_guard_overrides_id_seq OWNED BY public.fund_operation_guard_overrides.id;
 
 
 --
--- TOC entry 279 (class 1259 OID 33854)
--- Name: fund_operation_guard_state; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_operation_guard_state; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_operation_guard_state (
@@ -1070,9 +1067,10 @@ CREATE TABLE public.fund_operation_guard_state (
 );
 
 
+ALTER TABLE public.fund_operation_guard_state OWNER TO postgres;
+
 --
--- TOC entry 278 (class 1259 OID 33853)
--- Name: fund_operation_guard_state_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_operation_guard_state_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_operation_guard_state_id_seq
@@ -1083,18 +1081,17 @@ CREATE SEQUENCE public.fund_operation_guard_state_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_operation_guard_state_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5604 (class 0 OID 0)
--- Dependencies: 278
--- Name: fund_operation_guard_state_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_operation_guard_state_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_operation_guard_state_id_seq OWNED BY public.fund_operation_guard_state.id;
 
 
 --
--- TOC entry 265 (class 1259 OID 33509)
--- Name: fund_operator_actions; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_operator_actions; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_operator_actions (
@@ -1128,9 +1125,10 @@ CREATE TABLE public.fund_operator_actions (
 );
 
 
+ALTER TABLE public.fund_operator_actions OWNER TO postgres;
+
 --
--- TOC entry 264 (class 1259 OID 33508)
--- Name: fund_operator_actions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_operator_actions_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_operator_actions_id_seq
@@ -1141,18 +1139,17 @@ CREATE SEQUENCE public.fund_operator_actions_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_operator_actions_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5605 (class 0 OID 0)
--- Dependencies: 264
--- Name: fund_operator_actions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_operator_actions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_operator_actions_id_seq OWNED BY public.fund_operator_actions.id;
 
 
 --
--- TOC entry 237 (class 1259 OID 33078)
--- Name: fund_orders; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_orders; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_orders (
@@ -1186,9 +1183,10 @@ CREATE TABLE public.fund_orders (
 );
 
 
+ALTER TABLE public.fund_orders OWNER TO postgres;
+
 --
--- TOC entry 236 (class 1259 OID 33077)
--- Name: fund_orders_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_orders_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_orders_id_seq
@@ -1199,18 +1197,17 @@ CREATE SEQUENCE public.fund_orders_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_orders_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5606 (class 0 OID 0)
--- Dependencies: 236
--- Name: fund_orders_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_orders_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_orders_id_seq OWNED BY public.fund_orders.id;
 
 
 --
--- TOC entry 257 (class 1259 OID 33344)
--- Name: fund_runtime_state; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_runtime_state; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_runtime_state (
@@ -1225,9 +1222,10 @@ CREATE TABLE public.fund_runtime_state (
 );
 
 
+ALTER TABLE public.fund_runtime_state OWNER TO postgres;
+
 --
--- TOC entry 254 (class 1259 OID 33268)
--- Name: fund_settlement_batches; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_settlement_batches; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_settlement_batches (
@@ -1282,9 +1280,10 @@ CREATE TABLE public.fund_settlement_batches (
 );
 
 
+ALTER TABLE public.fund_settlement_batches OWNER TO postgres;
+
 --
--- TOC entry 253 (class 1259 OID 33267)
--- Name: fund_settlement_batches_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_settlement_batches_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_settlement_batches_id_seq
@@ -1295,18 +1294,17 @@ CREATE SEQUENCE public.fund_settlement_batches_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_settlement_batches_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5607 (class 0 OID 0)
--- Dependencies: 253
--- Name: fund_settlement_batches_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_settlement_batches_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_settlement_batches_id_seq OWNED BY public.fund_settlement_batches.id;
 
 
 --
--- TOC entry 256 (class 1259 OID 33305)
--- Name: fund_settlement_transfers; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_settlement_transfers; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_settlement_transfers (
@@ -1334,9 +1332,10 @@ CREATE TABLE public.fund_settlement_transfers (
 );
 
 
+ALTER TABLE public.fund_settlement_transfers OWNER TO postgres;
+
 --
--- TOC entry 255 (class 1259 OID 33304)
--- Name: fund_settlement_transfers_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_settlement_transfers_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_settlement_transfers_id_seq
@@ -1347,18 +1346,17 @@ CREATE SEQUENCE public.fund_settlement_transfers_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_settlement_transfers_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5608 (class 0 OID 0)
--- Dependencies: 255
--- Name: fund_settlement_transfers_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_settlement_transfers_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_settlement_transfers_id_seq OWNED BY public.fund_settlement_transfers.id;
 
 
 --
--- TOC entry 252 (class 1259 OID 33245)
--- Name: fund_wallets; Type: TABLE; Schema: public; Owner: -
+-- Name: fund_wallets; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.fund_wallets (
@@ -1378,9 +1376,10 @@ CREATE TABLE public.fund_wallets (
 );
 
 
+ALTER TABLE public.fund_wallets OWNER TO postgres;
+
 --
--- TOC entry 251 (class 1259 OID 33244)
--- Name: fund_wallets_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: fund_wallets_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.fund_wallets_id_seq
@@ -1391,18 +1390,17 @@ CREATE SEQUENCE public.fund_wallets_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.fund_wallets_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5609 (class 0 OID 0)
--- Dependencies: 251
--- Name: fund_wallets_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: fund_wallets_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.fund_wallets_id_seq OWNED BY public.fund_wallets.id;
 
 
 --
--- TOC entry 217 (class 1259 OID 32859)
--- Name: funds; Type: TABLE; Schema: public; Owner: -
+-- Name: funds; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.funds (
@@ -1427,9 +1425,10 @@ CREATE TABLE public.funds (
 );
 
 
+ALTER TABLE public.funds OWNER TO postgres;
+
 --
--- TOC entry 218 (class 1259 OID 32864)
--- Name: funds_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: funds_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.funds_id_seq
@@ -1441,18 +1440,17 @@ CREATE SEQUENCE public.funds_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.funds_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5610 (class 0 OID 0)
--- Dependencies: 218
--- Name: funds_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: funds_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.funds_id_seq OWNED BY public.funds.id;
 
 
 --
--- TOC entry 219 (class 1259 OID 32865)
--- Name: password_reset_sessions; Type: TABLE; Schema: public; Owner: -
+-- Name: password_reset_sessions; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.password_reset_sessions (
@@ -1464,9 +1462,10 @@ CREATE TABLE public.password_reset_sessions (
 );
 
 
+ALTER TABLE public.password_reset_sessions OWNER TO postgres;
+
 --
--- TOC entry 220 (class 1259 OID 32870)
--- Name: security_codes; Type: TABLE; Schema: public; Owner: -
+-- Name: security_codes; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.security_codes (
@@ -1482,9 +1481,10 @@ CREATE TABLE public.security_codes (
 );
 
 
+ALTER TABLE public.security_codes OWNER TO postgres;
+
 --
--- TOC entry 221 (class 1259 OID 32877)
--- Name: security_codes_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: security_codes_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.security_codes_id_seq
@@ -1495,18 +1495,17 @@ CREATE SEQUENCE public.security_codes_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.security_codes_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5611 (class 0 OID 0)
--- Dependencies: 221
--- Name: security_codes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: security_codes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.security_codes_id_seq OWNED BY public.security_codes.id;
 
 
 --
--- TOC entry 222 (class 1259 OID 32878)
--- Name: sessions; Type: TABLE; Schema: public; Owner: -
+-- Name: sessions; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.sessions (
@@ -1517,9 +1516,10 @@ CREATE TABLE public.sessions (
 );
 
 
+ALTER TABLE public.sessions OWNER TO postgres;
+
 --
--- TOC entry 239 (class 1259 OID 33100)
--- Name: user_fund_position_stats; Type: TABLE; Schema: public; Owner: -
+-- Name: user_fund_position_stats; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.user_fund_position_stats (
@@ -1531,9 +1531,10 @@ CREATE TABLE public.user_fund_position_stats (
 );
 
 
+ALTER TABLE public.user_fund_position_stats OWNER TO postgres;
+
 --
--- TOC entry 238 (class 1259 OID 33099)
--- Name: user_fund_position_stats_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: user_fund_position_stats_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.user_fund_position_stats_id_seq
@@ -1544,18 +1545,17 @@ CREATE SEQUENCE public.user_fund_position_stats_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.user_fund_position_stats_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5612 (class 0 OID 0)
--- Dependencies: 238
--- Name: user_fund_position_stats_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: user_fund_position_stats_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.user_fund_position_stats_id_seq OWNED BY public.user_fund_position_stats.id;
 
 
 --
--- TOC entry 223 (class 1259 OID 32882)
--- Name: user_fund_positions; Type: TABLE; Schema: public; Owner: -
+-- Name: user_fund_positions; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.user_fund_positions (
@@ -1569,9 +1569,10 @@ CREATE TABLE public.user_fund_positions (
 );
 
 
+ALTER TABLE public.user_fund_positions OWNER TO postgres;
+
 --
--- TOC entry 224 (class 1259 OID 32886)
--- Name: user_fund_positions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: user_fund_positions_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.user_fund_positions_id_seq
@@ -1582,18 +1583,17 @@ CREATE SEQUENCE public.user_fund_positions_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.user_fund_positions_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5613 (class 0 OID 0)
--- Dependencies: 224
--- Name: user_fund_positions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: user_fund_positions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.user_fund_positions_id_seq OWNED BY public.user_fund_positions.id;
 
 
 --
--- TOC entry 225 (class 1259 OID 32887)
--- Name: user_portfolio_daily; Type: TABLE; Schema: public; Owner: -
+-- Name: user_portfolio_daily; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.user_portfolio_daily (
@@ -1605,9 +1605,10 @@ CREATE TABLE public.user_portfolio_daily (
 );
 
 
+ALTER TABLE public.user_portfolio_daily OWNER TO postgres;
+
 --
--- TOC entry 226 (class 1259 OID 32891)
--- Name: user_portfolio_daily_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: user_portfolio_daily_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.user_portfolio_daily_id_seq
@@ -1618,18 +1619,17 @@ CREATE SEQUENCE public.user_portfolio_daily_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.user_portfolio_daily_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5614 (class 0 OID 0)
--- Dependencies: 226
--- Name: user_portfolio_daily_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: user_portfolio_daily_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.user_portfolio_daily_id_seq OWNED BY public.user_portfolio_daily.id;
 
 
 --
--- TOC entry 245 (class 1259 OID 33174)
--- Name: user_totp_recovery_codes; Type: TABLE; Schema: public; Owner: -
+-- Name: user_totp_recovery_codes; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.user_totp_recovery_codes (
@@ -1642,9 +1642,10 @@ CREATE TABLE public.user_totp_recovery_codes (
 );
 
 
+ALTER TABLE public.user_totp_recovery_codes OWNER TO postgres;
+
 --
--- TOC entry 244 (class 1259 OID 33173)
--- Name: user_totp_recovery_codes_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: user_totp_recovery_codes_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.user_totp_recovery_codes_id_seq
@@ -1655,18 +1656,17 @@ CREATE SEQUENCE public.user_totp_recovery_codes_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.user_totp_recovery_codes_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5615 (class 0 OID 0)
--- Dependencies: 244
--- Name: user_totp_recovery_codes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: user_totp_recovery_codes_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.user_totp_recovery_codes_id_seq OWNED BY public.user_totp_recovery_codes.id;
 
 
 --
--- TOC entry 227 (class 1259 OID 32892)
--- Name: user_wallets; Type: TABLE; Schema: public; Owner: -
+-- Name: user_wallets; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.user_wallets (
@@ -1689,9 +1689,10 @@ CREATE TABLE public.user_wallets (
 );
 
 
+ALTER TABLE public.user_wallets OWNER TO postgres;
+
 --
--- TOC entry 228 (class 1259 OID 32903)
--- Name: user_wallets_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: user_wallets_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.user_wallets_id_seq
@@ -1702,18 +1703,17 @@ CREATE SEQUENCE public.user_wallets_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.user_wallets_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5616 (class 0 OID 0)
--- Dependencies: 228
--- Name: user_wallets_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: user_wallets_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.user_wallets_id_seq OWNED BY public.user_wallets.id;
 
 
 --
--- TOC entry 229 (class 1259 OID 32904)
--- Name: users; Type: TABLE; Schema: public; Owner: -
+-- Name: users; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.users (
@@ -1746,9 +1746,10 @@ CREATE TABLE public.users (
 );
 
 
+ALTER TABLE public.users OWNER TO postgres;
+
 --
--- TOC entry 230 (class 1259 OID 32918)
--- Name: users_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: users_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.users_id_seq
@@ -1759,18 +1760,17 @@ CREATE SEQUENCE public.users_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.users_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5617 (class 0 OID 0)
--- Dependencies: 230
--- Name: users_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: users_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.users_id_seq OWNED BY public.users.id;
 
 
 --
--- TOC entry 231 (class 1259 OID 32919)
--- Name: wallet_transfers; Type: TABLE; Schema: public; Owner: -
+-- Name: wallet_transfers; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.wallet_transfers (
@@ -1803,9 +1803,10 @@ CREATE TABLE public.wallet_transfers (
 );
 
 
+ALTER TABLE public.wallet_transfers OWNER TO postgres;
+
 --
--- TOC entry 232 (class 1259 OID 32930)
--- Name: wallet_transfers_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: wallet_transfers_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.wallet_transfers_id_seq
@@ -1816,18 +1817,17 @@ CREATE SEQUENCE public.wallet_transfers_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.wallet_transfers_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5618 (class 0 OID 0)
--- Dependencies: 232
--- Name: wallet_transfers_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: wallet_transfers_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.wallet_transfers_id_seq OWNED BY public.wallet_transfers.id;
 
 
 --
--- TOC entry 235 (class 1259 OID 33047)
--- Name: withdraw_sessions; Type: TABLE; Schema: public; Owner: -
+-- Name: withdraw_sessions; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.withdraw_sessions (
@@ -1845,9 +1845,10 @@ CREATE TABLE public.withdraw_sessions (
 );
 
 
+ALTER TABLE public.withdraw_sessions OWNER TO postgres;
+
 --
--- TOC entry 234 (class 1259 OID 33046)
--- Name: withdraw_sessions_id_seq; Type: SEQUENCE; Schema: public; Owner: -
+-- Name: withdraw_sessions_id_seq; Type: SEQUENCE; Schema: public; Owner: postgres
 --
 
 CREATE SEQUENCE public.withdraw_sessions_id_seq
@@ -1858,18 +1859,17 @@ CREATE SEQUENCE public.withdraw_sessions_id_seq
     CACHE 1;
 
 
+ALTER SEQUENCE public.withdraw_sessions_id_seq OWNER TO postgres;
+
 --
--- TOC entry 5619 (class 0 OID 0)
--- Dependencies: 234
--- Name: withdraw_sessions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: -
+-- Name: withdraw_sessions_id_seq; Type: SEQUENCE OWNED BY; Schema: public; Owner: postgres
 --
 
 ALTER SEQUENCE public.withdraw_sessions_id_seq OWNED BY public.withdraw_sessions.id;
 
 
 --
--- TOC entry 233 (class 1259 OID 33036)
--- Name: worker_cursors; Type: TABLE; Schema: public; Owner: -
+-- Name: worker_cursors; Type: TABLE; Schema: public; Owner: postgres
 --
 
 CREATE TABLE public.worker_cursors (
@@ -1880,265 +1880,234 @@ CREATE TABLE public.worker_cursors (
 );
 
 
+ALTER TABLE public.worker_cursors OWNER TO postgres;
+
 --
--- TOC entry 4922 (class 2604 OID 33193)
--- Name: fee_wallet_swaps id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fee_wallet_swaps id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fee_wallet_swaps ALTER COLUMN id SET DEFAULT nextval('public.fee_wallet_swaps_id_seq'::regclass);
 
 
 --
--- TOC entry 4962 (class 2604 OID 33426)
--- Name: fund_allocation_batches id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_allocation_batches id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_allocation_batches ALTER COLUMN id SET DEFAULT nextval('public.fund_allocation_batches_id_seq'::regclass);
 
 
 --
--- TOC entry 4968 (class 2604 OID 33454)
--- Name: fund_allocation_legs id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_allocation_legs id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_allocation_legs ALTER COLUMN id SET DEFAULT nextval('public.fund_allocation_legs_id_seq'::regclass);
 
 
 --
--- TOC entry 4956 (class 2604 OID 33366)
--- Name: fund_bybit_accounts id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_bybit_accounts id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_bybit_accounts ALTER COLUMN id SET DEFAULT nextval('public.fund_bybit_accounts_id_seq'::regclass);
 
 
 --
--- TOC entry 4917 (class 2604 OID 33124)
--- Name: fund_chart_daily id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_chart_daily id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_chart_daily ALTER COLUMN id SET DEFAULT nextval('public.fund_chart_daily_id_seq'::regclass);
 
 
 --
--- TOC entry 4918 (class 2604 OID 33139)
--- Name: fund_chart_minute id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_chart_minute id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_chart_minute ALTER COLUMN id SET DEFAULT nextval('public.fund_chart_minute_id_seq'::regclass);
 
 
 --
--- TOC entry 4930 (class 2604 OID 33224)
--- Name: fund_nav_guard_events id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_nav_guard_events id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_nav_guard_events ALTER COLUMN id SET DEFAULT nextval('public.fund_nav_guard_events_id_seq'::regclass);
 
 
 --
--- TOC entry 4863 (class 2604 OID 32931)
--- Name: fund_nav_minute id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_nav_minute id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_nav_minute ALTER COLUMN id SET DEFAULT nextval('public.fund_nav_minute_id_seq'::regclass);
 
 
 --
--- TOC entry 4989 (class 2604 OID 33646)
--- Name: fund_negative_bybit_flows id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_negative_bybit_flows id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_bybit_flows ALTER COLUMN id SET DEFAULT nextval('public.fund_negative_bybit_flows_id_seq'::regclass);
 
 
 --
--- TOC entry 5007 (class 2604 OID 33805)
--- Name: fund_negative_finalization_batches id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_negative_finalization_batches id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_finalization_batches ALTER COLUMN id SET DEFAULT nextval('public.fund_negative_finalization_batches_id_seq'::regclass);
 
 
 --
--- TOC entry 4995 (class 2604 OID 33693)
--- Name: fund_negative_payout_batches id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_negative_payout_batches id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_payout_batches ALTER COLUMN id SET DEFAULT nextval('public.fund_negative_payout_batches_id_seq'::regclass);
 
 
 --
--- TOC entry 5001 (class 2604 OID 33739)
--- Name: fund_negative_payout_legs id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_negative_payout_legs id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_payout_legs ALTER COLUMN id SET DEFAULT nextval('public.fund_negative_payout_legs_id_seq'::regclass);
 
 
 --
--- TOC entry 4979 (class 2604 OID 33554)
--- Name: fund_negative_sale_batches id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_negative_sale_batches id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_sale_batches ALTER COLUMN id SET DEFAULT nextval('public.fund_negative_sale_batches_id_seq'::regclass);
 
 
 --
--- TOC entry 4983 (class 2604 OID 33578)
--- Name: fund_negative_sale_legs id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_negative_sale_legs id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_sale_legs ALTER COLUMN id SET DEFAULT nextval('public.fund_negative_sale_legs_id_seq'::regclass);
 
 
 --
--- TOC entry 5020 (class 2604 OID 33918)
--- Name: fund_operation_guard_events id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_operation_guard_events id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operation_guard_events ALTER COLUMN id SET DEFAULT nextval('public.fund_operation_guard_events_id_seq'::regclass);
 
 
 --
--- TOC entry 5015 (class 2604 OID 33884)
--- Name: fund_operation_guard_overrides id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_operation_guard_overrides id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operation_guard_overrides ALTER COLUMN id SET DEFAULT nextval('public.fund_operation_guard_overrides_id_seq'::regclass);
 
 
 --
--- TOC entry 5011 (class 2604 OID 33857)
--- Name: fund_operation_guard_state id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_operation_guard_state id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operation_guard_state ALTER COLUMN id SET DEFAULT nextval('public.fund_operation_guard_state_id_seq'::regclass);
 
 
 --
--- TOC entry 4973 (class 2604 OID 33512)
--- Name: fund_operator_actions id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_operator_actions id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operator_actions ALTER COLUMN id SET DEFAULT nextval('public.fund_operator_actions_id_seq'::regclass);
 
 
 --
--- TOC entry 4911 (class 2604 OID 33081)
--- Name: fund_orders id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_orders id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_orders ALTER COLUMN id SET DEFAULT nextval('public.fund_orders_id_seq'::regclass);
 
 
 --
--- TOC entry 4937 (class 2604 OID 33271)
--- Name: fund_settlement_batches id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_settlement_batches id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_settlement_batches ALTER COLUMN id SET DEFAULT nextval('public.fund_settlement_batches_id_seq'::regclass);
 
 
 --
--- TOC entry 4948 (class 2604 OID 33308)
--- Name: fund_settlement_transfers id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_settlement_transfers id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_settlement_transfers ALTER COLUMN id SET DEFAULT nextval('public.fund_settlement_transfers_id_seq'::regclass);
 
 
 --
--- TOC entry 4932 (class 2604 OID 33248)
--- Name: fund_wallets id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: fund_wallets id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_wallets ALTER COLUMN id SET DEFAULT nextval('public.fund_wallets_id_seq'::regclass);
 
 
 --
--- TOC entry 4864 (class 2604 OID 32932)
--- Name: funds id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: funds id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.funds ALTER COLUMN id SET DEFAULT nextval('public.funds_id_seq'::regclass);
 
 
 --
--- TOC entry 4870 (class 2604 OID 32933)
--- Name: security_codes id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: security_codes id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.security_codes ALTER COLUMN id SET DEFAULT nextval('public.security_codes_id_seq'::regclass);
 
 
 --
--- TOC entry 4914 (class 2604 OID 33103)
--- Name: user_fund_position_stats id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: user_fund_position_stats id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_fund_position_stats ALTER COLUMN id SET DEFAULT nextval('public.user_fund_position_stats_id_seq'::regclass);
 
 
 --
--- TOC entry 4875 (class 2604 OID 32934)
--- Name: user_fund_positions id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: user_fund_positions id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_fund_positions ALTER COLUMN id SET DEFAULT nextval('public.user_fund_positions_id_seq'::regclass);
 
 
 --
--- TOC entry 4878 (class 2604 OID 32935)
--- Name: user_portfolio_daily id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: user_portfolio_daily id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_portfolio_daily ALTER COLUMN id SET DEFAULT nextval('public.user_portfolio_daily_id_seq'::regclass);
 
 
 --
--- TOC entry 4919 (class 2604 OID 33177)
--- Name: user_totp_recovery_codes id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: user_totp_recovery_codes id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_totp_recovery_codes ALTER COLUMN id SET DEFAULT nextval('public.user_totp_recovery_codes_id_seq'::regclass);
 
 
 --
--- TOC entry 4880 (class 2604 OID 32936)
--- Name: user_wallets id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: user_wallets id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_wallets ALTER COLUMN id SET DEFAULT nextval('public.user_wallets_id_seq'::regclass);
 
 
 --
--- TOC entry 4887 (class 2604 OID 32937)
--- Name: users id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: users id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.users ALTER COLUMN id SET DEFAULT nextval('public.users_id_seq'::regclass);
 
 
 --
--- TOC entry 4898 (class 2604 OID 32938)
--- Name: wallet_transfers id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: wallet_transfers id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.wallet_transfers ALTER COLUMN id SET DEFAULT nextval('public.wallet_transfers_id_seq'::regclass);
 
 
 --
--- TOC entry 4908 (class 2604 OID 33050)
--- Name: withdraw_sessions id; Type: DEFAULT; Schema: public; Owner: -
+-- Name: withdraw_sessions id; Type: DEFAULT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.withdraw_sessions ALTER COLUMN id SET DEFAULT nextval('public.withdraw_sessions_id_seq'::regclass);
 
 
 --
--- TOC entry 5147 (class 2606 OID 33204)
--- Name: fee_wallet_swaps fee_wallet_swaps_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fee_wallet_swaps fee_wallet_swaps_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fee_wallet_swaps
@@ -2146,8 +2115,7 @@ ALTER TABLE ONLY public.fee_wallet_swaps
 
 
 --
--- TOC entry 5188 (class 2606 OID 33435)
--- Name: fund_allocation_batches fund_allocation_batches_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_allocation_batches fund_allocation_batches_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_allocation_batches
@@ -2155,8 +2123,7 @@ ALTER TABLE ONLY public.fund_allocation_batches
 
 
 --
--- TOC entry 5205 (class 2606 OID 33462)
--- Name: fund_allocation_legs fund_allocation_legs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_allocation_legs fund_allocation_legs_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_allocation_legs
@@ -2164,8 +2131,7 @@ ALTER TABLE ONLY public.fund_allocation_legs
 
 
 --
--- TOC entry 5182 (class 2606 OID 33374)
--- Name: fund_bybit_accounts fund_bybit_accounts_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_bybit_accounts fund_bybit_accounts_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_bybit_accounts
@@ -2173,8 +2139,7 @@ ALTER TABLE ONLY public.fund_bybit_accounts
 
 
 --
--- TOC entry 5134 (class 2606 OID 33133)
--- Name: fund_chart_daily fund_chart_daily_fund_ts_unique; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_chart_daily fund_chart_daily_fund_ts_unique; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_chart_daily
@@ -2182,8 +2147,7 @@ ALTER TABLE ONLY public.fund_chart_daily
 
 
 --
--- TOC entry 5136 (class 2606 OID 33126)
--- Name: fund_chart_daily fund_chart_daily_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_chart_daily fund_chart_daily_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_chart_daily
@@ -2191,8 +2155,7 @@ ALTER TABLE ONLY public.fund_chart_daily
 
 
 --
--- TOC entry 5139 (class 2606 OID 33148)
--- Name: fund_chart_minute fund_chart_minute_fund_ts_unique; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_chart_minute fund_chart_minute_fund_ts_unique; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_chart_minute
@@ -2200,8 +2163,7 @@ ALTER TABLE ONLY public.fund_chart_minute
 
 
 --
--- TOC entry 5141 (class 2606 OID 33141)
--- Name: fund_chart_minute fund_chart_minute_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_chart_minute fund_chart_minute_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_chart_minute
@@ -2209,8 +2171,7 @@ ALTER TABLE ONLY public.fund_chart_minute
 
 
 --
--- TOC entry 5154 (class 2606 OID 33230)
--- Name: fund_nav_guard_events fund_nav_guard_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_nav_guard_events fund_nav_guard_events_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_nav_guard_events
@@ -2218,8 +2179,7 @@ ALTER TABLE ONLY public.fund_nav_guard_events
 
 
 --
--- TOC entry 5150 (class 2606 OID 33214)
--- Name: fund_nav_guard_state fund_nav_guard_state_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_nav_guard_state fund_nav_guard_state_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_nav_guard_state
@@ -2227,8 +2187,7 @@ ALTER TABLE ONLY public.fund_nav_guard_state
 
 
 --
--- TOC entry 5066 (class 2606 OID 32940)
--- Name: fund_nav_minute fund_nav_minute_fund_ts_unique; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_nav_minute fund_nav_minute_fund_ts_unique; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_nav_minute
@@ -2236,8 +2195,7 @@ ALTER TABLE ONLY public.fund_nav_minute
 
 
 --
--- TOC entry 5068 (class 2606 OID 32942)
--- Name: fund_nav_minute fund_nav_minute_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_nav_minute fund_nav_minute_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_nav_minute
@@ -2245,8 +2203,7 @@ ALTER TABLE ONLY public.fund_nav_minute
 
 
 --
--- TOC entry 5239 (class 2606 OID 33655)
--- Name: fund_negative_bybit_flows fund_negative_bybit_flows_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_bybit_flows fund_negative_bybit_flows_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_bybit_flows
@@ -2254,8 +2211,7 @@ ALTER TABLE ONLY public.fund_negative_bybit_flows
 
 
 --
--- TOC entry 5243 (class 2606 OID 33659)
--- Name: fund_negative_bybit_flows fund_negative_bybit_flows_sale_batch_uq; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_bybit_flows fund_negative_bybit_flows_sale_batch_uq; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_bybit_flows
@@ -2263,8 +2219,7 @@ ALTER TABLE ONLY public.fund_negative_bybit_flows
 
 
 --
--- TOC entry 5246 (class 2606 OID 33657)
--- Name: fund_negative_bybit_flows fund_negative_bybit_flows_settlement_uq; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_bybit_flows fund_negative_bybit_flows_settlement_uq; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_bybit_flows
@@ -2272,8 +2227,7 @@ ALTER TABLE ONLY public.fund_negative_bybit_flows
 
 
 --
--- TOC entry 5270 (class 2606 OID 33816)
--- Name: fund_negative_finalization_batches fund_negative_finalization_batches_payout_uq; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_finalization_batches fund_negative_finalization_batches_payout_uq; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_finalization_batches
@@ -2281,8 +2235,7 @@ ALTER TABLE ONLY public.fund_negative_finalization_batches
 
 
 --
--- TOC entry 5272 (class 2606 OID 33812)
--- Name: fund_negative_finalization_batches fund_negative_finalization_batches_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_finalization_batches fund_negative_finalization_batches_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_finalization_batches
@@ -2290,8 +2243,7 @@ ALTER TABLE ONLY public.fund_negative_finalization_batches
 
 
 --
--- TOC entry 5275 (class 2606 OID 33814)
--- Name: fund_negative_finalization_batches fund_negative_finalization_batches_settlement_uq; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_finalization_batches fund_negative_finalization_batches_settlement_uq; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_finalization_batches
@@ -2299,8 +2251,7 @@ ALTER TABLE ONLY public.fund_negative_finalization_batches
 
 
 --
--- TOC entry 5252 (class 2606 OID 33706)
--- Name: fund_negative_payout_batches fund_negative_payout_batches_bybit_flow_uq; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_payout_batches fund_negative_payout_batches_bybit_flow_uq; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_payout_batches
@@ -2308,8 +2259,7 @@ ALTER TABLE ONLY public.fund_negative_payout_batches
 
 
 --
--- TOC entry 5255 (class 2606 OID 33702)
--- Name: fund_negative_payout_batches fund_negative_payout_batches_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_payout_batches fund_negative_payout_batches_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_payout_batches
@@ -2317,8 +2267,7 @@ ALTER TABLE ONLY public.fund_negative_payout_batches
 
 
 --
--- TOC entry 5258 (class 2606 OID 33704)
--- Name: fund_negative_payout_batches fund_negative_payout_batches_settlement_uq; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_payout_batches fund_negative_payout_batches_settlement_uq; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_payout_batches
@@ -2326,8 +2275,7 @@ ALTER TABLE ONLY public.fund_negative_payout_batches
 
 
 --
--- TOC entry 5263 (class 2606 OID 33749)
--- Name: fund_negative_payout_legs fund_negative_payout_legs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_payout_legs fund_negative_payout_legs_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_payout_legs
@@ -2335,8 +2283,7 @@ ALTER TABLE ONLY public.fund_negative_payout_legs
 
 
 --
--- TOC entry 5219 (class 2606 OID 33561)
--- Name: fund_negative_sale_batches fund_negative_sale_batches_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_sale_batches fund_negative_sale_batches_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_sale_batches
@@ -2344,8 +2291,7 @@ ALTER TABLE ONLY public.fund_negative_sale_batches
 
 
 --
--- TOC entry 5222 (class 2606 OID 33563)
--- Name: fund_negative_sale_batches fund_negative_sale_batches_settlement_uq; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_sale_batches fund_negative_sale_batches_settlement_uq; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_sale_batches
@@ -2353,8 +2299,7 @@ ALTER TABLE ONLY public.fund_negative_sale_batches
 
 
 --
--- TOC entry 5225 (class 2606 OID 33589)
--- Name: fund_negative_sale_legs fund_negative_sale_legs_batch_index_uq; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_sale_legs fund_negative_sale_legs_batch_index_uq; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_sale_legs
@@ -2362,8 +2307,7 @@ ALTER TABLE ONLY public.fund_negative_sale_legs
 
 
 --
--- TOC entry 5234 (class 2606 OID 33587)
--- Name: fund_negative_sale_legs fund_negative_sale_legs_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_sale_legs fund_negative_sale_legs_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_sale_legs
@@ -2371,8 +2315,7 @@ ALTER TABLE ONLY public.fund_negative_sale_legs
 
 
 --
--- TOC entry 5292 (class 2606 OID 33923)
--- Name: fund_operation_guard_events fund_operation_guard_events_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_operation_guard_events fund_operation_guard_events_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operation_guard_events
@@ -2380,8 +2323,7 @@ ALTER TABLE ONLY public.fund_operation_guard_events
 
 
 --
--- TOC entry 5285 (class 2606 OID 33895)
--- Name: fund_operation_guard_overrides fund_operation_guard_overrides_idempotency_uq; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_operation_guard_overrides fund_operation_guard_overrides_idempotency_uq; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operation_guard_overrides
@@ -2389,8 +2331,7 @@ ALTER TABLE ONLY public.fund_operation_guard_overrides
 
 
 --
--- TOC entry 5287 (class 2606 OID 33893)
--- Name: fund_operation_guard_overrides fund_operation_guard_overrides_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_operation_guard_overrides fund_operation_guard_overrides_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operation_guard_overrides
@@ -2398,8 +2339,7 @@ ALTER TABLE ONLY public.fund_operation_guard_overrides
 
 
 --
--- TOC entry 5279 (class 2606 OID 33864)
--- Name: fund_operation_guard_state fund_operation_guard_state_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_operation_guard_state fund_operation_guard_state_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operation_guard_state
@@ -2407,8 +2347,7 @@ ALTER TABLE ONLY public.fund_operation_guard_state
 
 
 --
--- TOC entry 5281 (class 2606 OID 33866)
--- Name: fund_operation_guard_state fund_operation_guard_state_scope_action_uq; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_operation_guard_state fund_operation_guard_state_scope_action_uq; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operation_guard_state
@@ -2416,8 +2355,7 @@ ALTER TABLE ONLY public.fund_operation_guard_state
 
 
 --
--- TOC entry 5213 (class 2606 OID 33521)
--- Name: fund_operator_actions fund_operator_actions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_operator_actions fund_operator_actions_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operator_actions
@@ -2425,8 +2363,7 @@ ALTER TABLE ONLY public.fund_operator_actions
 
 
 --
--- TOC entry 5125 (class 2606 OID 33086)
--- Name: fund_orders fund_orders_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_orders fund_orders_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_orders
@@ -2434,8 +2371,7 @@ ALTER TABLE ONLY public.fund_orders
 
 
 --
--- TOC entry 5176 (class 2606 OID 33351)
--- Name: fund_runtime_state fund_runtime_state_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_runtime_state fund_runtime_state_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_runtime_state
@@ -2443,8 +2379,7 @@ ALTER TABLE ONLY public.fund_runtime_state
 
 
 --
--- TOC entry 5165 (class 2606 OID 33285)
--- Name: fund_settlement_batches fund_settlement_batches_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_settlement_batches fund_settlement_batches_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_settlement_batches
@@ -2452,8 +2387,7 @@ ALTER TABLE ONLY public.fund_settlement_batches
 
 
 --
--- TOC entry 5172 (class 2606 OID 33316)
--- Name: fund_settlement_transfers fund_settlement_transfers_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_settlement_transfers fund_settlement_transfers_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_settlement_transfers
@@ -2461,8 +2395,7 @@ ALTER TABLE ONLY public.fund_settlement_transfers
 
 
 --
--- TOC entry 5159 (class 2606 OID 33256)
--- Name: fund_wallets fund_wallets_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_wallets fund_wallets_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_wallets
@@ -2470,8 +2403,7 @@ ALTER TABLE ONLY public.fund_wallets
 
 
 --
--- TOC entry 5070 (class 2606 OID 32944)
--- Name: funds funds_code_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: funds funds_code_key; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.funds
@@ -2479,8 +2411,7 @@ ALTER TABLE ONLY public.funds
 
 
 --
--- TOC entry 5072 (class 2606 OID 32946)
--- Name: funds funds_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: funds funds_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.funds
@@ -2488,8 +2419,7 @@ ALTER TABLE ONLY public.funds
 
 
 --
--- TOC entry 5074 (class 2606 OID 32948)
--- Name: password_reset_sessions password_reset_sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: password_reset_sessions password_reset_sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.password_reset_sessions
@@ -2497,8 +2427,7 @@ ALTER TABLE ONLY public.password_reset_sessions
 
 
 --
--- TOC entry 5076 (class 2606 OID 32950)
--- Name: security_codes security_codes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: security_codes security_codes_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.security_codes
@@ -2506,8 +2435,7 @@ ALTER TABLE ONLY public.security_codes
 
 
 --
--- TOC entry 5079 (class 2606 OID 32952)
--- Name: sessions sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: sessions sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.sessions
@@ -2515,8 +2443,7 @@ ALTER TABLE ONLY public.sessions
 
 
 --
--- TOC entry 5129 (class 2606 OID 33107)
--- Name: user_fund_position_stats user_fund_position_stats_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: user_fund_position_stats user_fund_position_stats_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_fund_position_stats
@@ -2524,8 +2451,7 @@ ALTER TABLE ONLY public.user_fund_position_stats
 
 
 --
--- TOC entry 5131 (class 2606 OID 33109)
--- Name: user_fund_position_stats user_fund_position_stats_user_fund_uq; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: user_fund_position_stats user_fund_position_stats_user_fund_uq; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_fund_position_stats
@@ -2533,8 +2459,7 @@ ALTER TABLE ONLY public.user_fund_position_stats
 
 
 --
--- TOC entry 5081 (class 2606 OID 32954)
--- Name: user_fund_positions user_fund_positions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: user_fund_positions user_fund_positions_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_fund_positions
@@ -2542,8 +2467,7 @@ ALTER TABLE ONLY public.user_fund_positions
 
 
 --
--- TOC entry 5083 (class 2606 OID 32956)
--- Name: user_fund_positions user_fund_positions_unique; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: user_fund_positions user_fund_positions_unique; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_fund_positions
@@ -2551,8 +2475,7 @@ ALTER TABLE ONLY public.user_fund_positions
 
 
 --
--- TOC entry 5086 (class 2606 OID 32958)
--- Name: user_portfolio_daily user_portfolio_daily_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: user_portfolio_daily user_portfolio_daily_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_portfolio_daily
@@ -2560,8 +2483,7 @@ ALTER TABLE ONLY public.user_portfolio_daily
 
 
 --
--- TOC entry 5088 (class 2606 OID 32960)
--- Name: user_portfolio_daily user_portfolio_daily_unique; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: user_portfolio_daily user_portfolio_daily_unique; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_portfolio_daily
@@ -2569,8 +2491,7 @@ ALTER TABLE ONLY public.user_portfolio_daily
 
 
 --
--- TOC entry 5143 (class 2606 OID 33181)
--- Name: user_totp_recovery_codes user_totp_recovery_codes_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: user_totp_recovery_codes user_totp_recovery_codes_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_totp_recovery_codes
@@ -2578,8 +2499,7 @@ ALTER TABLE ONLY public.user_totp_recovery_codes
 
 
 --
--- TOC entry 5093 (class 2606 OID 32962)
--- Name: user_wallets user_wallets_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: user_wallets user_wallets_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_wallets
@@ -2587,8 +2507,7 @@ ALTER TABLE ONLY public.user_wallets
 
 
 --
--- TOC entry 5098 (class 2606 OID 32964)
--- Name: users users_email_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: users users_email_key; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.users
@@ -2596,8 +2515,7 @@ ALTER TABLE ONLY public.users
 
 
 --
--- TOC entry 5100 (class 2606 OID 32966)
--- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: users users_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.users
@@ -2605,8 +2523,7 @@ ALTER TABLE ONLY public.users
 
 
 --
--- TOC entry 5106 (class 2606 OID 32968)
--- Name: wallet_transfers wallet_transfers_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: wallet_transfers wallet_transfers_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.wallet_transfers
@@ -2614,8 +2531,7 @@ ALTER TABLE ONLY public.wallet_transfers
 
 
 --
--- TOC entry 5109 (class 2606 OID 32970)
--- Name: wallet_transfers wallet_transfers_tx_hash_log_index_uq; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: wallet_transfers wallet_transfers_tx_hash_log_index_uq; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.wallet_transfers
@@ -2623,8 +2539,7 @@ ALTER TABLE ONLY public.wallet_transfers
 
 
 --
--- TOC entry 5116 (class 2606 OID 33054)
--- Name: withdraw_sessions withdraw_sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: withdraw_sessions withdraw_sessions_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.withdraw_sessions
@@ -2632,8 +2547,7 @@ ALTER TABLE ONLY public.withdraw_sessions
 
 
 --
--- TOC entry 5118 (class 2606 OID 33056)
--- Name: withdraw_sessions withdraw_sessions_token_key; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: withdraw_sessions withdraw_sessions_token_key; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.withdraw_sessions
@@ -2641,8 +2555,7 @@ ALTER TABLE ONLY public.withdraw_sessions
 
 
 --
--- TOC entry 5113 (class 2606 OID 33044)
--- Name: worker_cursors worker_cursors_pkey; Type: CONSTRAINT; Schema: public; Owner: -
+-- Name: worker_cursors worker_cursors_pkey; Type: CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.worker_cursors
@@ -2650,936 +2563,819 @@ ALTER TABLE ONLY public.worker_cursors
 
 
 --
--- TOC entry 5145 (class 1259 OID 33206)
--- Name: fee_wallet_swaps_one_success_per_day_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fee_wallet_swaps_one_success_per_day_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX fee_wallet_swaps_one_success_per_day_idx ON public.fee_wallet_swaps USING btree (wallet_type, (((created_at AT TIME ZONE 'UTC'::text))::date)) WHERE ((status)::text = 'success'::text);
 
 
 --
--- TOC entry 5148 (class 1259 OID 33205)
--- Name: fee_wallet_swaps_wallet_type_created_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fee_wallet_swaps_wallet_type_created_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fee_wallet_swaps_wallet_type_created_idx ON public.fee_wallet_swaps USING btree (wallet_type, created_at DESC);
 
 
 --
--- TOC entry 5184 (class 1259 OID 33448)
--- Name: fund_allocation_batches_created_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_batches_created_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_allocation_batches_created_idx ON public.fund_allocation_batches USING btree (created_at DESC);
 
 
 --
--- TOC entry 5185 (class 1259 OID 33505)
--- Name: fund_allocation_batches_fund_status_completed_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_batches_fund_status_completed_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_allocation_batches_fund_status_completed_idx ON public.fund_allocation_batches USING btree (fund_id, status, completed_at DESC);
 
 
 --
--- TOC entry 5186 (class 1259 OID 33447)
--- Name: fund_allocation_batches_fund_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_batches_fund_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_allocation_batches_fund_status_idx ON public.fund_allocation_batches USING btree (fund_id, status);
 
 
 --
--- TOC entry 5189 (class 1259 OID 33506)
--- Name: fund_allocation_batches_residual_cash_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_batches_residual_cash_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_allocation_batches_residual_cash_idx ON public.fund_allocation_batches USING btree (residual_cash_usdt) WHERE (residual_cash_usdt IS NOT NULL);
 
 
 --
--- TOC entry 5190 (class 1259 OID 33446)
--- Name: fund_allocation_batches_settlement_batch_uq; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_batches_settlement_batch_uq; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX fund_allocation_batches_settlement_batch_uq ON public.fund_allocation_batches USING btree (settlement_batch_id);
 
 
 --
--- TOC entry 5191 (class 1259 OID 33504)
--- Name: fund_allocation_batches_status_completed_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_batches_status_completed_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_allocation_batches_status_completed_idx ON public.fund_allocation_batches USING btree (status, completed_at DESC);
 
 
 --
--- TOC entry 5192 (class 1259 OID 33483)
--- Name: fund_allocation_legs_batch_leg_index_uq; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_legs_batch_leg_index_uq; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX fund_allocation_legs_batch_leg_index_uq ON public.fund_allocation_legs USING btree (allocation_batch_id, leg_index);
 
 
 --
--- TOC entry 5193 (class 1259 OID 33484)
--- Name: fund_allocation_legs_batch_leg_key_uq; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_legs_batch_leg_key_uq; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX fund_allocation_legs_batch_leg_key_uq ON public.fund_allocation_legs USING btree (allocation_batch_id, leg_key);
 
 
 --
--- TOC entry 5194 (class 1259 OID 33485)
--- Name: fund_allocation_legs_batch_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_legs_batch_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_allocation_legs_batch_status_idx ON public.fund_allocation_legs USING btree (allocation_batch_id, status);
 
 
 --
--- TOC entry 5195 (class 1259 OID 33494)
--- Name: fund_allocation_legs_bybit_order_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_legs_bybit_order_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_allocation_legs_bybit_order_idx ON public.fund_allocation_legs USING btree (bybit_order_id) WHERE (bybit_order_id IS NOT NULL);
 
 
 --
--- TOC entry 5196 (class 1259 OID 33500)
--- Name: fund_allocation_legs_category_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_legs_category_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_allocation_legs_category_status_idx ON public.fund_allocation_legs USING btree (category, status);
 
 
 --
--- TOC entry 5197 (class 1259 OID 33495)
--- Name: fund_allocation_legs_earn_order_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_legs_earn_order_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_allocation_legs_earn_order_idx ON public.fund_allocation_legs USING btree (earn_order_id) WHERE (earn_order_id IS NOT NULL);
 
 
 --
--- TOC entry 5198 (class 1259 OID 33493)
--- Name: fund_allocation_legs_execution_mode_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_legs_execution_mode_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_allocation_legs_execution_mode_status_idx ON public.fund_allocation_legs USING btree (execution_mode, status);
 
 
 --
--- TOC entry 5199 (class 1259 OID 33486)
--- Name: fund_allocation_legs_fund_group_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_legs_fund_group_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_allocation_legs_fund_group_idx ON public.fund_allocation_legs USING btree (fund_id, leg_group);
 
 
 --
--- TOC entry 5200 (class 1259 OID 33501)
--- Name: fund_allocation_legs_group_type_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_legs_group_type_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_allocation_legs_group_type_status_idx ON public.fund_allocation_legs USING btree (leg_group, leg_type, status);
 
 
 --
--- TOC entry 5201 (class 1259 OID 33499)
--- Name: fund_allocation_legs_margin_guard_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_legs_margin_guard_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_allocation_legs_margin_guard_idx ON public.fund_allocation_legs USING btree (margin_guard_status) WHERE (margin_guard_status IS NOT NULL);
 
 
 --
--- TOC entry 5202 (class 1259 OID 33488)
--- Name: fund_allocation_legs_order_link_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_legs_order_link_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_allocation_legs_order_link_idx ON public.fund_allocation_legs USING btree (order_link_id) WHERE (order_link_id IS NOT NULL);
 
 
 --
--- TOC entry 5203 (class 1259 OID 33496)
--- Name: fund_allocation_legs_parent_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_legs_parent_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_allocation_legs_parent_idx ON public.fund_allocation_legs USING btree (parent_leg_id) WHERE (parent_leg_id IS NOT NULL);
 
 
 --
--- TOC entry 5206 (class 1259 OID 33497)
--- Name: fund_allocation_legs_residual_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_legs_residual_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_allocation_legs_residual_idx ON public.fund_allocation_legs USING btree (allocation_batch_id, residual_usdt) WHERE (residual_usdt IS NOT NULL);
 
 
 --
--- TOC entry 5207 (class 1259 OID 33487)
--- Name: fund_allocation_legs_strategy_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_allocation_legs_strategy_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_allocation_legs_strategy_idx ON public.fund_allocation_legs USING btree (strategy_id) WHERE (strategy_id IS NOT NULL);
 
 
 --
--- TOC entry 5177 (class 1259 OID 33380)
--- Name: fund_bybit_accounts_active_fund_coin_chain_uq; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_bybit_accounts_active_fund_coin_chain_uq; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX fund_bybit_accounts_active_fund_coin_chain_uq ON public.fund_bybit_accounts USING btree (fund_id, coin, chain_type) WHERE (is_active = true);
 
 
 --
--- TOC entry 5178 (class 1259 OID 33421)
--- Name: fund_bybit_accounts_api_key_active_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_bybit_accounts_api_key_active_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_bybit_accounts_api_key_active_idx ON public.fund_bybit_accounts USING btree (fund_id, api_key_is_active);
 
 
 --
--- TOC entry 5179 (class 1259 OID 33383)
--- Name: fund_bybit_accounts_deposit_address_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_bybit_accounts_deposit_address_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_bybit_accounts_deposit_address_idx ON public.fund_bybit_accounts USING btree (deposit_address);
 
 
 --
--- TOC entry 5180 (class 1259 OID 33382)
--- Name: fund_bybit_accounts_fund_id_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_bybit_accounts_fund_id_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_bybit_accounts_fund_id_idx ON public.fund_bybit_accounts USING btree (fund_id);
 
 
 --
--- TOC entry 5183 (class 1259 OID 33381)
--- Name: fund_bybit_accounts_sub_uid_coin_chain_uq; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_bybit_accounts_sub_uid_coin_chain_uq; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX fund_bybit_accounts_sub_uid_coin_chain_uq ON public.fund_bybit_accounts USING btree (bybit_sub_uid, coin, chain_type) WHERE (is_active = true);
 
 
 --
--- TOC entry 5132 (class 1259 OID 33134)
--- Name: fund_chart_daily_fund_ts_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_chart_daily_fund_ts_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_chart_daily_fund_ts_idx ON public.fund_chart_daily USING btree (fund_id, ts_utc DESC);
 
 
 --
--- TOC entry 5137 (class 1259 OID 33149)
--- Name: fund_chart_minute_fund_ts_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_chart_minute_fund_ts_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_chart_minute_fund_ts_idx ON public.fund_chart_minute USING btree (fund_id, ts_utc DESC);
 
 
 --
--- TOC entry 5151 (class 1259 OID 33237)
--- Name: fund_nav_guard_events_decision_created_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_nav_guard_events_decision_created_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_nav_guard_events_decision_created_idx ON public.fund_nav_guard_events USING btree (decision, created_at DESC);
 
 
 --
--- TOC entry 5152 (class 1259 OID 33236)
--- Name: fund_nav_guard_events_fund_created_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_nav_guard_events_fund_created_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_nav_guard_events_fund_created_idx ON public.fund_nav_guard_events USING btree (fund_id, created_at DESC);
 
 
 --
--- TOC entry 5064 (class 1259 OID 32971)
--- Name: fund_nav_minute_fund_ts_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_nav_minute_fund_ts_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_nav_minute_fund_ts_idx ON public.fund_nav_minute USING btree (fund_id, ts_utc DESC);
 
 
 --
--- TOC entry 5237 (class 1259 OID 33682)
--- Name: fund_negative_bybit_flows_fund_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_bybit_flows_fund_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_bybit_flows_fund_status_idx ON public.fund_negative_bybit_flows USING btree (fund_id, status, created_at DESC);
 
 
 --
--- TOC entry 5240 (class 1259 OID 33686)
--- Name: fund_negative_bybit_flows_request_id_uq; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_bybit_flows_request_id_uq; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX fund_negative_bybit_flows_request_id_uq ON public.fund_negative_bybit_flows USING btree (withdrawal_request_id) WHERE (withdrawal_request_id IS NOT NULL);
 
 
 --
--- TOC entry 5241 (class 1259 OID 33684)
--- Name: fund_negative_bybit_flows_sale_batch_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_bybit_flows_sale_batch_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_bybit_flows_sale_batch_idx ON public.fund_negative_bybit_flows USING btree (sale_batch_id);
 
 
 --
--- TOC entry 5244 (class 1259 OID 33683)
--- Name: fund_negative_bybit_flows_settlement_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_bybit_flows_settlement_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_bybit_flows_settlement_idx ON public.fund_negative_bybit_flows USING btree (settlement_batch_id);
 
 
 --
--- TOC entry 5247 (class 1259 OID 33685)
--- Name: fund_negative_bybit_flows_transfer_id_uq; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_bybit_flows_transfer_id_uq; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX fund_negative_bybit_flows_transfer_id_uq ON public.fund_negative_bybit_flows USING btree (universal_transfer_id) WHERE (universal_transfer_id IS NOT NULL);
 
 
 --
--- TOC entry 5248 (class 1259 OID 33688)
--- Name: fund_negative_bybit_flows_tx_hash_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_bybit_flows_tx_hash_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_bybit_flows_tx_hash_idx ON public.fund_negative_bybit_flows USING btree (withdrawal_tx_hash) WHERE (withdrawal_tx_hash IS NOT NULL);
 
 
 --
--- TOC entry 5249 (class 1259 OID 33687)
--- Name: fund_negative_bybit_flows_withdrawal_id_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_bybit_flows_withdrawal_id_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_bybit_flows_withdrawal_id_idx ON public.fund_negative_bybit_flows USING btree (withdrawal_id) WHERE (withdrawal_id IS NOT NULL);
 
 
 --
--- TOC entry 5266 (class 1259 OID 33847)
--- Name: fund_negative_finalization_batches_completed_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_finalization_batches_completed_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_finalization_batches_completed_idx ON public.fund_negative_finalization_batches USING btree (fund_id, completed_at DESC) WHERE (completed_at IS NOT NULL);
 
 
 --
--- TOC entry 5267 (class 1259 OID 33844)
--- Name: fund_negative_finalization_batches_fund_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_finalization_batches_fund_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_finalization_batches_fund_status_idx ON public.fund_negative_finalization_batches USING btree (fund_id, status, created_at DESC);
 
 
 --
--- TOC entry 5268 (class 1259 OID 33846)
--- Name: fund_negative_finalization_batches_payout_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_finalization_batches_payout_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_finalization_batches_payout_idx ON public.fund_negative_finalization_batches USING btree (payout_batch_id);
 
 
 --
--- TOC entry 5273 (class 1259 OID 33845)
--- Name: fund_negative_finalization_batches_settlement_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_finalization_batches_settlement_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_finalization_batches_settlement_idx ON public.fund_negative_finalization_batches USING btree (settlement_batch_id);
 
 
 --
--- TOC entry 5250 (class 1259 OID 33795)
--- Name: fund_negative_payout_batches_bybit_flow_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_payout_batches_bybit_flow_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_payout_batches_bybit_flow_idx ON public.fund_negative_payout_batches USING btree (bybit_flow_id);
 
 
 --
--- TOC entry 5253 (class 1259 OID 33793)
--- Name: fund_negative_payout_batches_fund_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_payout_batches_fund_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_payout_batches_fund_status_idx ON public.fund_negative_payout_batches USING btree (fund_id, status, created_at DESC);
 
 
 --
--- TOC entry 5256 (class 1259 OID 33794)
--- Name: fund_negative_payout_batches_settlement_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_payout_batches_settlement_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_payout_batches_settlement_idx ON public.fund_negative_payout_batches USING btree (settlement_batch_id);
 
 
 --
--- TOC entry 5259 (class 1259 OID 33796)
--- Name: fund_negative_payout_legs_batch_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_payout_legs_batch_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_payout_legs_batch_status_idx ON public.fund_negative_payout_legs USING btree (payout_batch_id, status);
 
 
 --
--- TOC entry 5260 (class 1259 OID 33800)
--- Name: fund_negative_payout_legs_batch_wallet_uq; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_payout_legs_batch_wallet_uq; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX fund_negative_payout_legs_batch_wallet_uq ON public.fund_negative_payout_legs USING btree (payout_batch_id, to_user_wallet_id) WHERE (to_user_wallet_id IS NOT NULL);
 
 
 --
--- TOC entry 5261 (class 1259 OID 33798)
--- Name: fund_negative_payout_legs_deterministic_key_uq; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_payout_legs_deterministic_key_uq; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX fund_negative_payout_legs_deterministic_key_uq ON public.fund_negative_payout_legs USING btree (deterministic_key) WHERE (deterministic_key IS NOT NULL);
 
 
 --
--- TOC entry 5264 (class 1259 OID 33799)
--- Name: fund_negative_payout_legs_tx_hash_uq; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_payout_legs_tx_hash_uq; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX fund_negative_payout_legs_tx_hash_uq ON public.fund_negative_payout_legs USING btree (tx_hash) WHERE (tx_hash IS NOT NULL);
 
 
 --
--- TOC entry 5265 (class 1259 OID 33797)
--- Name: fund_negative_payout_legs_user_wallet_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_payout_legs_user_wallet_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_payout_legs_user_wallet_idx ON public.fund_negative_payout_legs USING btree (user_wallet_id, status);
 
 
 --
--- TOC entry 5215 (class 1259 OID 33631)
--- Name: fund_negative_sale_batches_completed_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_sale_batches_completed_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_sale_batches_completed_idx ON public.fund_negative_sale_batches USING btree (fund_id, execution_completed_at DESC) WHERE (execution_completed_at IS NOT NULL);
 
 
 --
--- TOC entry 5216 (class 1259 OID 33630)
--- Name: fund_negative_sale_batches_execution_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_sale_batches_execution_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_sale_batches_execution_status_idx ON public.fund_negative_sale_batches USING btree (fund_id, status, execution_started_at DESC);
 
 
 --
--- TOC entry 5217 (class 1259 OID 33608)
--- Name: fund_negative_sale_batches_fund_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_sale_batches_fund_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_sale_batches_fund_status_idx ON public.fund_negative_sale_batches USING btree (fund_id, status, created_at DESC);
 
 
 --
--- TOC entry 5220 (class 1259 OID 33609)
--- Name: fund_negative_sale_batches_settlement_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_sale_batches_settlement_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_sale_batches_settlement_idx ON public.fund_negative_sale_batches USING btree (settlement_batch_id);
 
 
 --
--- TOC entry 5223 (class 1259 OID 33607)
--- Name: fund_negative_sale_batches_settlement_uq_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_sale_batches_settlement_uq_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX fund_negative_sale_batches_settlement_uq_idx ON public.fund_negative_sale_batches USING btree (settlement_batch_id);
 
 
 --
--- TOC entry 5226 (class 1259 OID 33610)
--- Name: fund_negative_sale_legs_batch_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_sale_legs_batch_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_sale_legs_batch_status_idx ON public.fund_negative_sale_legs USING btree (sale_batch_id, status);
 
 
 --
--- TOC entry 5227 (class 1259 OID 33634)
--- Name: fund_negative_sale_legs_bybit_order_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_sale_legs_bybit_order_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_sale_legs_bybit_order_idx ON public.fund_negative_sale_legs USING btree (bybit_order_id) WHERE (bybit_order_id IS NOT NULL);
 
 
 --
--- TOC entry 5228 (class 1259 OID 33635)
--- Name: fund_negative_sale_legs_bybit_strategy_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_sale_legs_bybit_strategy_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_sale_legs_bybit_strategy_idx ON public.fund_negative_sale_legs USING btree (bybit_strategy_id) WHERE (bybit_strategy_id IS NOT NULL);
 
 
 --
--- TOC entry 5229 (class 1259 OID 33633)
--- Name: fund_negative_sale_legs_deterministic_key_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_sale_legs_deterministic_key_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_sale_legs_deterministic_key_idx ON public.fund_negative_sale_legs USING btree (deterministic_key) WHERE (deterministic_key IS NOT NULL);
 
 
 --
--- TOC entry 5230 (class 1259 OID 33632)
--- Name: fund_negative_sale_legs_execution_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_sale_legs_execution_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_sale_legs_execution_status_idx ON public.fund_negative_sale_legs USING btree (sale_batch_id, status, actual_execution_mode);
 
 
 --
--- TOC entry 5231 (class 1259 OID 33611)
--- Name: fund_negative_sale_legs_group_type_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_sale_legs_group_type_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_sale_legs_group_type_status_idx ON public.fund_negative_sale_legs USING btree (leg_group, leg_type, status);
 
 
 --
--- TOC entry 5232 (class 1259 OID 33613)
--- Name: fund_negative_sale_legs_order_link_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_sale_legs_order_link_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_sale_legs_order_link_idx ON public.fund_negative_sale_legs USING btree (order_link_id) WHERE (order_link_id IS NOT NULL);
 
 
 --
--- TOC entry 5235 (class 1259 OID 33614)
--- Name: fund_negative_sale_legs_strategy_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_sale_legs_strategy_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_sale_legs_strategy_idx ON public.fund_negative_sale_legs USING btree (strategy_id) WHERE (strategy_id IS NOT NULL);
 
 
 --
--- TOC entry 5236 (class 1259 OID 33612)
--- Name: fund_negative_sale_legs_symbol_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_negative_sale_legs_symbol_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_negative_sale_legs_symbol_status_idx ON public.fund_negative_sale_legs USING btree (symbol, status) WHERE (symbol IS NOT NULL);
 
 
 --
--- TOC entry 5289 (class 1259 OID 33953)
--- Name: fund_operation_guard_events_action_created_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_operation_guard_events_action_created_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_operation_guard_events_action_created_idx ON public.fund_operation_guard_events USING btree (action_type, created_at DESC);
 
 
 --
--- TOC entry 5290 (class 1259 OID 33954)
--- Name: fund_operation_guard_events_fund_created_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_operation_guard_events_fund_created_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_operation_guard_events_fund_created_idx ON public.fund_operation_guard_events USING btree (fund_id, created_at DESC) WHERE (fund_id IS NOT NULL);
 
 
 --
--- TOC entry 5293 (class 1259 OID 33955)
--- Name: fund_operation_guard_events_settlement_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_operation_guard_events_settlement_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_operation_guard_events_settlement_idx ON public.fund_operation_guard_events USING btree (settlement_batch_id, created_at DESC) WHERE (settlement_batch_id IS NOT NULL);
 
 
 --
--- TOC entry 5282 (class 1259 OID 33950)
--- Name: fund_operation_guard_overrides_active_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_operation_guard_overrides_active_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_operation_guard_overrides_active_idx ON public.fund_operation_guard_overrides USING btree (action_type, scope_key, status, expires_at);
 
 
 --
--- TOC entry 5283 (class 1259 OID 33951)
--- Name: fund_operation_guard_overrides_fund_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_operation_guard_overrides_fund_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_operation_guard_overrides_fund_idx ON public.fund_operation_guard_overrides USING btree (fund_id, action_type, status, expires_at) WHERE (fund_id IS NOT NULL);
 
 
 --
--- TOC entry 5288 (class 1259 OID 33952)
--- Name: fund_operation_guard_overrides_request_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_operation_guard_overrides_request_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_operation_guard_overrides_request_idx ON public.fund_operation_guard_overrides USING btree (request_id) WHERE (request_id IS NOT NULL);
 
 
 --
--- TOC entry 5276 (class 1259 OID 33948)
--- Name: fund_operation_guard_state_action_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_operation_guard_state_action_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_operation_guard_state_action_idx ON public.fund_operation_guard_state USING btree (action_type, scope_key);
 
 
 --
--- TOC entry 5277 (class 1259 OID 33949)
--- Name: fund_operation_guard_state_fund_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_operation_guard_state_fund_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_operation_guard_state_fund_idx ON public.fund_operation_guard_state USING btree (fund_id, action_type) WHERE (fund_id IS NOT NULL);
 
 
 --
--- TOC entry 5208 (class 1259 OID 33544)
--- Name: fund_operator_actions_callback_token_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_operator_actions_callback_token_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_operator_actions_callback_token_idx ON public.fund_operator_actions USING btree (callback_token_hash) WHERE (callback_token_hash IS NOT NULL);
 
 
 --
--- TOC entry 5209 (class 1259 OID 33542)
--- Name: fund_operator_actions_fund_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_operator_actions_fund_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_operator_actions_fund_status_idx ON public.fund_operator_actions USING btree (fund_id, status, requested_at DESC);
 
 
 --
--- TOC entry 5210 (class 1259 OID 33540)
--- Name: fund_operator_actions_idempotency_uq; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_operator_actions_idempotency_uq; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX fund_operator_actions_idempotency_uq ON public.fund_operator_actions USING btree (idempotency_key);
 
 
 --
--- TOC entry 5211 (class 1259 OID 33541)
--- Name: fund_operator_actions_pending_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_operator_actions_pending_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_operator_actions_pending_idx ON public.fund_operator_actions USING btree (action_type, status, requested_at);
 
 
 --
--- TOC entry 5214 (class 1259 OID 33543)
--- Name: fund_operator_actions_settlement_batch_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_operator_actions_settlement_batch_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_operator_actions_settlement_batch_idx ON public.fund_operator_actions USING btree (settlement_batch_id);
 
 
 --
--- TOC entry 5119 (class 1259 OID 33300)
--- Name: fund_orders_batch_id_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_orders_batch_id_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_orders_batch_id_idx ON public.fund_orders USING btree (settlement_batch_id);
 
 
 --
--- TOC entry 5120 (class 1259 OID 33392)
--- Name: fund_orders_batch_side_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_orders_batch_side_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_orders_batch_side_status_idx ON public.fund_orders USING btree (settlement_batch_id, side, status);
 
 
 --
--- TOC entry 5121 (class 1259 OID 33548)
--- Name: fund_orders_fee_audit_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_orders_fee_audit_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_orders_fee_audit_idx ON public.fund_orders USING btree (settlement_batch_id, partial_month_fee_usdt) WHERE (partial_month_fee_usdt IS NOT NULL);
 
 
 --
--- TOC entry 5122 (class 1259 OID 33098)
--- Name: fund_orders_fund_created_at_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_orders_fund_created_at_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_orders_fund_created_at_idx ON public.fund_orders USING btree (fund_id, created_at DESC);
 
 
 --
--- TOC entry 5123 (class 1259 OID 33391)
--- Name: fund_orders_pending_cutoff_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_orders_pending_cutoff_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_orders_pending_cutoff_idx ON public.fund_orders USING btree (fund_id, status, created_at);
 
 
 --
--- TOC entry 5126 (class 1259 OID 33547)
--- Name: fund_orders_settlement_side_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_orders_settlement_side_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_orders_settlement_side_status_idx ON public.fund_orders USING btree (settlement_batch_id, side, status);
 
 
 --
--- TOC entry 5127 (class 1259 OID 33097)
--- Name: fund_orders_user_created_at_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_orders_user_created_at_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_orders_user_created_at_idx ON public.fund_orders USING btree (user_id, created_at DESC);
 
 
 --
--- TOC entry 5160 (class 1259 OID 33417)
--- Name: fund_settlement_batches_bybit_tx_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_settlement_batches_bybit_tx_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_settlement_batches_bybit_tx_idx ON public.fund_settlement_batches USING btree (bybit_deposit_tx_hash);
 
 
 --
--- TOC entry 5161 (class 1259 OID 33291)
--- Name: fund_settlement_batches_fund_date_uq; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_settlement_batches_fund_date_uq; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX fund_settlement_batches_fund_date_uq ON public.fund_settlement_batches USING btree (fund_id, settlement_date);
 
 
 --
--- TOC entry 5162 (class 1259 OID 33418)
--- Name: fund_settlement_batches_internal_transfer_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_settlement_batches_internal_transfer_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_settlement_batches_internal_transfer_idx ON public.fund_settlement_batches USING btree (bybit_internal_transfer_id);
 
 
 --
--- TOC entry 5163 (class 1259 OID 33549)
--- Name: fund_settlement_batches_negative_targets_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_settlement_batches_negative_targets_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_settlement_batches_negative_targets_idx ON public.fund_settlement_batches USING btree (fund_id, status, negative_net_target_calculated_at DESC) WHERE (negative_net_target_calculated_at IS NOT NULL);
 
 
 --
--- TOC entry 5166 (class 1259 OID 33395)
--- Name: fund_settlement_batches_positive_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_settlement_batches_positive_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_settlement_batches_positive_status_idx ON public.fund_settlement_batches USING btree (status, settlement_date);
 
 
 --
--- TOC entry 5167 (class 1259 OID 33339)
--- Name: fund_settlement_transfers_batch_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_settlement_transfers_batch_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_settlement_transfers_batch_idx ON public.fund_settlement_transfers USING btree (batch_id);
 
 
 --
--- TOC entry 5168 (class 1259 OID 33413)
--- Name: fund_settlement_transfers_batch_type_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_settlement_transfers_batch_type_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_settlement_transfers_batch_type_status_idx ON public.fund_settlement_transfers USING btree (batch_id, transfer_type, status);
 
 
 --
--- TOC entry 5169 (class 1259 OID 33340)
--- Name: fund_settlement_transfers_order_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_settlement_transfers_order_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_settlement_transfers_order_idx ON public.fund_settlement_transfers USING btree (order_id);
 
 
 --
--- TOC entry 5170 (class 1259 OID 33412)
--- Name: fund_settlement_transfers_order_type_uq; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_settlement_transfers_order_type_uq; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX fund_settlement_transfers_order_type_uq ON public.fund_settlement_transfers USING btree (batch_id, order_id, transfer_type) WHERE (order_id IS NOT NULL);
 
 
 --
--- TOC entry 5173 (class 1259 OID 33409)
--- Name: fund_settlement_transfers_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_settlement_transfers_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_settlement_transfers_status_idx ON public.fund_settlement_transfers USING btree (status);
 
 
 --
--- TOC entry 5174 (class 1259 OID 33342)
--- Name: fund_settlement_transfers_tx_hash_uq; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_settlement_transfers_tx_hash_uq; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX fund_settlement_transfers_tx_hash_uq ON public.fund_settlement_transfers USING btree (tx_hash) WHERE (tx_hash IS NOT NULL);
 
 
 --
--- TOC entry 5155 (class 1259 OID 33263)
--- Name: fund_wallets_active_settlement_fund_uq; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_wallets_active_settlement_fund_uq; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX fund_wallets_active_settlement_fund_uq ON public.fund_wallets USING btree (fund_id, blockchain, wallet_type) WHERE (is_active = true);
 
 
 --
--- TOC entry 5156 (class 1259 OID 33262)
--- Name: fund_wallets_blockchain_address_uq; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_wallets_blockchain_address_uq; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX fund_wallets_blockchain_address_uq ON public.fund_wallets USING btree (blockchain, address);
 
 
 --
--- TOC entry 5157 (class 1259 OID 33264)
--- Name: fund_wallets_fund_id_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: fund_wallets_fund_id_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX fund_wallets_fund_id_idx ON public.fund_wallets USING btree (fund_id);
 
 
 --
--- TOC entry 5077 (class 1259 OID 32972)
--- Name: idx_sessions_expires_at; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_sessions_expires_at; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX idx_sessions_expires_at ON public.sessions USING btree (expires_at);
 
 
 --
--- TOC entry 5095 (class 1259 OID 32973)
--- Name: idx_users_compliance_status; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_users_compliance_status; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX idx_users_compliance_status ON public.users USING btree (compliance_status);
 
 
 --
--- TOC entry 5101 (class 1259 OID 32974)
--- Name: idx_wallet_transfers_compliance_status; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_wallet_transfers_compliance_status; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX idx_wallet_transfers_compliance_status ON public.wallet_transfers USING btree (compliance_status);
 
 
 --
--- TOC entry 5102 (class 1259 OID 32975)
--- Name: idx_wallet_transfers_need_compliance; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_wallet_transfers_need_compliance; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX idx_wallet_transfers_need_compliance ON public.wallet_transfers USING btree (status, compliance_status);
 
 
 --
--- TOC entry 5103 (class 1259 OID 33073)
--- Name: idx_wallet_transfers_user_type_time; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_wallet_transfers_user_type_time; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX idx_wallet_transfers_user_type_time ON public.wallet_transfers USING btree (user_id, type, detected_at DESC);
 
 
 --
--- TOC entry 5104 (class 1259 OID 33072)
--- Name: idx_wallet_transfers_withdraw_processing; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_wallet_transfers_withdraw_processing; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX idx_wallet_transfers_withdraw_processing ON public.wallet_transfers USING btree (type, status) WHERE (((type)::text = 'withdraw'::text) AND ((status)::text = 'processing'::text));
 
 
 --
--- TOC entry 5114 (class 1259 OID 33067)
--- Name: idx_withdraw_sessions_user_expires; Type: INDEX; Schema: public; Owner: -
+-- Name: idx_withdraw_sessions_user_expires; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX idx_withdraw_sessions_user_expires ON public.withdraw_sessions USING btree (user_id, expires_at DESC);
 
 
 --
--- TOC entry 5084 (class 1259 OID 32976)
--- Name: user_fund_positions_user_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: user_fund_positions_user_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX user_fund_positions_user_idx ON public.user_fund_positions USING btree (user_id);
 
 
 --
--- TOC entry 5089 (class 1259 OID 32977)
--- Name: user_portfolio_daily_user_date_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: user_portfolio_daily_user_date_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX user_portfolio_daily_user_date_idx ON public.user_portfolio_daily USING btree (user_id, date_utc DESC);
 
 
 --
--- TOC entry 5144 (class 1259 OID 33187)
--- Name: user_totp_recovery_codes_user_active_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: user_totp_recovery_codes_user_active_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX user_totp_recovery_codes_user_active_idx ON public.user_totp_recovery_codes USING btree (user_id, is_used);
 
 
 --
--- TOC entry 5090 (class 1259 OID 32978)
--- Name: user_wallets_blockchain_address_uq; Type: INDEX; Schema: public; Owner: -
+-- Name: user_wallets_blockchain_address_uq; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX user_wallets_blockchain_address_uq ON public.user_wallets USING btree (blockchain, address);
 
 
 --
--- TOC entry 5091 (class 1259 OID 33069)
--- Name: user_wallets_one_active_bsc; Type: INDEX; Schema: public; Owner: -
+-- Name: user_wallets_one_active_bsc; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE UNIQUE INDEX user_wallets_one_active_bsc ON public.user_wallets USING btree (user_id) WHERE (((blockchain)::text = 'BSC'::text) AND (is_active = true));
 
 
 --
--- TOC entry 5094 (class 1259 OID 32980)
--- Name: user_wallets_user_id_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: user_wallets_user_id_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX user_wallets_user_id_idx ON public.user_wallets USING btree (user_id);
 
 
 --
--- TOC entry 5096 (class 1259 OID 32981)
--- Name: users_backup_email_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: users_backup_email_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX users_backup_email_idx ON public.users USING btree (backup_email);
 
 
 --
--- TOC entry 5107 (class 1259 OID 32982)
--- Name: wallet_transfers_status_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: wallet_transfers_status_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX wallet_transfers_status_idx ON public.wallet_transfers USING btree (status);
 
 
 --
--- TOC entry 5110 (class 1259 OID 32983)
--- Name: wallet_transfers_user_time_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: wallet_transfers_user_time_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX wallet_transfers_user_time_idx ON public.wallet_transfers USING btree (user_id, tx_time DESC);
 
 
 --
--- TOC entry 5111 (class 1259 OID 32984)
--- Name: wallet_transfers_wallet_time_idx; Type: INDEX; Schema: public; Owner: -
+-- Name: wallet_transfers_wallet_time_idx; Type: INDEX; Schema: public; Owner: postgres
 --
 
 CREATE INDEX wallet_transfers_wallet_time_idx ON public.wallet_transfers USING btree (wallet_id, tx_time DESC);
 
 
 --
--- TOC entry 5325 (class 2606 OID 33441)
--- Name: fund_allocation_batches fund_allocation_batches_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_allocation_batches fund_allocation_batches_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_allocation_batches
@@ -3587,8 +3383,7 @@ ALTER TABLE ONLY public.fund_allocation_batches
 
 
 --
--- TOC entry 5326 (class 2606 OID 33436)
--- Name: fund_allocation_batches fund_allocation_batches_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_allocation_batches fund_allocation_batches_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_allocation_batches
@@ -3596,8 +3391,7 @@ ALTER TABLE ONLY public.fund_allocation_batches
 
 
 --
--- TOC entry 5327 (class 2606 OID 33463)
--- Name: fund_allocation_legs fund_allocation_legs_allocation_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_allocation_legs fund_allocation_legs_allocation_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_allocation_legs
@@ -3605,8 +3399,7 @@ ALTER TABLE ONLY public.fund_allocation_legs
 
 
 --
--- TOC entry 5328 (class 2606 OID 33473)
--- Name: fund_allocation_legs fund_allocation_legs_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_allocation_legs fund_allocation_legs_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_allocation_legs
@@ -3614,8 +3407,7 @@ ALTER TABLE ONLY public.fund_allocation_legs
 
 
 --
--- TOC entry 5329 (class 2606 OID 33478)
--- Name: fund_allocation_legs fund_allocation_legs_parent_leg_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_allocation_legs fund_allocation_legs_parent_leg_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_allocation_legs
@@ -3623,8 +3415,7 @@ ALTER TABLE ONLY public.fund_allocation_legs
 
 
 --
--- TOC entry 5330 (class 2606 OID 33468)
--- Name: fund_allocation_legs fund_allocation_legs_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_allocation_legs fund_allocation_legs_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_allocation_legs
@@ -3632,8 +3423,7 @@ ALTER TABLE ONLY public.fund_allocation_legs
 
 
 --
--- TOC entry 5324 (class 2606 OID 33375)
--- Name: fund_bybit_accounts fund_bybit_accounts_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_bybit_accounts fund_bybit_accounts_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_bybit_accounts
@@ -3641,8 +3431,7 @@ ALTER TABLE ONLY public.fund_bybit_accounts
 
 
 --
--- TOC entry 5311 (class 2606 OID 33127)
--- Name: fund_chart_daily fund_chart_daily_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_chart_daily fund_chart_daily_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_chart_daily
@@ -3650,8 +3439,7 @@ ALTER TABLE ONLY public.fund_chart_daily
 
 
 --
--- TOC entry 5312 (class 2606 OID 33142)
--- Name: fund_chart_minute fund_chart_minute_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_chart_minute fund_chart_minute_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_chart_minute
@@ -3659,8 +3447,7 @@ ALTER TABLE ONLY public.fund_chart_minute
 
 
 --
--- TOC entry 5315 (class 2606 OID 33231)
--- Name: fund_nav_guard_events fund_nav_guard_events_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_nav_guard_events fund_nav_guard_events_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_nav_guard_events
@@ -3668,8 +3455,7 @@ ALTER TABLE ONLY public.fund_nav_guard_events
 
 
 --
--- TOC entry 5314 (class 2606 OID 33215)
--- Name: fund_nav_guard_state fund_nav_guard_state_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_nav_guard_state fund_nav_guard_state_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_nav_guard_state
@@ -3677,8 +3463,7 @@ ALTER TABLE ONLY public.fund_nav_guard_state
 
 
 --
--- TOC entry 5294 (class 2606 OID 32985)
--- Name: fund_nav_minute fund_nav_minute_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_nav_minute fund_nav_minute_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_nav_minute
@@ -3686,8 +3471,7 @@ ALTER TABLE ONLY public.fund_nav_minute
 
 
 --
--- TOC entry 5339 (class 2606 OID 33670)
--- Name: fund_negative_bybit_flows fund_negative_bybit_flows_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_bybit_flows fund_negative_bybit_flows_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_bybit_flows
@@ -3695,8 +3479,7 @@ ALTER TABLE ONLY public.fund_negative_bybit_flows
 
 
 --
--- TOC entry 5340 (class 2606 OID 33665)
--- Name: fund_negative_bybit_flows fund_negative_bybit_flows_sale_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_bybit_flows fund_negative_bybit_flows_sale_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_bybit_flows
@@ -3704,8 +3487,7 @@ ALTER TABLE ONLY public.fund_negative_bybit_flows
 
 
 --
--- TOC entry 5341 (class 2606 OID 33660)
--- Name: fund_negative_bybit_flows fund_negative_bybit_flows_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_bybit_flows fund_negative_bybit_flows_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_bybit_flows
@@ -3713,8 +3495,7 @@ ALTER TABLE ONLY public.fund_negative_bybit_flows
 
 
 --
--- TOC entry 5342 (class 2606 OID 33675)
--- Name: fund_negative_bybit_flows fund_negative_bybit_flows_settlement_wallet_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_bybit_flows fund_negative_bybit_flows_settlement_wallet_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_bybit_flows
@@ -3722,8 +3503,7 @@ ALTER TABLE ONLY public.fund_negative_bybit_flows
 
 
 --
--- TOC entry 5356 (class 2606 OID 33827)
--- Name: fund_negative_finalization_batches fund_negative_finalization_batches_bybit_flow_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_finalization_batches fund_negative_finalization_batches_bybit_flow_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_finalization_batches
@@ -3731,8 +3511,7 @@ ALTER TABLE ONLY public.fund_negative_finalization_batches
 
 
 --
--- TOC entry 5357 (class 2606 OID 33837)
--- Name: fund_negative_finalization_batches fund_negative_finalization_batches_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_finalization_batches fund_negative_finalization_batches_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_finalization_batches
@@ -3740,8 +3519,7 @@ ALTER TABLE ONLY public.fund_negative_finalization_batches
 
 
 --
--- TOC entry 5358 (class 2606 OID 33822)
--- Name: fund_negative_finalization_batches fund_negative_finalization_batches_payout_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_finalization_batches fund_negative_finalization_batches_payout_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_finalization_batches
@@ -3749,8 +3527,7 @@ ALTER TABLE ONLY public.fund_negative_finalization_batches
 
 
 --
--- TOC entry 5359 (class 2606 OID 33832)
--- Name: fund_negative_finalization_batches fund_negative_finalization_batches_sale_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_finalization_batches fund_negative_finalization_batches_sale_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_finalization_batches
@@ -3758,8 +3535,7 @@ ALTER TABLE ONLY public.fund_negative_finalization_batches
 
 
 --
--- TOC entry 5360 (class 2606 OID 33817)
--- Name: fund_negative_finalization_batches fund_negative_finalization_batches_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_finalization_batches fund_negative_finalization_batches_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_finalization_batches
@@ -3767,8 +3543,7 @@ ALTER TABLE ONLY public.fund_negative_finalization_batches
 
 
 --
--- TOC entry 5343 (class 2606 OID 33712)
--- Name: fund_negative_payout_batches fund_negative_payout_batches_bybit_flow_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_payout_batches fund_negative_payout_batches_bybit_flow_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_payout_batches
@@ -3776,8 +3551,7 @@ ALTER TABLE ONLY public.fund_negative_payout_batches
 
 
 --
--- TOC entry 5344 (class 2606 OID 33717)
--- Name: fund_negative_payout_batches fund_negative_payout_batches_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_payout_batches fund_negative_payout_batches_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_payout_batches
@@ -3785,8 +3559,7 @@ ALTER TABLE ONLY public.fund_negative_payout_batches
 
 
 --
--- TOC entry 5345 (class 2606 OID 33727)
--- Name: fund_negative_payout_batches fund_negative_payout_batches_operator_action_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_payout_batches fund_negative_payout_batches_operator_action_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_payout_batches
@@ -3794,8 +3567,7 @@ ALTER TABLE ONLY public.fund_negative_payout_batches
 
 
 --
--- TOC entry 5346 (class 2606 OID 33707)
--- Name: fund_negative_payout_batches fund_negative_payout_batches_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_payout_batches fund_negative_payout_batches_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_payout_batches
@@ -3803,8 +3575,7 @@ ALTER TABLE ONLY public.fund_negative_payout_batches
 
 
 --
--- TOC entry 5347 (class 2606 OID 33722)
--- Name: fund_negative_payout_batches fund_negative_payout_batches_settlement_wallet_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_payout_batches fund_negative_payout_batches_settlement_wallet_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_payout_batches
@@ -3812,8 +3583,7 @@ ALTER TABLE ONLY public.fund_negative_payout_batches
 
 
 --
--- TOC entry 5348 (class 2606 OID 33760)
--- Name: fund_negative_payout_legs fund_negative_payout_legs_bybit_flow_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_payout_legs fund_negative_payout_legs_bybit_flow_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_payout_legs
@@ -3821,8 +3591,7 @@ ALTER TABLE ONLY public.fund_negative_payout_legs
 
 
 --
--- TOC entry 5349 (class 2606 OID 33780)
--- Name: fund_negative_payout_legs fund_negative_payout_legs_from_settlement_wallet_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_payout_legs fund_negative_payout_legs_from_settlement_wallet_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_payout_legs
@@ -3830,8 +3599,7 @@ ALTER TABLE ONLY public.fund_negative_payout_legs
 
 
 --
--- TOC entry 5350 (class 2606 OID 33765)
--- Name: fund_negative_payout_legs fund_negative_payout_legs_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_payout_legs fund_negative_payout_legs_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_payout_legs
@@ -3839,8 +3607,7 @@ ALTER TABLE ONLY public.fund_negative_payout_legs
 
 
 --
--- TOC entry 5351 (class 2606 OID 33750)
--- Name: fund_negative_payout_legs fund_negative_payout_legs_payout_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_payout_legs fund_negative_payout_legs_payout_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_payout_legs
@@ -3848,8 +3615,7 @@ ALTER TABLE ONLY public.fund_negative_payout_legs
 
 
 --
--- TOC entry 5352 (class 2606 OID 33755)
--- Name: fund_negative_payout_legs fund_negative_payout_legs_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_payout_legs fund_negative_payout_legs_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_payout_legs
@@ -3857,8 +3623,7 @@ ALTER TABLE ONLY public.fund_negative_payout_legs
 
 
 --
--- TOC entry 5353 (class 2606 OID 33785)
--- Name: fund_negative_payout_legs fund_negative_payout_legs_to_user_wallet_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_payout_legs fund_negative_payout_legs_to_user_wallet_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_payout_legs
@@ -3866,8 +3631,7 @@ ALTER TABLE ONLY public.fund_negative_payout_legs
 
 
 --
--- TOC entry 5354 (class 2606 OID 33770)
--- Name: fund_negative_payout_legs fund_negative_payout_legs_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_payout_legs fund_negative_payout_legs_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_payout_legs
@@ -3875,8 +3639,7 @@ ALTER TABLE ONLY public.fund_negative_payout_legs
 
 
 --
--- TOC entry 5355 (class 2606 OID 33775)
--- Name: fund_negative_payout_legs fund_negative_payout_legs_user_wallet_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_payout_legs fund_negative_payout_legs_user_wallet_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_payout_legs
@@ -3884,8 +3647,7 @@ ALTER TABLE ONLY public.fund_negative_payout_legs
 
 
 --
--- TOC entry 5334 (class 2606 OID 33569)
--- Name: fund_negative_sale_batches fund_negative_sale_batches_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_sale_batches fund_negative_sale_batches_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_sale_batches
@@ -3893,8 +3655,7 @@ ALTER TABLE ONLY public.fund_negative_sale_batches
 
 
 --
--- TOC entry 5335 (class 2606 OID 33564)
--- Name: fund_negative_sale_batches fund_negative_sale_batches_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_sale_batches fund_negative_sale_batches_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_sale_batches
@@ -3902,8 +3663,7 @@ ALTER TABLE ONLY public.fund_negative_sale_batches
 
 
 --
--- TOC entry 5336 (class 2606 OID 33600)
--- Name: fund_negative_sale_legs fund_negative_sale_legs_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_sale_legs fund_negative_sale_legs_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_sale_legs
@@ -3911,8 +3671,7 @@ ALTER TABLE ONLY public.fund_negative_sale_legs
 
 
 --
--- TOC entry 5337 (class 2606 OID 33590)
--- Name: fund_negative_sale_legs fund_negative_sale_legs_sale_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_sale_legs fund_negative_sale_legs_sale_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_sale_legs
@@ -3920,8 +3679,7 @@ ALTER TABLE ONLY public.fund_negative_sale_legs
 
 
 --
--- TOC entry 5338 (class 2606 OID 33595)
--- Name: fund_negative_sale_legs fund_negative_sale_legs_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_negative_sale_legs fund_negative_sale_legs_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_negative_sale_legs
@@ -3929,8 +3687,7 @@ ALTER TABLE ONLY public.fund_negative_sale_legs
 
 
 --
--- TOC entry 5366 (class 2606 OID 33924)
--- Name: fund_operation_guard_events fund_operation_guard_events_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_operation_guard_events fund_operation_guard_events_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operation_guard_events
@@ -3938,8 +3695,7 @@ ALTER TABLE ONLY public.fund_operation_guard_events
 
 
 --
--- TOC entry 5367 (class 2606 OID 33934)
--- Name: fund_operation_guard_events fund_operation_guard_events_guard_state_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_operation_guard_events fund_operation_guard_events_guard_state_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operation_guard_events
@@ -3947,8 +3703,7 @@ ALTER TABLE ONLY public.fund_operation_guard_events
 
 
 --
--- TOC entry 5368 (class 2606 OID 33939)
--- Name: fund_operation_guard_events fund_operation_guard_events_override_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_operation_guard_events fund_operation_guard_events_override_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operation_guard_events
@@ -3956,8 +3711,7 @@ ALTER TABLE ONLY public.fund_operation_guard_events
 
 
 --
--- TOC entry 5369 (class 2606 OID 33929)
--- Name: fund_operation_guard_events fund_operation_guard_events_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_operation_guard_events fund_operation_guard_events_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operation_guard_events
@@ -3965,8 +3719,7 @@ ALTER TABLE ONLY public.fund_operation_guard_events
 
 
 --
--- TOC entry 5363 (class 2606 OID 33896)
--- Name: fund_operation_guard_overrides fund_operation_guard_overrides_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_operation_guard_overrides fund_operation_guard_overrides_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operation_guard_overrides
@@ -3974,8 +3727,7 @@ ALTER TABLE ONLY public.fund_operation_guard_overrides
 
 
 --
--- TOC entry 5364 (class 2606 OID 33901)
--- Name: fund_operation_guard_overrides fund_operation_guard_overrides_manager_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_operation_guard_overrides fund_operation_guard_overrides_manager_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operation_guard_overrides
@@ -3983,8 +3735,7 @@ ALTER TABLE ONLY public.fund_operation_guard_overrides
 
 
 --
--- TOC entry 5365 (class 2606 OID 33906)
--- Name: fund_operation_guard_overrides fund_operation_guard_overrides_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_operation_guard_overrides fund_operation_guard_overrides_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operation_guard_overrides
@@ -3992,8 +3743,7 @@ ALTER TABLE ONLY public.fund_operation_guard_overrides
 
 
 --
--- TOC entry 5361 (class 2606 OID 33867)
--- Name: fund_operation_guard_state fund_operation_guard_state_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_operation_guard_state fund_operation_guard_state_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operation_guard_state
@@ -4001,8 +3751,7 @@ ALTER TABLE ONLY public.fund_operation_guard_state
 
 
 --
--- TOC entry 5362 (class 2606 OID 33872)
--- Name: fund_operation_guard_state fund_operation_guard_state_updated_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_operation_guard_state fund_operation_guard_state_updated_by_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operation_guard_state
@@ -4010,8 +3759,7 @@ ALTER TABLE ONLY public.fund_operation_guard_state
 
 
 --
--- TOC entry 5331 (class 2606 OID 33532)
--- Name: fund_operator_actions fund_operator_actions_allocation_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_operator_actions fund_operator_actions_allocation_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operator_actions
@@ -4019,8 +3767,7 @@ ALTER TABLE ONLY public.fund_operator_actions
 
 
 --
--- TOC entry 5332 (class 2606 OID 33522)
--- Name: fund_operator_actions fund_operator_actions_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_operator_actions fund_operator_actions_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operator_actions
@@ -4028,8 +3775,7 @@ ALTER TABLE ONLY public.fund_operator_actions
 
 
 --
--- TOC entry 5333 (class 2606 OID 33527)
--- Name: fund_operator_actions fund_operator_actions_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_operator_actions fund_operator_actions_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_operator_actions
@@ -4037,8 +3783,7 @@ ALTER TABLE ONLY public.fund_operator_actions
 
 
 --
--- TOC entry 5306 (class 2606 OID 33092)
--- Name: fund_orders fund_orders_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_orders fund_orders_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_orders
@@ -4046,8 +3791,7 @@ ALTER TABLE ONLY public.fund_orders
 
 
 --
--- TOC entry 5307 (class 2606 OID 33293)
--- Name: fund_orders fund_orders_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_orders fund_orders_settlement_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_orders
@@ -4055,8 +3799,7 @@ ALTER TABLE ONLY public.fund_orders
 
 
 --
--- TOC entry 5308 (class 2606 OID 33087)
--- Name: fund_orders fund_orders_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_orders fund_orders_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_orders
@@ -4064,8 +3807,7 @@ ALTER TABLE ONLY public.fund_orders
 
 
 --
--- TOC entry 5322 (class 2606 OID 33352)
--- Name: fund_runtime_state fund_runtime_state_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_runtime_state fund_runtime_state_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_runtime_state
@@ -4073,8 +3815,7 @@ ALTER TABLE ONLY public.fund_runtime_state
 
 
 --
--- TOC entry 5323 (class 2606 OID 33357)
--- Name: fund_runtime_state fund_runtime_state_pricing_lock_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_runtime_state fund_runtime_state_pricing_lock_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_runtime_state
@@ -4082,8 +3823,7 @@ ALTER TABLE ONLY public.fund_runtime_state
 
 
 --
--- TOC entry 5317 (class 2606 OID 33286)
--- Name: fund_settlement_batches fund_settlement_batches_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_settlement_batches fund_settlement_batches_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_settlement_batches
@@ -4091,8 +3831,7 @@ ALTER TABLE ONLY public.fund_settlement_batches
 
 
 --
--- TOC entry 5318 (class 2606 OID 33317)
--- Name: fund_settlement_transfers fund_settlement_transfers_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_settlement_transfers fund_settlement_transfers_batch_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_settlement_transfers
@@ -4100,8 +3839,7 @@ ALTER TABLE ONLY public.fund_settlement_transfers
 
 
 --
--- TOC entry 5319 (class 2606 OID 33327)
--- Name: fund_settlement_transfers fund_settlement_transfers_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_settlement_transfers fund_settlement_transfers_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_settlement_transfers
@@ -4109,8 +3847,7 @@ ALTER TABLE ONLY public.fund_settlement_transfers
 
 
 --
--- TOC entry 5320 (class 2606 OID 33322)
--- Name: fund_settlement_transfers fund_settlement_transfers_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_settlement_transfers fund_settlement_transfers_order_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_settlement_transfers
@@ -4118,8 +3855,7 @@ ALTER TABLE ONLY public.fund_settlement_transfers
 
 
 --
--- TOC entry 5321 (class 2606 OID 33332)
--- Name: fund_settlement_transfers fund_settlement_transfers_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_settlement_transfers fund_settlement_transfers_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_settlement_transfers
@@ -4127,8 +3863,7 @@ ALTER TABLE ONLY public.fund_settlement_transfers
 
 
 --
--- TOC entry 5316 (class 2606 OID 33257)
--- Name: fund_wallets fund_wallets_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: fund_wallets fund_wallets_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.fund_wallets
@@ -4136,8 +3871,7 @@ ALTER TABLE ONLY public.fund_wallets
 
 
 --
--- TOC entry 5295 (class 2606 OID 32990)
--- Name: password_reset_sessions password_reset_sessions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: password_reset_sessions password_reset_sessions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.password_reset_sessions
@@ -4145,8 +3879,7 @@ ALTER TABLE ONLY public.password_reset_sessions
 
 
 --
--- TOC entry 5296 (class 2606 OID 32995)
--- Name: security_codes security_codes_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: security_codes security_codes_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.security_codes
@@ -4154,8 +3887,7 @@ ALTER TABLE ONLY public.security_codes
 
 
 --
--- TOC entry 5297 (class 2606 OID 33000)
--- Name: sessions sessions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: sessions sessions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.sessions
@@ -4163,8 +3895,7 @@ ALTER TABLE ONLY public.sessions
 
 
 --
--- TOC entry 5309 (class 2606 OID 33115)
--- Name: user_fund_position_stats user_fund_position_stats_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: user_fund_position_stats user_fund_position_stats_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_fund_position_stats
@@ -4172,8 +3903,7 @@ ALTER TABLE ONLY public.user_fund_position_stats
 
 
 --
--- TOC entry 5310 (class 2606 OID 33110)
--- Name: user_fund_position_stats user_fund_position_stats_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: user_fund_position_stats user_fund_position_stats_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_fund_position_stats
@@ -4181,8 +3911,7 @@ ALTER TABLE ONLY public.user_fund_position_stats
 
 
 --
--- TOC entry 5298 (class 2606 OID 33005)
--- Name: user_fund_positions user_fund_positions_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: user_fund_positions user_fund_positions_fund_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_fund_positions
@@ -4190,8 +3919,7 @@ ALTER TABLE ONLY public.user_fund_positions
 
 
 --
--- TOC entry 5299 (class 2606 OID 33010)
--- Name: user_fund_positions user_fund_positions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: user_fund_positions user_fund_positions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_fund_positions
@@ -4199,8 +3927,7 @@ ALTER TABLE ONLY public.user_fund_positions
 
 
 --
--- TOC entry 5300 (class 2606 OID 33015)
--- Name: user_portfolio_daily user_portfolio_daily_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: user_portfolio_daily user_portfolio_daily_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_portfolio_daily
@@ -4208,8 +3935,7 @@ ALTER TABLE ONLY public.user_portfolio_daily
 
 
 --
--- TOC entry 5313 (class 2606 OID 33182)
--- Name: user_totp_recovery_codes user_totp_recovery_codes_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: user_totp_recovery_codes user_totp_recovery_codes_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_totp_recovery_codes
@@ -4217,8 +3943,7 @@ ALTER TABLE ONLY public.user_totp_recovery_codes
 
 
 --
--- TOC entry 5301 (class 2606 OID 33020)
--- Name: user_wallets user_wallets_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: user_wallets user_wallets_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.user_wallets
@@ -4226,8 +3951,7 @@ ALTER TABLE ONLY public.user_wallets
 
 
 --
--- TOC entry 5302 (class 2606 OID 33025)
--- Name: wallet_transfers wallet_transfers_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: wallet_transfers wallet_transfers_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.wallet_transfers
@@ -4235,8 +3959,7 @@ ALTER TABLE ONLY public.wallet_transfers
 
 
 --
--- TOC entry 5303 (class 2606 OID 33030)
--- Name: wallet_transfers wallet_transfers_wallet_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: wallet_transfers wallet_transfers_wallet_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.wallet_transfers
@@ -4244,8 +3967,7 @@ ALTER TABLE ONLY public.wallet_transfers
 
 
 --
--- TOC entry 5304 (class 2606 OID 33057)
--- Name: withdraw_sessions withdraw_sessions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: withdraw_sessions withdraw_sessions_user_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.withdraw_sessions
@@ -4253,19 +3975,24 @@ ALTER TABLE ONLY public.withdraw_sessions
 
 
 --
--- TOC entry 5305 (class 2606 OID 33062)
--- Name: withdraw_sessions withdraw_sessions_wallet_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: -
+-- Name: withdraw_sessions withdraw_sessions_wallet_id_fkey; Type: FK CONSTRAINT; Schema: public; Owner: postgres
 --
 
 ALTER TABLE ONLY public.withdraw_sessions
     ADD CONSTRAINT withdraw_sessions_wallet_id_fkey FOREIGN KEY (wallet_id) REFERENCES public.user_wallets(id) ON DELETE CASCADE;
 
 
--- Completed on 2026-06-22 17:35:57
+--
+-- Name: SCHEMA public; Type: ACL; Schema: -; Owner: postgres
+--
+
+REVOKE USAGE ON SCHEMA public FROM PUBLIC;
+GRANT ALL ON SCHEMA public TO PUBLIC;
+
 
 --
 -- PostgreSQL database dump complete
 --
 
-\unrestrict jhDDrbHZ5nS45U0RHAcds3utY1avNaB00qkW6luZaozapr1Wr1mMbW0X1VefgBg
+\unrestrict d932lNlNqJIHW1kyeyAvbR9a5Uvm47PBMT0foOHwU2HGSWsixlyuMgJCIxpgW0f
 
