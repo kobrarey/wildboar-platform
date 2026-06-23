@@ -16,13 +16,32 @@ from app.allocation.execution_engine import prepare_execution_for_leg
 from app.allocation.residual_service import process_residual_leg_mock
 from app.allocation.spot_earn_handlers import handle_spot_earn_leg_mock
 from app.allocation.statuses import (
+    ALLOCATION_BATCH_STATUS_ALLOCATION_COMPLETED_WITH_RESIDUAL_CASH,
+    ALLOCATION_BATCH_STATUS_ALLOCATION_PROCESSING,
     ALLOCATION_BATCH_STATUS_PLAN_CREATED,
     ALLOCATION_LEG_STATUS_PLANNED,
     DERIVATIVE_SUPPORTED_LEG_TYPES,
     LEG_TYPE_RESIDUAL_USDT_EARN,
+    LEG_TYPE_SPOT_BUY,
+    LEG_TYPE_STABLE_CASH,
     RESIDUAL_SOURCE_STATUSES,
     SPOT_EARN_SUPPORTED_LEG_TYPES,
 )
+from app.allocation.live_execution import (
+    mark_allocation_batch_failed_requires_review,
+    mark_leg_residual_cash_without_external_call,
+    mark_stable_cash_leg_filled_without_external_call,
+    preflight_live_allocation_batch,
+    refresh_live_allocation_batch_progress,
+)
+from app.allocation.live_spot_orders import (
+    build_live_spot_market_order_plan,
+    mark_live_spot_order_create_failed,
+    reconcile_live_spot_market_leg_by_link_id,
+    require_trade_guard_for_plan,
+    submit_bybit_spot_market_order,
+)
+from app.bybit.fund_client import build_fund_bybit_client
 from app.db import SessionLocal
 from app.models import Fund, FundAllocationBatch, FundAllocationLeg
 
@@ -268,8 +287,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
             "Stage 25 allocation execution worker. "
-            "Mock mode by default; guarded live mode refuses candidate legs "
-            "until real execution adapters are enabled."
+            "Mock mode by default; guarded live mode runs safe preflight "
+            "and delegates supported legs to live adapters."
         )
     )
 
@@ -383,7 +402,12 @@ def _find_candidate_leg_ids(
         )
         .join(Fund, Fund.id == FundAllocationLeg.fund_id)
         .filter(
-            FundAllocationBatch.status == ALLOCATION_BATCH_STATUS_PLAN_CREATED,
+            FundAllocationBatch.status.in_(
+                [
+                    ALLOCATION_BATCH_STATUS_PLAN_CREATED,
+                    ALLOCATION_BATCH_STATUS_ALLOCATION_PROCESSING,
+                ]
+            ),
             FundAllocationLeg.status == ALLOCATION_LEG_STATUS_PLANNED,
         )
     )
@@ -404,6 +428,613 @@ def _find_candidate_leg_ids(
     return [int(row[0]) for row in rows]
 
 
+def _get_batch_id_for_leg(
+    db: Session,
+    *,
+    allocation_leg_id: int,
+) -> int:
+    row = (
+        db.query(FundAllocationLeg.allocation_batch_id)
+        .filter(FundAllocationLeg.id == int(allocation_leg_id))
+        .first()
+    )
+
+    if row is None:
+        raise RuntimeError(f"Allocation leg not found: {allocation_leg_id}")
+
+    return int(row[0])
+
+
+def time_now_utc():
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc)
+
+
+def _complete_residual_cash_only_batch(
+    db: Session,
+    *,
+    allocation_batch_id: int,
+    residual_leg_ids: list[int],
+) -> None:
+    batch = (
+        db.query(FundAllocationBatch)
+        .filter(FundAllocationBatch.id == int(allocation_batch_id))
+        .with_for_update()
+        .first()
+    )
+
+    if batch is None:
+        raise RuntimeError(f"Allocation batch not found: {allocation_batch_id}")
+
+    for leg_id in residual_leg_ids:
+        mark_leg_residual_cash_without_external_call(
+            db,
+            allocation_leg_id=int(leg_id),
+            reason="live_earn_disabled_residual_kept_as_cash",
+        )
+
+    batch.status = ALLOCATION_BATCH_STATUS_ALLOCATION_COMPLETED_WITH_RESIDUAL_CASH
+    batch.residual_cash_usdt = sum(
+        (
+            leg.residual_usdt or Decimal("0")
+            for leg in db.query(FundAllocationLeg)
+            .filter(FundAllocationLeg.allocation_batch_id == int(allocation_batch_id))
+            .all()
+        ),
+        Decimal("0"),
+    )
+    batch.error = None
+    batch.completed_at = batch.completed_at or time_now_utc()
+    batch.updated_at = time_now_utc()
+
+    db.add(batch)
+    db.flush()
+
+
+def _refresh_live_batch_progress_in_own_session(
+    *,
+    allocation_batch_id: int,
+    dry_run: bool,
+) -> bool:
+    db = SessionLocal()
+
+    try:
+        progress = refresh_live_allocation_batch_progress(
+            db,
+            allocation_batch_id=int(allocation_batch_id),
+        )
+
+        if dry_run:
+            db.rollback()
+        else:
+            db.commit()
+
+        log.info(
+            "Allocation live batch progress refreshed "
+            "batch_id=%s status=%s filled=%s partial=%s skipped=%s failed=%s active=%s",
+            allocation_batch_id,
+            progress["status"],
+            progress["filled_legs_count"],
+            progress["partial_legs_count"],
+            progress["skipped_legs_count"],
+            progress["failed_legs_count"],
+            progress["active_legs_count"],
+        )
+
+        return True
+
+    except Exception as exc:
+        db.rollback()
+        log.exception(
+            "Allocation live batch progress refresh failed batch_id=%s error=%s",
+            allocation_batch_id,
+            exc,
+        )
+        return False
+
+    finally:
+        db.close()
+
+
+def _process_live_batch_preflight_in_own_session(
+    *,
+    allocation_batch_id: int,
+    dry_run: bool,
+    fund_code: str | None,
+) -> bool:
+    db = SessionLocal()
+
+    try:
+        preflight = preflight_live_allocation_batch(
+            db,
+            allocation_batch_id=int(allocation_batch_id),
+            fund_code=fund_code,
+        )
+
+        if not preflight.ok:
+            mark_allocation_batch_failed_requires_review(
+                db,
+                allocation_batch_id=int(allocation_batch_id),
+                error="unsupported_live_allocation_batch_preflight",
+                diagnostics=preflight.to_dict(),
+            )
+
+            if dry_run:
+                db.rollback()
+            else:
+                db.commit()
+
+            log.error(
+                "Allocation live preflight blocked batch before external calls "
+                "batch_id=%s issues=%s external_calls=0",
+                allocation_batch_id,
+                [item.reason for item in preflight.issues],
+            )
+
+            return False
+
+        # Stage 25.2B: Earn/residual live adapter is intentionally not used.
+        # Residual/Earn legs are safely kept as cash without external calls.
+        if preflight.residual_cash_leg_ids and not preflight.supported_leg_ids:
+            _complete_residual_cash_only_batch(
+                db,
+                allocation_batch_id=int(allocation_batch_id),
+                residual_leg_ids=preflight.residual_cash_leg_ids,
+            )
+
+            if dry_run:
+                db.rollback()
+            else:
+                db.commit()
+
+            log.info(
+                "Allocation live preflight completed residual-cash-only batch "
+                "batch_id=%s residual_legs=%s external_calls=0",
+                allocation_batch_id,
+                preflight.residual_cash_leg_ids,
+            )
+
+            return True
+
+        batch = (
+            db.query(FundAllocationBatch)
+            .filter(FundAllocationBatch.id == int(allocation_batch_id))
+            .with_for_update()
+            .first()
+        )
+
+        if batch is None:
+            raise RuntimeError(f"Allocation batch not found: {allocation_batch_id}")
+
+        batch.status = ALLOCATION_BATCH_STATUS_ALLOCATION_PROCESSING
+        batch.report_json = {
+            "stage25_2_live_preflight": {
+                "ok": True,
+                "supported_leg_ids": preflight.supported_leg_ids,
+                "residual_cash_leg_ids": preflight.residual_cash_leg_ids,
+                "external_calls": 0,
+                "next": "spot_live_adapter",
+            }
+        }
+        batch.updated_at = time_now_utc()
+
+        db.add(batch)
+
+        if dry_run:
+            db.rollback()
+        else:
+            db.commit()
+
+        log.info(
+            "Allocation live preflight passed batch_id=%s supported_legs=%s "
+            "residual_cash_legs=%s external_calls=0",
+            allocation_batch_id,
+            preflight.supported_leg_ids,
+            preflight.residual_cash_leg_ids,
+        )
+
+        return True
+
+    except Exception as exc:
+        db.rollback()
+        log.exception(
+            "Allocation live preflight failed batch_id=%s error=%s",
+            allocation_batch_id,
+            exc,
+        )
+        return False
+
+    finally:
+        db.close()
+
+
+def _get_live_leg_snapshot(
+    db: Session,
+    *,
+    allocation_leg_id: int,
+) -> tuple[int, str, str | None, str | None]:
+    row = (
+        db.query(
+            FundAllocationLeg.fund_id,
+            FundAllocationLeg.leg_type,
+            FundAllocationLeg.order_link_id,
+            FundAllocationLeg.bybit_order_id,
+        )
+        .filter(FundAllocationLeg.id == int(allocation_leg_id))
+        .first()
+    )
+
+    if row is None:
+        raise RuntimeError(f"Allocation leg not found: {allocation_leg_id}")
+
+    return int(row[0]), str(row[1] or ""), row[2], row[3]
+
+
+def _mark_stable_cash_leg_in_own_session(
+    *,
+    allocation_leg_id: int,
+    dry_run: bool,
+) -> bool:
+    db = SessionLocal()
+
+    try:
+        leg = mark_stable_cash_leg_filled_without_external_call(
+            db,
+            allocation_leg_id=int(allocation_leg_id),
+        )
+
+        if dry_run:
+            db.rollback()
+        else:
+            db.commit()
+
+        allocation_batch_id = int(leg.allocation_batch_id)
+
+        log.info(
+            "Allocation live stable_cash leg completed without external calls "
+            "leg_id=%s batch_id=%s external_calls=0",
+            leg.id,
+            allocation_batch_id,
+        )
+
+        _refresh_live_batch_progress_in_own_session(
+            allocation_batch_id=allocation_batch_id,
+            dry_run=dry_run,
+        )
+
+        return True
+
+    except Exception as exc:
+        db.rollback()
+        log.exception(
+            "Allocation live stable_cash leg failed leg_id=%s error=%s",
+            allocation_leg_id,
+            exc,
+        )
+        return False
+
+    finally:
+        db.close()
+
+
+def _process_live_spot_leg_in_own_session(
+    *,
+    allocation_leg_id: int,
+    dry_run: bool,
+    fund_code: str | None,
+) -> bool:
+    # Phase 0: batch-level preflight before any write external action.
+    db0 = SessionLocal()
+    try:
+        allocation_batch_id = _get_batch_id_for_leg(
+            db0,
+            allocation_leg_id=int(allocation_leg_id),
+        )
+    finally:
+        db0.close()
+
+    preflight_ok = _process_live_batch_preflight_in_own_session(
+        allocation_batch_id=int(allocation_batch_id),
+        dry_run=dry_run,
+        fund_code=fund_code,
+    )
+
+    if not preflight_ok:
+        return False
+
+    # Phase 1: identify leg + fund client. This only decrypts local credentials,
+    # it does not perform an external Bybit call.
+    db1 = SessionLocal()
+    try:
+        fund_id, leg_type, order_link_id, bybit_order_id = _get_live_leg_snapshot(
+            db1,
+            allocation_leg_id=int(allocation_leg_id),
+        )
+
+        if leg_type == LEG_TYPE_STABLE_CASH:
+            db1.close()
+            return _mark_stable_cash_leg_in_own_session(
+                allocation_leg_id=int(allocation_leg_id),
+                dry_run=dry_run,
+            )
+
+        if leg_type != LEG_TYPE_SPOT_BUY:
+            log.error(
+                "Allocation live adapter blocked unsupported leg after preflight "
+                "leg_id=%s leg_type=%s external_calls=0",
+                allocation_leg_id,
+                leg_type,
+            )
+            return False
+
+        fund_client_ctx = build_fund_bybit_client(
+            db1,
+            fund_id=int(fund_id),
+        )
+        client = fund_client_ctx.client
+
+    except Exception as exc:
+        db1.rollback()
+        log.exception(
+            "Allocation live spot setup failed leg_id=%s error=%s",
+            allocation_leg_id,
+            exc,
+        )
+        return False
+
+    finally:
+        if db1.is_active:
+            db1.close()
+
+    # Phase 2: idempotency-first reconciliation.
+    # If orderLinkId/orderId already exists, never send a duplicate order.
+    if order_link_id or bybit_order_id:
+        db2 = SessionLocal()
+        try:
+            result = reconcile_live_spot_market_leg_by_link_id(
+                db2,
+                allocation_leg_id=int(allocation_leg_id),
+                client=client,
+            )
+
+            if dry_run:
+                db2.rollback()
+            else:
+                db2.commit()
+
+            _refresh_live_batch_progress_in_own_session(
+                allocation_batch_id=int(result.allocation_batch_id),
+                dry_run=dry_run,
+            )
+
+            log.info(
+                "Allocation live spot idempotent reconciliation completed "
+                "leg_id=%s action=%s status=%s order_link_id=%s bybit_order_id=%s",
+                allocation_leg_id,
+                result.action,
+                result.status,
+                result.order_link_id,
+                result.bybit_order_id,
+            )
+
+            return bool(result.ok)
+
+        except Exception as exc:
+            db2.rollback()
+            log.exception(
+                "Allocation live spot idempotent reconciliation failed "
+                "leg_id=%s error=%s",
+                allocation_leg_id,
+                exc,
+            )
+            return False
+
+        finally:
+            db2.close()
+
+    # Phase 3: build plan and persist deterministic orderLinkId before POST.
+    db3 = SessionLocal()
+    try:
+        plan = build_live_spot_market_order_plan(
+            db3,
+            allocation_leg_id=int(allocation_leg_id),
+            client=client,
+        )
+
+        if dry_run:
+            db3.rollback()
+            log.info(
+                "Allocation live spot dry-run stopped after order plan "
+                "leg_id=%s order_link_id=%s external_post_calls=0",
+                allocation_leg_id,
+                plan.order_link_id,
+            )
+            return True
+
+        db3.commit()
+
+        log.info(
+            "Allocation live spot orderLinkId persisted before POST "
+            "leg_id=%s order_link_id=%s external_post_calls=0",
+            allocation_leg_id,
+            plan.order_link_id,
+        )
+
+    except Exception as exc:
+        db3.rollback()
+        log.exception(
+            "Allocation live spot plan failed leg_id=%s error=%s",
+            allocation_leg_id,
+            exc,
+        )
+        return False
+
+    finally:
+        db3.close()
+
+    # Phase 4: Operation Guard must pass before external POST.
+    db4 = SessionLocal()
+    try:
+        guard_decision = require_trade_guard_for_plan(
+            db4,
+            plan=plan,
+        )
+        db4.commit()
+
+        log.info(
+            "Allocation live spot Operation Guard allowed "
+            "leg_id=%s order_link_id=%s guard=%s",
+            allocation_leg_id,
+            plan.order_link_id,
+            guard_decision,
+        )
+
+    except Exception as exc:
+        db4.rollback()
+
+        db_guard_fail = SessionLocal()
+        try:
+            mark_live_spot_order_create_failed(
+                db_guard_fail,
+                allocation_leg_id=int(allocation_leg_id),
+                error=f"spot_order_guard_blocked_or_error: {exc}",
+            )
+            db_guard_fail.commit()
+        except Exception:
+            db_guard_fail.rollback()
+        finally:
+            db_guard_fail.close()
+
+        _refresh_live_batch_progress_in_own_session(
+            allocation_batch_id=int(plan.allocation_batch_id),
+            dry_run=dry_run,
+        )
+
+        log.exception(
+            "Allocation live spot Operation Guard blocked "
+            "leg_id=%s order_link_id=%s error=%s",
+            allocation_leg_id,
+            plan.order_link_id,
+            exc,
+        )
+        return False
+
+    finally:
+        db4.close()
+
+    # Phase 5: single external POST. If this errors, mark review and do not retry blindly.
+    try:
+        create_result = submit_bybit_spot_market_order(
+            client,
+            payload=plan.payload,
+        )
+    except Exception as exc:
+        db_fail = SessionLocal()
+        try:
+            mark_live_spot_order_create_failed(
+                db_fail,
+                allocation_leg_id=int(allocation_leg_id),
+                error=f"spot_order_create_failed_or_uncertain: {exc}",
+            )
+            db_fail.commit()
+        except Exception:
+            db_fail.rollback()
+        finally:
+            db_fail.close()
+
+        _refresh_live_batch_progress_in_own_session(
+            allocation_batch_id=int(plan.allocation_batch_id),
+            dry_run=dry_run,
+        )
+
+        log.exception(
+            "Allocation live spot order POST failed or uncertain "
+            "leg_id=%s order_link_id=%s",
+            allocation_leg_id,
+            plan.order_link_id,
+        )
+        return False
+
+    # Phase 6: store returned orderId, then reconcile by orderLinkId.
+    db5 = SessionLocal()
+    try:
+        leg = (
+            db5.query(FundAllocationLeg)
+            .filter(FundAllocationLeg.id == int(allocation_leg_id))
+            .with_for_update()
+            .first()
+        )
+
+        if leg is None:
+            raise RuntimeError(f"Allocation leg not found: {allocation_leg_id}")
+
+        order_id = create_result.get("orderId")
+        if order_id:
+            leg.bybit_order_id = str(order_id)
+
+        leg.error = None
+        db5.add(leg)
+        db5.commit()
+
+    except Exception as exc:
+        db5.rollback()
+        log.exception(
+            "Allocation live spot orderId persist failed "
+            "leg_id=%s order_link_id=%s error=%s",
+            allocation_leg_id,
+            plan.order_link_id,
+            exc,
+        )
+        return False
+
+    finally:
+        db5.close()
+
+    db6 = SessionLocal()
+    try:
+        result = reconcile_live_spot_market_leg_by_link_id(
+            db6,
+            allocation_leg_id=int(allocation_leg_id),
+            client=client,
+        )
+
+        if dry_run:
+            db6.rollback()
+        else:
+            db6.commit()
+
+        _refresh_live_batch_progress_in_own_session(
+            allocation_batch_id=int(result.allocation_batch_id),
+            dry_run=dry_run,
+        )
+
+        log.info(
+            "Allocation live spot POST/reconciliation completed "
+            "leg_id=%s action=%s status=%s order_link_id=%s bybit_order_id=%s",
+            allocation_leg_id,
+            result.action,
+            result.status,
+            result.order_link_id,
+            result.bybit_order_id,
+        )
+
+        return bool(result.ok)
+
+    except Exception as exc:
+        db6.rollback()
+        log.exception(
+            "Allocation live spot post-send reconciliation failed "
+            "leg_id=%s error=%s",
+            allocation_leg_id,
+            exc,
+        )
+        return False
+
+    finally:
+        db6.close()
+
+
 def _build_client(args: argparse.Namespace) -> MockAllocationExecutionClient:
     if not args.mock_market_data:
         raise RuntimeError("Only mock market-data client is allowed for mock execution paths")
@@ -418,13 +1049,11 @@ def _process_leg_in_own_session(
     args: argparse.Namespace,
 ) -> bool:
     if args.live_execution:
-        log.error(
-            "Allocation execution live processing reached candidate leg "
-            "but real Bybit/Strategy/Earn execution is not wired in this worker yet. "
-            "leg_id=%s",
-            allocation_leg_id,
+        return _process_live_spot_leg_in_own_session(
+            allocation_leg_id=int(allocation_leg_id),
+            dry_run=dry_run,
+            fund_code=_normalize_fund_code(args.fund_code),
         )
-        return False
 
     db = SessionLocal()
     client = _build_client(args)
@@ -518,7 +1147,12 @@ def _find_residual_candidate_batch_ids(
         )
         .join(Fund, Fund.id == FundAllocationLeg.fund_id)
         .filter(
-            FundAllocationBatch.status == ALLOCATION_BATCH_STATUS_PLAN_CREATED,
+            FundAllocationBatch.status.in_(
+                [
+                    ALLOCATION_BATCH_STATUS_PLAN_CREATED,
+                    ALLOCATION_BATCH_STATUS_ALLOCATION_PROCESSING,
+                ]
+            ),
             FundAllocationLeg.status.in_(RESIDUAL_SOURCE_STATUSES),
             FundAllocationLeg.residual_usdt.isnot(None),
             FundAllocationLeg.residual_usdt > 0,
@@ -546,13 +1180,11 @@ def _process_residual_batch_in_own_session(
     args: argparse.Namespace,
 ) -> bool:
     if args.live_execution:
-        log.error(
-            "Allocation execution live processing reached residual candidate batch "
-            "but real Earn residual execution is not wired in this worker yet. "
-            "allocation_batch_id=%s",
-            allocation_batch_id,
+        return _process_live_batch_preflight_in_own_session(
+            allocation_batch_id=allocation_batch_id,
+            dry_run=dry_run,
+            fund_code=_normalize_fund_code(args.fund_code),
         )
-        return False
 
     db = SessionLocal()
     client = _build_client(args)
@@ -724,8 +1356,8 @@ def main() -> int:
 
     log.info(
         "Stage 25 allocation execution worker started. "
-        "Mock mode by default; guarded live mode refuses candidate legs "
-        "until real execution adapters are enabled."
+        "Mock mode by default; guarded live mode runs safe preflight "
+        "before any external allocation action."
     )
 
     if args.run_once:
