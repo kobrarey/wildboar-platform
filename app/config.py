@@ -243,6 +243,15 @@ class Settings(BaseSettings):
     ALLOCATION_SPOT_EARN_ENABLED: bool = False
     ALLOCATION_EARN_ENABLED: bool = False
     ALLOCATION_USDT_EARN_CATEGORY: str = "FlexibleSaving"
+
+    # --- stage 25.3: guarded live Earn allocation execution ---
+    ALLOCATION_EARN_ALLOW_LIVE: bool = False
+    ALLOCATION_EARN_ALLOWED_FUND_CODES: str = "wb_test"
+    ALLOCATION_EARN_ALLOWED_COINS: str = "USDT"
+    ALLOCATION_EARN_ALLOWED_PRODUCT_IDS: str = ""
+    ALLOCATION_EARN_ALLOWED_CATEGORIES: str = "FlexibleSaving"
+    ALLOCATION_EARN_RESIDUAL_TO_CASH_WHEN_DISABLED: bool = True
+
     ALLOCATION_RESIDUAL_MIN_MATERIALITY_USDT: Decimal = Decimal("0.01")
     ALLOCATION_RESIDUAL_ALERT_THRESHOLD_USDT: Decimal = Decimal("100")
 

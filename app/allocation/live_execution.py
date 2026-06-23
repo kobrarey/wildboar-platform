@@ -7,6 +7,10 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.allocation.live_earn_config import (
+    allocation_earn_live_enabled,
+    residual_earn_to_cash_when_live_disabled,
+)
 from app.allocation.statuses import (
     ALLOCATION_BATCH_STATUS_ALLOCATION_COMPLETED,
     ALLOCATION_BATCH_STATUS_ALLOCATION_COMPLETED_WITH_RESIDUAL_CASH,
@@ -49,11 +53,12 @@ LIVE_SUPPORTED_LEG_TYPES = {
     LEG_TYPE_SPOT_BUY,
 }
 
-LIVE_RESIDUAL_CASH_LEG_TYPES = {
+LIVE_EARN_LEG_TYPES = {
     LEG_TYPE_USDT_EARN_STAKE,
-    LEG_TYPE_BUY_THEN_STAKE,
     LEG_TYPE_RESIDUAL_USDT_EARN,
 }
+
+LIVE_RESIDUAL_CASH_LEG_TYPES: set[str] = set()
 
 
 class LiveAllocationExecutionError(RuntimeError):
@@ -328,6 +333,54 @@ def preflight_live_allocation_batch(
             supported_leg_ids.append(int(leg.id))
             continue
 
+        if leg_type in LIVE_EARN_LEG_TYPES:
+            if leg_type == LEG_TYPE_RESIDUAL_USDT_EARN and not allocation_earn_live_enabled():
+                if residual_earn_to_cash_when_live_disabled():
+                    residual_cash_leg_ids.append(int(leg.id))
+                    continue
+
+                issues.append(
+                    _issue_for_leg(
+                        leg,
+                        reason="residual_earn_live_disabled_and_cash_fallback_disabled",
+                    )
+                )
+                continue
+
+            if not allocation_earn_live_enabled():
+                issues.append(
+                    _issue_for_leg(
+                        leg,
+                        reason="allocation_earn_live_disabled",
+                    )
+                )
+                continue
+
+            if dec(leg.target_usdt) <= ZERO and dec(leg.target_qty) <= ZERO:
+                issues.append(
+                    _issue_for_leg(
+                        leg,
+                        reason="earn_target_usdt_or_target_qty_required",
+                    )
+                )
+                continue
+
+            # Stage 25.3B only classifies live Earn as supported by static preflight.
+            # The real product whitelist/min/max/precision check is done by
+            # app.allocation.live_earn_orders.build_live_earn_stake_order_plan
+            # before any POST.
+            supported_leg_ids.append(int(leg.id))
+            continue
+
+        if leg_type == LEG_TYPE_BUY_THEN_STAKE:
+            issues.append(
+                _issue_for_leg(
+                    leg,
+                    reason="buy_then_stake_not_used_by_wb_test_current_local_db_and_not_enabled_for_live",
+                )
+            )
+            continue
+
         if leg_type in LIVE_RESIDUAL_CASH_LEG_TYPES:
             residual_cash_leg_ids.append(int(leg.id))
             continue
@@ -358,6 +411,8 @@ def preflight_live_allocation_batch(
             "pricing_locked": (
                 None if runtime_state is None else bool(runtime_state.pricing_locked)
             ),
+            "earn_live_enabled": allocation_earn_live_enabled(),
+            "residual_earn_to_cash_when_live_disabled": residual_earn_to_cash_when_live_disabled(),
             "external_calls": 0,
         },
     )

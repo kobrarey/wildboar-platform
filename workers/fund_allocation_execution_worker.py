@@ -24,6 +24,7 @@ from app.allocation.statuses import (
     LEG_TYPE_RESIDUAL_USDT_EARN,
     LEG_TYPE_SPOT_BUY,
     LEG_TYPE_STABLE_CASH,
+    LEG_TYPE_USDT_EARN_STAKE,
     RESIDUAL_SOURCE_STATUSES,
     SPOT_EARN_SUPPORTED_LEG_TYPES,
 )
@@ -33,6 +34,17 @@ from app.allocation.live_execution import (
     mark_stable_cash_leg_filled_without_external_call,
     preflight_live_allocation_batch,
     refresh_live_allocation_batch_progress,
+)
+from app.allocation.live_earn_config import (
+    allocation_earn_live_enabled,
+    residual_earn_to_cash_when_live_disabled,
+)
+from app.allocation.live_earn_orders import (
+    build_live_earn_stake_order_plan,
+    mark_live_earn_order_create_failed,
+    reconcile_live_earn_stake_leg_by_link_id,
+    require_earn_guard_for_plan,
+    submit_bybit_earn_stake_order,
 )
 from app.allocation.live_spot_orders import (
     build_live_spot_market_order_plan,
@@ -718,6 +730,417 @@ def _mark_stable_cash_leg_in_own_session(
         db.close()
 
 
+def _mark_residual_earn_cash_in_own_session(
+    *,
+    allocation_leg_id: int,
+    dry_run: bool,
+) -> bool:
+    db = SessionLocal()
+
+    try:
+        leg = mark_leg_residual_cash_without_external_call(
+            db,
+            allocation_leg_id=int(allocation_leg_id),
+            reason="residual_earn_kept_as_cash_because_live_earn_disabled",
+        )
+        allocation_batch_id = int(leg.allocation_batch_id)
+
+        if dry_run:
+            db.rollback()
+        else:
+            db.commit()
+
+        log.info(
+            "Allocation live residual Earn kept as cash without external calls "
+            "leg_id=%s batch_id=%s external_calls=0",
+            allocation_leg_id,
+            allocation_batch_id,
+        )
+
+        _refresh_live_batch_progress_in_own_session(
+            allocation_batch_id=allocation_batch_id,
+            dry_run=dry_run,
+        )
+
+        return True
+
+    except Exception as exc:
+        db.rollback()
+        log.exception(
+            "Allocation live residual Earn cash fallback failed "
+            "leg_id=%s error=%s",
+            allocation_leg_id,
+            exc,
+        )
+        return False
+
+    finally:
+        db.close()
+
+
+def _process_live_earn_leg_in_own_session(
+    *,
+    allocation_leg_id: int,
+    dry_run: bool,
+    fund_code: str | None,
+) -> bool:
+    # Phase 0: batch-level preflight before any external Earn action.
+    db0 = SessionLocal()
+    try:
+        allocation_batch_id = _get_batch_id_for_leg(
+            db0,
+            allocation_leg_id=int(allocation_leg_id),
+        )
+    finally:
+        db0.close()
+
+    preflight_ok = _process_live_batch_preflight_in_own_session(
+        allocation_batch_id=int(allocation_batch_id),
+        dry_run=dry_run,
+        fund_code=fund_code,
+    )
+
+    if not preflight_ok:
+        return False
+
+    # Phase 1: identify leg + fund client. This only decrypts local credentials,
+    # it does not perform an external Bybit call.
+    db1 = SessionLocal()
+    try:
+        fund_id, leg_type, order_link_id, bybit_order_id = _get_live_leg_snapshot(
+            db1,
+            allocation_leg_id=int(allocation_leg_id),
+        )
+
+        if leg_type not in {LEG_TYPE_USDT_EARN_STAKE, LEG_TYPE_RESIDUAL_USDT_EARN}:
+            log.error(
+                "Allocation live Earn adapter blocked unsupported leg "
+                "leg_id=%s leg_type=%s external_calls=0",
+                allocation_leg_id,
+                leg_type,
+            )
+            return False
+
+        if (
+            leg_type == LEG_TYPE_RESIDUAL_USDT_EARN
+            and not allocation_earn_live_enabled()
+            and residual_earn_to_cash_when_live_disabled()
+        ):
+            db1.close()
+            return _mark_residual_earn_cash_in_own_session(
+                allocation_leg_id=int(allocation_leg_id),
+                dry_run=dry_run,
+            )
+
+        if not allocation_earn_live_enabled():
+            log.error(
+                "Allocation live Earn blocked because Earn live flags are disabled "
+                "leg_id=%s leg_type=%s external_calls=0",
+                allocation_leg_id,
+                leg_type,
+            )
+            return False
+
+        fund_client_ctx = build_fund_bybit_client(
+            db1,
+            fund_id=int(fund_id),
+        )
+        client = fund_client_ctx.client
+
+    except Exception as exc:
+        db1.rollback()
+        log.exception(
+            "Allocation live Earn setup failed leg_id=%s error=%s",
+            allocation_leg_id,
+            exc,
+        )
+        return False
+
+    finally:
+        if db1.is_active:
+            db1.close()
+
+    # Phase 2: idempotency-first reconciliation.
+    # If earn_order_id/orderLinkId/orderId already exists, never send a duplicate order.
+    if order_link_id or bybit_order_id:
+        db2 = SessionLocal()
+        try:
+            result = reconcile_live_earn_stake_leg_by_link_id(
+                db2,
+                allocation_leg_id=int(allocation_leg_id),
+                client=client,
+            )
+
+            if dry_run:
+                db2.rollback()
+            else:
+                db2.commit()
+
+            _refresh_live_batch_progress_in_own_session(
+                allocation_batch_id=int(result.allocation_batch_id),
+                dry_run=dry_run,
+            )
+
+            log.info(
+                "Allocation live Earn idempotent reconciliation completed "
+                "leg_id=%s action=%s status=%s order_link_id=%s bybit_order_id=%s",
+                allocation_leg_id,
+                result.action,
+                result.status,
+                result.order_link_id,
+                result.bybit_order_id,
+            )
+
+            return bool(result.ok)
+
+        except Exception as exc:
+            db2.rollback()
+            log.exception(
+                "Allocation live Earn idempotent reconciliation failed "
+                "leg_id=%s error=%s",
+                allocation_leg_id,
+                exc,
+            )
+            return False
+
+        finally:
+            db2.close()
+
+    # Phase 3: build plan and persist deterministic earn_order_id/orderLinkId before POST.
+    db3 = SessionLocal()
+    try:
+        plan = build_live_earn_stake_order_plan(
+            db3,
+            allocation_leg_id=int(allocation_leg_id),
+            client=client,
+            default_category=settings.ALLOCATION_USDT_EARN_CATEGORY,
+        )
+
+        if dry_run:
+            db3.rollback()
+            log.info(
+                "Allocation live Earn dry-run stopped after order plan "
+                "leg_id=%s earn_order_id=%s order_link_id=%s external_post_calls=0",
+                allocation_leg_id,
+                plan.earn_order_id,
+                plan.order_link_id,
+            )
+            return True
+
+        db3.commit()
+
+        log.info(
+            "Allocation live Earn earn_order_id/orderLinkId persisted before POST "
+            "leg_id=%s earn_order_id=%s order_link_id=%s external_post_calls=0",
+            allocation_leg_id,
+            plan.earn_order_id,
+            plan.order_link_id,
+        )
+
+    except Exception as exc:
+        db3.rollback()
+
+        db_plan_fail = SessionLocal()
+        try:
+            mark_live_earn_order_create_failed(
+                db_plan_fail,
+                allocation_leg_id=int(allocation_leg_id),
+                error=f"earn_order_plan_failed: {exc}",
+            )
+            db_plan_fail.commit()
+        except Exception:
+            db_plan_fail.rollback()
+        finally:
+            db_plan_fail.close()
+
+        _refresh_live_batch_progress_in_own_session(
+            allocation_batch_id=int(allocation_batch_id),
+            dry_run=dry_run,
+        )
+
+        log.exception(
+            "Allocation live Earn plan failed leg_id=%s error=%s",
+            allocation_leg_id,
+            exc,
+        )
+        return False
+
+    finally:
+        db3.close()
+
+    # Phase 4: Operation Guard must pass before external POST.
+    db4 = SessionLocal()
+    try:
+        guard_decision = require_earn_guard_for_plan(
+            db4,
+            plan=plan,
+        )
+        db4.commit()
+
+        log.info(
+            "Allocation live Earn Operation Guard allowed "
+            "leg_id=%s earn_order_id=%s order_link_id=%s guard=%s",
+            allocation_leg_id,
+            plan.earn_order_id,
+            plan.order_link_id,
+            guard_decision,
+        )
+
+    except Exception as exc:
+        db4.rollback()
+
+        db_guard_fail = SessionLocal()
+        try:
+            mark_live_earn_order_create_failed(
+                db_guard_fail,
+                allocation_leg_id=int(allocation_leg_id),
+                error=f"earn_order_guard_blocked_or_error: {exc}",
+            )
+            db_guard_fail.commit()
+        except Exception:
+            db_guard_fail.rollback()
+        finally:
+            db_guard_fail.close()
+
+        _refresh_live_batch_progress_in_own_session(
+            allocation_batch_id=int(plan.allocation_batch_id),
+            dry_run=dry_run,
+        )
+
+        log.exception(
+            "Allocation live Earn Operation Guard blocked "
+            "leg_id=%s earn_order_id=%s order_link_id=%s error=%s",
+            allocation_leg_id,
+            plan.earn_order_id,
+            plan.order_link_id,
+            exc,
+        )
+        return False
+
+    finally:
+        db4.close()
+
+    # Phase 5: single external POST. If this errors, mark review and do not retry blindly.
+    try:
+        create_result = submit_bybit_earn_stake_order(
+            client,
+            payload=plan.payload,
+        )
+    except Exception as exc:
+        db_fail = SessionLocal()
+        try:
+            mark_live_earn_order_create_failed(
+                db_fail,
+                allocation_leg_id=int(allocation_leg_id),
+                error=f"earn_order_create_failed_or_uncertain: {exc}",
+            )
+            db_fail.commit()
+        except Exception:
+            db_fail.rollback()
+        finally:
+            db_fail.close()
+
+        _refresh_live_batch_progress_in_own_session(
+            allocation_batch_id=int(plan.allocation_batch_id),
+            dry_run=dry_run,
+        )
+
+        log.exception(
+            "Allocation live Earn order POST failed or uncertain "
+            "leg_id=%s earn_order_id=%s order_link_id=%s",
+            allocation_leg_id,
+            plan.earn_order_id,
+            plan.order_link_id,
+        )
+        return False
+
+    # Phase 6: store returned external order id if available, then reconcile by orderLinkId.
+    db5 = SessionLocal()
+    try:
+        leg = (
+            db5.query(FundAllocationLeg)
+            .filter(FundAllocationLeg.id == int(allocation_leg_id))
+            .with_for_update()
+            .first()
+        )
+
+        if leg is None:
+            raise RuntimeError(f"Allocation leg not found: {allocation_leg_id}")
+
+        order_id = (
+            create_result.get("orderId")
+            or create_result.get("order_id")
+            or create_result.get("earnOrderId")
+            or create_result.get("earn_order_id")
+        )
+
+        if order_id:
+            leg.bybit_order_id = str(order_id)
+
+        leg.error = None
+        db5.add(leg)
+        db5.commit()
+
+    except Exception as exc:
+        db5.rollback()
+        log.exception(
+            "Allocation live Earn orderId persist failed "
+            "leg_id=%s earn_order_id=%s order_link_id=%s error=%s",
+            allocation_leg_id,
+            plan.earn_order_id,
+            plan.order_link_id,
+            exc,
+        )
+        return False
+
+    finally:
+        db5.close()
+
+    db6 = SessionLocal()
+    try:
+        result = reconcile_live_earn_stake_leg_by_link_id(
+            db6,
+            allocation_leg_id=int(allocation_leg_id),
+            client=client,
+        )
+
+        if dry_run:
+            db6.rollback()
+        else:
+            db6.commit()
+
+        _refresh_live_batch_progress_in_own_session(
+            allocation_batch_id=int(result.allocation_batch_id),
+            dry_run=dry_run,
+        )
+
+        log.info(
+            "Allocation live Earn POST/reconciliation completed "
+            "leg_id=%s action=%s status=%s earn_order_id=%s order_link_id=%s bybit_order_id=%s",
+            allocation_leg_id,
+            result.action,
+            result.status,
+            result.earn_order_id,
+            result.order_link_id,
+            result.bybit_order_id,
+        )
+
+        return bool(result.ok)
+
+    except Exception as exc:
+        db6.rollback()
+        log.exception(
+            "Allocation live Earn post-send reconciliation failed "
+            "leg_id=%s error=%s",
+            allocation_leg_id,
+            exc,
+        )
+        return False
+
+    finally:
+        db6.close()
+
+
 def _process_live_spot_leg_in_own_session(
     *,
     allocation_leg_id: int,
@@ -757,6 +1180,25 @@ def _process_live_spot_leg_in_own_session(
             return _mark_stable_cash_leg_in_own_session(
                 allocation_leg_id=int(allocation_leg_id),
                 dry_run=dry_run,
+            )
+
+        if (
+            leg_type == LEG_TYPE_RESIDUAL_USDT_EARN
+            and not allocation_earn_live_enabled()
+            and residual_earn_to_cash_when_live_disabled()
+        ):
+            db1.close()
+            return _mark_residual_earn_cash_in_own_session(
+                allocation_leg_id=int(allocation_leg_id),
+                dry_run=dry_run,
+            )
+
+        if leg_type in {LEG_TYPE_USDT_EARN_STAKE, LEG_TYPE_RESIDUAL_USDT_EARN}:
+            db1.close()
+            return _process_live_earn_leg_in_own_session(
+                allocation_leg_id=int(allocation_leg_id),
+                dry_run=dry_run,
+                fund_code=fund_code,
             )
 
         if leg_type != LEG_TYPE_SPOT_BUY:
