@@ -2,12 +2,12 @@
 -- PostgreSQL database dump
 --
 
-\restrict E3WPnC01e3KwGVW1VcEEFUUfkbEceeoEHCQk6IptO80nY6HiWmw6szeIQZxGR4n
+\restrict 36B5liOg4eZGdpvAziBvJmpu2ccPNafgrIV2oz7bHIr9PxeZLoI1P7Dojm6SBBB
 
 -- Dumped from database version 16.11
 -- Dumped by pg_dump version 16.11
 
--- Started on 2026-06-23 14:43:16
+-- Started on 2026-06-24 17:55:54
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -4293,11 +4293,11 @@ ALTER TABLE ONLY public.withdraw_sessions
     ADD CONSTRAINT withdraw_sessions_wallet_id_fkey FOREIGN KEY (wallet_id) REFERENCES public.user_wallets(id) ON DELETE CASCADE;
 
 
--- Completed on 2026-06-23 14:43:17
+-- Completed on 2026-06-24 17:55:55
 
 --
 -- PostgreSQL database dump complete
 --
 
-\unrestrict E3WPnC01e3KwGVW1VcEEFUUfkbEceeoEHCQk6IptO80nY6HiWmw6szeIQZxGR4n
+\unrestrict 36B5liOg4eZGdpvAziBvJmpu2ccPNafgrIV2oz7bHIr9PxeZLoI1P7Dojm6SBBB
 
