@@ -493,6 +493,95 @@ def test_mixed_batch_source_coverage() -> None:
     )
 
 
+def test_stage25_4_preflight_allows_processed_mixed_batch_statuses_source() -> None:
+    live_execution = Path("app/allocation/live_execution.py").read_text(encoding="utf-8")
+
+    assert_ok(
+        "STAGE25_4_PREFLIGHT_HAS_ACCEPTED_STATUS_POLICY",
+        "LIVE_PREFLIGHT_ALREADY_ACCEPTED_STATUSES" in live_execution
+        and "LIVE_PREFLIGHT_RECONCILABLE_PENDING_STATUSES" in live_execution,
+    )
+    assert_ok(
+        "STAGE25_4_PREFLIGHT_ALLOWS_FILLED",
+        "ALLOCATION_LEG_STATUS_FILLED" in live_execution
+        and "Already processed successfully or safely residualized" in live_execution,
+    )
+    assert_ok(
+        "STAGE25_4_PREFLIGHT_ALLOWS_RESIDUAL_EARN_COMPLETED",
+        "ALLOCATION_LEG_STATUS_RESIDUAL_EARN_COMPLETED" in live_execution,
+    )
+    assert_ok(
+        "STAGE25_4_PREFLIGHT_ALLOWS_RESIDUAL_CASH",
+        "ALLOCATION_LEG_STATUS_RESIDUAL_CASH" in live_execution,
+    )
+    assert_ok(
+        "STAGE25_4_PREFLIGHT_ALLOWS_PARTIAL_FILLED_RESIDUALIZED",
+        "ALLOCATION_LEG_STATUS_PARTIAL_FILLED_RESIDUALIZED" in live_execution,
+    )
+    assert_ok(
+        "STAGE25_4_PREFLIGHT_ALLOWS_MARKET_SENT_WITH_IDEMPOTENCY",
+        "ALLOCATION_LEG_STATUS_MARKET_ORDER_SENT" in live_execution
+        and "_leg_has_idempotency_reference" in live_execution
+        and "pending_leg_missing_idempotency_reference" in live_execution,
+    )
+
+
+def test_stage25_4_preflight_blocks_failed_and_unsupported_processing_source() -> None:
+    live_execution = Path("app/allocation/live_execution.py").read_text(encoding="utf-8")
+
+    assert_ok(
+        "STAGE25_4_PREFLIGHT_BLOCKS_FAILED_REVIEW",
+        "LIVE_PREFLIGHT_BLOCKING_STATUSES" in live_execution
+        and "blocking_leg_status" in live_execution
+        and "ALLOCATION_LEG_STATUS_FAILED_REQUIRES_REVIEW" in live_execution,
+    )
+    assert_ok(
+        "STAGE25_4_PREFLIGHT_BLOCKS_NATIVE_ICEBERG_PROCESSING",
+        "ALLOCATION_LEG_STATUS_NATIVE_ICEBERG_PROCESSING" in live_execution
+        and "unsupported_live_processing_status" in live_execution,
+    )
+    assert_ok(
+        "STAGE25_4_PREFLIGHT_BLOCKS_SLICED_IOC_PROCESSING",
+        "ALLOCATION_LEG_STATUS_SLICED_IOC_PROCESSING" in live_execution
+        and "unsupported_live_processing_status" in live_execution,
+    )
+
+
+def test_stage25_4_mixed_batch_regression_source_order() -> None:
+    live_execution = Path("app/allocation/live_execution.py").read_text(encoding="utf-8")
+    worker = Path("workers/fund_allocation_execution_worker.py").read_text(encoding="utf-8")
+
+    assert_ok("STAGE25_4_MIXED_BATCH_REGRESSION_SOURCE_ORDER", True)
+
+    assert_ok(
+        "STAGE25_4_STABLE_CASH_FILLED_WILL_NOT_BLOCK_NEXT_PREFLIGHT",
+        "ALLOCATION_LEG_STATUS_FILLED" in live_execution
+        and "if leg_status in LIVE_PREFLIGHT_ALREADY_ACCEPTED_STATUSES" in live_execution,
+    )
+    assert_ok(
+        "STAGE25_4_SPOT_MARKET_SENT_RECONCILABLE_NO_DUPLICATE",
+        "ALLOCATION_LEG_STATUS_MARKET_ORDER_SENT" in live_execution
+        and "_leg_has_idempotency_reference" in live_execution
+        and "reconcile_live_spot_market_leg_by_link_id" in worker,
+    )
+    assert_ok(
+        "STAGE25_4_EARN_MARKET_SENT_RECONCILABLE_NO_DUPLICATE",
+        "ALLOCATION_LEG_STATUS_MARKET_ORDER_SENT" in live_execution
+        and "_leg_has_idempotency_reference" in live_execution
+        and "reconcile_live_earn_stake_leg_by_link_id" in worker,
+    )
+    assert_ok(
+        "STAGE25_4_AFTER_EARN_SUCCESS_BATCH_CAN_COMPLETE",
+        "ALLOCATION_LEG_STATUS_RESIDUAL_EARN_COMPLETED" in live_execution
+        and "refresh_live_allocation_batch_progress" in live_execution,
+    )
+    assert_ok(
+        "STAGE25_4_BUY_THEN_STAKE_STILL_SAFE_BLOCKED",
+        "buy_then_stake_not_used_by_wb_test_current_local_db_and_not_enabled_for_live"
+        in live_execution,
+    )
+
+
 def main() -> None:
     test_source_ordering()
     test_fetch_existing_order_no_post()
@@ -510,6 +599,9 @@ def main() -> None:
     test_operation_guard_allowed_single_post_source()
     test_residual_earn_live_enabled_real_path_source()
     test_mixed_batch_source_coverage()
+    test_stage25_4_preflight_allows_processed_mixed_batch_statuses_source()
+    test_stage25_4_preflight_blocks_failed_and_unsupported_processing_source()
+    test_stage25_4_mixed_batch_regression_source_order()
     print("STAGE25_3_LIVE_EARN_ALLOCATION_STUB_TESTS_OK")
 
 

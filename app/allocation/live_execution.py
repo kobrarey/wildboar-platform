@@ -60,6 +60,35 @@ LIVE_EARN_LEG_TYPES = {
 
 LIVE_RESIDUAL_CASH_LEG_TYPES: set[str] = set()
 
+LIVE_PREFLIGHT_PLANNED_STATUSES = {
+    ALLOCATION_LEG_STATUS_PLANNED,
+}
+
+LIVE_PREFLIGHT_ALREADY_ACCEPTED_STATUSES = {
+    ALLOCATION_LEG_STATUS_FILLED,
+    ALLOCATION_LEG_STATUS_RESIDUAL_EARN_COMPLETED,
+    ALLOCATION_LEG_STATUS_RESIDUAL_CASH,
+    ALLOCATION_LEG_STATUS_PARTIAL_FILLED_RESIDUALIZED,
+}
+
+LIVE_PREFLIGHT_RECONCILABLE_PENDING_STATUSES = {
+    ALLOCATION_LEG_STATUS_MARKET_ORDER_SENT,
+}
+
+LIVE_PREFLIGHT_BLOCKING_STATUSES = {
+    ALLOCATION_LEG_STATUS_FAILED_REQUIRES_REVIEW,
+}
+
+LIVE_PREFLIGHT_UNSUPPORTED_PROCESSING_STATUSES = {
+    ALLOCATION_LEG_STATUS_NATIVE_ICEBERG_PROCESSING,
+    ALLOCATION_LEG_STATUS_SLICED_IOC_PROCESSING,
+}
+
+LIVE_PREFLIGHT_ALLOWED_ALREADY_PROCESSED_STATUSES = (
+    LIVE_PREFLIGHT_ALREADY_ACCEPTED_STATUSES
+    | LIVE_PREFLIGHT_RECONCILABLE_PENDING_STATUSES
+)
+
 
 class LiveAllocationExecutionError(RuntimeError):
     pass
@@ -216,6 +245,15 @@ def _issue_for_leg(leg: FundAllocationLeg, *, reason: str) -> LiveAllocationPref
     )
 
 
+def _leg_has_idempotency_reference(leg: FundAllocationLeg) -> bool:
+    return bool(
+        _normalize_text(leg.order_link_id)
+        or _normalize_text(leg.bybit_order_id)
+        or _normalize_text(leg.earn_order_id)
+        or _normalize_text(leg.strategy_id)
+    )
+
+
 def preflight_live_allocation_batch(
     db: Session,
     *,
@@ -293,7 +331,47 @@ def preflight_live_allocation_batch(
     for leg in legs:
         leg_type = _normalize_text(leg.leg_type)
 
-        if leg.status != ALLOCATION_LEG_STATUS_PLANNED:
+        leg_status = _normalize_text(leg.status)
+
+        if leg_status in LIVE_PREFLIGHT_BLOCKING_STATUSES:
+            issues.append(
+                _issue_for_leg(
+                    leg,
+                    reason=f"blocking_leg_status: {leg.status}",
+                )
+            )
+            continue
+
+        if leg_status in LIVE_PREFLIGHT_ALREADY_ACCEPTED_STATUSES:
+            # Already processed successfully or safely residualized.
+            # Do not block subsequent legs in the same mixed live batch.
+            continue
+
+        if leg_status in LIVE_PREFLIGHT_RECONCILABLE_PENDING_STATUSES:
+            if _leg_has_idempotency_reference(leg):
+                # Pending live order with deterministic reference must be handled
+                # by the leg-specific reconciliation path, not by duplicate POST.
+                supported_leg_ids.append(int(leg.id))
+                continue
+
+            issues.append(
+                _issue_for_leg(
+                    leg,
+                    reason=f"pending_leg_missing_idempotency_reference: {leg.status}",
+                )
+            )
+            continue
+
+        if leg_status in LIVE_PREFLIGHT_UNSUPPORTED_PROCESSING_STATUSES:
+            issues.append(
+                _issue_for_leg(
+                    leg,
+                    reason=f"unsupported_live_processing_status: {leg.status}",
+                )
+            )
+            continue
+
+        if leg_status not in LIVE_PREFLIGHT_PLANNED_STATUSES:
             issues.append(
                 _issue_for_leg(
                     leg,
@@ -408,6 +486,16 @@ def preflight_live_allocation_batch(
             "total_legs": len(legs),
             "supported_legs": len(supported_leg_ids),
             "residual_cash_legs": len(residual_cash_leg_ids),
+            "allowed_already_processed_statuses": sorted(
+                LIVE_PREFLIGHT_ALREADY_ACCEPTED_STATUSES
+            ),
+            "allowed_reconcilable_pending_statuses": sorted(
+                LIVE_PREFLIGHT_RECONCILABLE_PENDING_STATUSES
+            ),
+            "blocking_statuses": sorted(LIVE_PREFLIGHT_BLOCKING_STATUSES),
+            "unsupported_processing_statuses": sorted(
+                LIVE_PREFLIGHT_UNSUPPORTED_PROCESSING_STATUSES
+            ),
             "pricing_locked": (
                 None if runtime_state is None else bool(runtime_state.pricing_locked)
             ),
