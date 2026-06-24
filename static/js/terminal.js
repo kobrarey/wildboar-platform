@@ -205,6 +205,11 @@
     const fundCode = wrap.dataset.fundCode || getCurrentFundCode();
     const fundName = wrap.dataset.fundName || "-";
 
+    function readPositiveDatasetNumber(value, fallback) {
+      const n = Number(value);
+      return Number.isFinite(n) && n > 0 ? n : fallback;
+    }
+
     let availUSDT = Number(wrap.dataset.availUsdt || 0);
     let availShares = Number(wrap.dataset.availShares || 0);
 
@@ -276,10 +281,12 @@
     tabRed && tabRed.addEventListener("click", () => setSide("redeem"));
     setSide("buy");
 
-    const BUY_MAX = 10_000_000;
-    const BUY_MAX_INT_DIGITS = 8;
-    const REDEEM_MAX = 1000;
-    const REDEEM_MAX_INT_DIGITS = 4;
+    const BUY_MIN = readPositiveDatasetNumber(wrap.dataset.buyMinUsdt, 10);
+    const BUY_MAX = readPositiveDatasetNumber(wrap.dataset.buyMaxUsdt, 10_000_000);
+    const REDEEM_MAX = readPositiveDatasetNumber(wrap.dataset.redeemMaxShares, 1000);
+
+    const BUY_MAX_INT_DIGITS = String(Math.floor(BUY_MAX)).length;
+    const REDEEM_MAX_INT_DIGITS = String(Math.floor(REDEEM_MAX)).length;
 
     bindOrderAmountInput(buyIn, 2, BUY_MAX_INT_DIGITS, BUY_MAX);
     bindOrderAmountInput(redIn, 4, REDEEM_MAX_INT_DIGITS, REDEEM_MAX);
@@ -513,7 +520,16 @@
       if (n === null) return false;
       if (!decimalsOk(raw, 2)) return false;
       if (n <= 0) return false;
-      if (n > BUY_MAX) return false;
+
+      if (n < BUY_MIN) {
+        if (buyErr) buyErr.textContent = L("Минимальная сумма покупки — 10 USDT.", "Minimum purchase amount is 10 USDT.");
+        return false;
+      }
+
+      if (n > BUY_MAX) {
+        if (buyErr) buyErr.textContent = L("Максимальная сумма покупки — 10,000,000 USDT.", "Maximum purchase amount is 10,000,000 USDT.");
+        return false;
+      }
 
       const intLen = String(raw || "").trim().replace(",", ".").split(".")[0].length;
       if (intLen > BUY_MAX_INT_DIGITS) return false;
@@ -561,6 +577,7 @@
       if (n === null) return false;
       if (!decimalsOk(raw, 2)) return false;
       if (n <= 0) return false;
+      if (n < BUY_MIN) return false;
       if (n > BUY_MAX) return false;
 
       const intLen = String(raw || "").trim().replace(",", ".").split(".")[0].length;
@@ -626,9 +643,8 @@
         return;
       }
 
-      if (buyErr) buyErr.textContent = "";
-      if (buyOk) buyOk.textContent = "";
-      if (buyBtn) buyBtn.disabled = !canEnableBuyButton() || buyPending;
+      const buyValid = validateBuy();
+      if (buyBtn) buyBtn.disabled = !buyValid || buyPending;
     });
 
     redIn && redIn.addEventListener("input", () => {

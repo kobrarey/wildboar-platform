@@ -63,6 +63,9 @@ MESSAGES = {
         "trading_unavailable": "Trading is temporarily unavailable.",
         "invalid_amount": "Invalid amount.",
         "invalid_shares": "Invalid number of shares.",
+        "buy_amount_below_min": "Minimum purchase amount is 10 USDT.",
+        "buy_amount_above_max": "Maximum purchase amount is 10,000,000 USDT.",
+        "redeem_shares_above_max": "Maximum redemption amount is 1,000 shares.",
         "not_authenticated": "Please sign in.",
     },
     "ru": {
@@ -126,6 +129,9 @@ MESSAGES = {
         "trading_unavailable": "Торговые операции временно недоступны.",
         "invalid_amount": "Некорректная сумма.",
         "invalid_shares": "Некорректное количество паёв.",
+        "buy_amount_below_min": "Минимальная сумма покупки — 10 USDT.",
+        "buy_amount_above_max": "Максимальная сумма покупки — 10,000,000 USDT.",
+        "redeem_shares_above_max": "Максимальная сумма погашения — 1,000 паёв.",
         "not_authenticated": "Войдите в аккаунт.",
     },
 }

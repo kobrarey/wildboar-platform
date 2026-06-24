@@ -7,6 +7,7 @@ from typing import Any
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.models import (
     Fund,
     FundOrder,
@@ -46,6 +47,19 @@ def _to_decimal(value: Any, *, error_key: str) -> Decimal:
         raise TradingOrderError(error_key)
 
     return d
+
+
+def validate_buy_amount_limits(amount: Decimal) -> None:
+    if amount < settings.TRADING_BUY_MIN_USDT:
+        raise TradingOrderError("buy_amount_below_min")
+
+    if amount > settings.TRADING_BUY_MAX_USDT:
+        raise TradingOrderError("buy_amount_above_max")
+
+
+def validate_redeem_shares_limits(shares: Decimal) -> None:
+    if shares > settings.TRADING_REDEEM_MAX_SHARES:
+        raise TradingOrderError("redeem_shares_above_max")
 
 
 def _dec(value: Any) -> Decimal:
@@ -227,6 +241,8 @@ def create_buy_order(
     _validate_user_for_buy(user)
 
     amount = _to_decimal(amount_usdt, error_key="invalid_amount")
+    validate_buy_amount_limits(amount)
+
     fund = _get_active_fund(db, fund_code)
     _enforce_order_entry_enabled(fund)
 
@@ -297,6 +313,8 @@ def create_redeem_order(
     _validate_user_for_redeem(user)
 
     shares_dec = _to_decimal(shares, error_key="invalid_shares")
+    validate_redeem_shares_limits(shares_dec)
+
     fund = _get_active_fund(db, fund_code)
     _enforce_order_entry_enabled(fund)
 

@@ -53,6 +53,9 @@ class Settings(BaseSettings):
     # --- stage 25: production readiness / order entry gates ---
     ORDER_ENTRY_ENABLED_FUND_CODES: str = "wb_test"
     ORDER_ENTRY_DISABLED_MODE: str = "reject"
+    TRADING_BUY_MIN_USDT: Decimal = Decimal("10")
+    TRADING_BUY_MAX_USDT: Decimal = Decimal("10000000")
+    TRADING_REDEEM_MAX_SHARES: Decimal = Decimal("1000")
     BYBIT_WITHDRAWALS_ENABLED: bool = False
     POSITIVE_NET_LIVE_TRANSFER_ENABLED: bool = False
     LIFECYCLE_WORKERS_PRODUCTION_LIVE_ENABLED: bool = False

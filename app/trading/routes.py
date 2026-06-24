@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from app.auth.deps import NotAuthenticated, get_current_user as auth_get_current_user
+from app.config import settings
 from app.db import get_db
 from app.i18n import get_lang_from_request
 from app.web import templates
@@ -181,6 +182,9 @@ def terminal_fund_page(
             "chart_config": payload["chart_config"],
             "order_entry_enabled_fund_codes": order_entry_enabled_fund_codes,
             "order_entry_enabled": order_entry_enabled,
+            "trading_buy_min_usdt": settings.TRADING_BUY_MIN_USDT,
+            "trading_buy_max_usdt": settings.TRADING_BUY_MAX_USDT,
+            "trading_redeem_max_shares": settings.TRADING_REDEEM_MAX_SHARES,
         },
     )
 

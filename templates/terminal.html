@@ -335,7 +335,10 @@
            data-fund-code="{{ current_fund.fund_code if current_fund and current_fund.fund_code else chart_config.fund_code }}"
            data-fund-name="{{ current_fund.short_name|default(current_fund.name|default('-', true), true) }}"
            data-avail-usdt="{{ form_state.available_usdt|default(0, true) }}"
-           data-avail-shares="{{ form_state.available_shares_current_fund|default(0, true) }}">
+           data-avail-shares="{{ form_state.available_shares_current_fund|default(0, true) }}"
+           data-buy-min-usdt="{{ trading_buy_min_usdt }}"
+           data-buy-max-usdt="{{ trading_buy_max_usdt }}"
+           data-redeem-max-shares="{{ trading_redeem_max_shares }}">
         <div class="term-order__tabs">
           <button type="button" class="order-tab is-active" data-term-side="buy">
             {{ 'КУПИТЬ' if lang=='ru' else 'BUY' }}
