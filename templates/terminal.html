@@ -365,7 +365,9 @@
           </div>
 
           <div class="order-hint">{{ 'Сделка исполняется в течение суток' if lang=='ru' else 'The order is executed within 24 hours' }}</div>
-          <div class="order-limit-hint">{{ 'Максимальная сумма покупки в течение одного дня — 10,000,000 USDT' if lang=='ru' else 'Maximum purchase amount within one day: 10,000,000 USDT' }}</div>
+          <div class="order-limit-hint">
+            {{ 'Минимальная сумма покупки — 10 USDT. Максимальная сумма покупки в течение одного дня — 10,000,000 USDT.' if lang=='ru' else 'Minimum purchase amount is 10 USDT. Maximum purchase amount within one day is 10,000,000 USDT.' }}
+          </div>
           <div class="order-error" id="buyError"></div>
 
           <button type="button" class="order-btn order-btn--buy" id="buyBtn">
