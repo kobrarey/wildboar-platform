@@ -2,7 +2,7 @@ import asyncio
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from decimal import Decimal
 
 from web3 import Web3
@@ -11,6 +11,11 @@ from sqlalchemy import text as sa_text
 from app.config import settings
 from app.db import SessionLocal
 from app.models import WalletTransfer, UserWallet, User
+from app.settlement.statuses import (
+    WALLET_TRANSFER_STATUS_PROCESSING,
+    WALLET_TRANSFER_STATUS_WAITING_FOR_GAS,
+)
+from app.telegram import send_telegram_message
 from app.wallets import decrypt_private_key, create_bsc_wallet_for_user
 
 if sys.platform.startswith("win"):
@@ -73,6 +78,63 @@ def get_block_time(w3: Web3, block_number: int) -> datetime | None:
         return datetime.fromtimestamp(int(b["timestamp"]), tz=timezone.utc)
     except Exception:
         return None
+
+
+def withdraw_gas_retry_delay() -> timedelta:
+    seconds = max(30, int(settings.WITHDRAW_GAS_WAIT_RETRY_SEC))
+    return timedelta(seconds=seconds)
+
+
+def withdraw_gas_alert_cooldown() -> timedelta:
+    seconds = max(60, int(settings.WITHDRAW_GAS_ALERT_COOLDOWN_SEC))
+    return timedelta(seconds=seconds)
+
+
+def native_tx_cost_wei(w3: Web3, *, gas_units: int = 21000) -> int:
+    return int(gas_units) * int(w3.eth.gas_price)
+
+
+def waiting_for_gas_reason(compliance_status: str | None) -> str:
+    if (compliance_status or "ok") == "ok":
+        return "insufficient_ok_gas"
+    return "insufficient_blocked_gas"
+
+
+def should_send_gas_alert(tr: WalletTransfer, now: datetime) -> bool:
+    last = getattr(tr, "last_gas_alert_at", None)
+    if last is None:
+        return True
+    return now - last >= withdraw_gas_alert_cooldown()
+
+
+def mark_waiting_for_gas(
+    db,
+    tr: WalletTransfer,
+    *,
+    reason: str,
+    detail: str,
+    alert_text: str,
+) -> None:
+    now = utcnow()
+
+    tr.status = WALLET_TRANSFER_STATUS_WAITING_FOR_GAS
+    tr.error = (detail or reason)[:800]
+    tr.next_retry_at = now + withdraw_gas_retry_delay()
+
+    if should_send_gas_alert(tr, now):
+        try:
+            send_telegram_message(alert_text)
+            tr.last_gas_alert_at = now
+        except Exception as exc:
+            log.warning("Withdrawal gas Telegram alert failed: %s", exc)
+
+    db.add(tr)
+
+
+def clear_gas_waiting_state(tr: WalletTransfer) -> None:
+    tr.status = WALLET_TRANSFER_STATUS_PROCESSING
+    tr.error = None
+    tr.next_retry_at = None
 
 
 def sign_and_send_raw(w3: Web3, priv_key_hex: str, tx: dict) -> str:
@@ -206,7 +268,18 @@ def process_one(tr_id: int):
             .with_for_update()
             .first()
         )
-        if not tr or tr.type != "withdraw" or tr.status != "processing":
+        if not tr or tr.type != "withdraw":
+            return
+
+        if tr.status == WALLET_TRANSFER_STATUS_WAITING_FOR_GAS:
+            if tr.next_retry_at is not None and tr.next_retry_at > utcnow():
+                db.commit()
+                return
+            tr.status = WALLET_TRANSFER_STATUS_PROCESSING
+            db.add(tr)
+            db.flush()
+
+        if tr.status != WALLET_TRANSFER_STATUS_PROCESSING:
             return
 
         wallet = (
@@ -272,6 +345,40 @@ def process_one(tr_id: int):
                     topup_wei = 0
 
                 gas_price = int(w3.eth.gas_price)
+                native_send_cost_wei = 21000 * gas_price
+                required_fee_wallet_wei = int(topup_wei) + native_send_cost_wei
+                fee_wallet_balance_wei = int(w3.eth.get_balance(fee_addr))
+
+                if fee_wallet_balance_wei < required_fee_wallet_wei:
+                    reason = waiting_for_gas_reason(tr.compliance_status)
+                    detail = (
+                        "insufficient_fee_wallet_bnb: "
+                        f"reason={reason}; transfer_id={tr.id}; "
+                        f"fee_wallet={fee_addr}; "
+                        f"required_wei={required_fee_wallet_wei}; "
+                        f"available_wei={fee_wallet_balance_wei}; "
+                        f"topup_wei={int(topup_wei)}; "
+                        f"native_send_cost_wei={native_send_cost_wei}"
+                    )
+                    alert_text = (
+                        "⚠️ Withdrawal waiting for BNB gas\n"
+                        f"Transfer ID: {tr.id}\n"
+                        f"Reason: {reason}\n"
+                        f"Fee wallet: {fee_addr}\n"
+                        f"Required wei: {required_fee_wallet_wei}\n"
+                        f"Available wei: {fee_wallet_balance_wei}\n"
+                        f"Next retry: {utcnow() + withdraw_gas_retry_delay()}"
+                    )
+                    mark_waiting_for_gas(
+                        db,
+                        tr,
+                        reason=reason,
+                        detail=detail,
+                        alert_text=alert_text,
+                    )
+                    db.commit()
+                    return
+
                 nonce_fee = w3.eth.get_transaction_count(fee_addr, "pending")
                 tx = {
                     "chainId": CHAIN_ID_BSC,
@@ -284,11 +391,29 @@ def process_one(tr_id: int):
                 try:
                     txh = sign_and_send_raw(w3, fee_priv, tx)
                     tr.gas_tx_hash = txh
-                    tr.error = None
+                    clear_gas_waiting_state(tr)
                     db.commit()
                     return
                 except Exception as e:
-                    db_set_processing_error(db, tr, f"gas_tx_send_error: {e}")
+                    err = str(e)
+                    if "insufficient" in err.lower() or "funds" in err.lower() or "gas" in err.lower():
+                        reason = waiting_for_gas_reason(tr.compliance_status)
+                        detail = f"insufficient_fee_wallet_bnb: reason={reason}; gas_tx_send_error: {err}"
+                        alert_text = (
+                            "⚠️ Withdrawal gas top-up send blocked by BNB/gas error\n"
+                            f"Transfer ID: {tr.id}\n"
+                            f"Reason: {reason}\n"
+                            f"Error: {err[:500]}"
+                        )
+                        mark_waiting_for_gas(
+                            db,
+                            tr,
+                            reason=reason,
+                            detail=detail,
+                            alert_text=alert_text,
+                        )
+                    else:
+                        db_set_processing_error(db, tr, f"gas_tx_send_error: {e}")
                     db.commit()
                     return
 
@@ -321,6 +446,33 @@ def process_one(tr_id: int):
                 )
             except Exception:
                 gas_limit = int(settings.ERC20_TRANSFER_GAS_FALLBACK)
+
+            user_bnb_wei = int(w3.eth.get_balance(user_addr))
+            required_user_wei = int(gas_limit) * int(gas_price)
+            if user_bnb_wei < required_user_wei:
+                detail = (
+                    "insufficient_user_wallet_gas: "
+                    f"transfer_id={tr.id}; user_wallet={user_addr}; "
+                    f"required_wei={required_user_wei}; available_wei={user_bnb_wei}; "
+                    "phase=payout"
+                )
+                alert_text = (
+                    "⚠️ Withdrawal user wallet waiting for BNB gas\n"
+                    f"Transfer ID: {tr.id}\n"
+                    f"User wallet: {user_addr}\n"
+                    f"Required wei: {required_user_wei}\n"
+                    f"Available wei: {user_bnb_wei}\n"
+                    "Phase: payout"
+                )
+                mark_waiting_for_gas(
+                    db,
+                    tr,
+                    reason="insufficient_user_wallet_gas",
+                    detail=detail,
+                    alert_text=alert_text,
+                )
+                db.commit()
+                return
 
             tx = {
                 "chainId": CHAIN_ID_BSC,
@@ -370,6 +522,33 @@ def process_one(tr_id: int):
                 )
             except Exception:
                 gas_limit = int(settings.ERC20_TRANSFER_GAS_FALLBACK)
+
+            user_bnb_wei = int(w3.eth.get_balance(user_addr))
+            required_user_wei = int(gas_limit) * int(gas_price)
+            if user_bnb_wei < required_user_wei:
+                detail = (
+                    "insufficient_user_wallet_gas: "
+                    f"transfer_id={tr.id}; user_wallet={user_addr}; "
+                    f"required_wei={required_user_wei}; available_wei={user_bnb_wei}; "
+                    "phase=fee"
+                )
+                alert_text = (
+                    "⚠️ Withdrawal user wallet waiting for BNB gas\n"
+                    f"Transfer ID: {tr.id}\n"
+                    f"User wallet: {user_addr}\n"
+                    f"Required wei: {required_user_wei}\n"
+                    f"Available wei: {user_bnb_wei}\n"
+                    "Phase: fee"
+                )
+                mark_waiting_for_gas(
+                    db,
+                    tr,
+                    reason="insufficient_user_wallet_gas",
+                    detail=detail,
+                    alert_text=alert_text,
+                )
+                db.commit()
+                return
 
             tx = {
                 "chainId": CHAIN_ID_BSC,
@@ -425,9 +604,22 @@ def process_one(tr_id: int):
 def load_processing_ids(limit: int = 50) -> list[int]:
     db = SessionLocal()
     try:
+        now = utcnow()
         rows = (
             db.query(WalletTransfer.id)
-            .filter(WalletTransfer.type == "withdraw", WalletTransfer.status == "processing")
+            .filter(WalletTransfer.type == "withdraw")
+            .filter(
+                (
+                    WalletTransfer.status == WALLET_TRANSFER_STATUS_PROCESSING
+                )
+                | (
+                    (WalletTransfer.status == WALLET_TRANSFER_STATUS_WAITING_FOR_GAS)
+                    & (
+                        (WalletTransfer.next_retry_at.is_(None))
+                        | (WalletTransfer.next_retry_at <= now)
+                    )
+                )
+            )
             .order_by(WalletTransfer.detected_at.asc())
             .limit(limit)
             .all()
