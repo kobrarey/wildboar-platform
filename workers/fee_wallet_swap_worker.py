@@ -29,6 +29,13 @@ from web3 import Web3
 from app.config import settings
 from app.db import SessionLocal
 from app.models import FeeWalletSwap
+from app.settlement.statuses import (
+    FEE_WALLET_SWAP_STATUS_FAILED,
+    FEE_WALLET_SWAP_STATUS_SKIPPED,
+    FEE_WALLET_SWAP_STATUS_SUCCESS,
+    FEE_WALLET_SWAP_STATUS_WAITING_FOR_GAS,
+)
+from app.telegram import send_telegram_message
 
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -108,6 +115,149 @@ def utc_day_bounds(now: datetime | None = None) -> tuple[datetime, datetime]:
     return start, start + timedelta(days=1)
 
 
+def fee_wallet_swap_gas_retry_delay() -> timedelta:
+    seconds = max(300, int(settings.FEE_WALLET_SWAP_GAS_WAIT_RETRY_SEC))
+    return timedelta(seconds=seconds)
+
+
+def fee_wallet_swap_gas_alert_cooldown() -> timedelta:
+    seconds = max(300, int(settings.FEE_WALLET_SWAP_GAS_ALERT_COOLDOWN_SEC))
+    return timedelta(seconds=seconds)
+
+
+def get_waiting_gas_swap(wallet_type: str) -> FeeWalletSwap | None:
+    db = SessionLocal()
+    try:
+        return (
+            db.query(FeeWalletSwap)
+            .filter(
+                FeeWalletSwap.wallet_type == wallet_type,
+                FeeWalletSwap.status == FEE_WALLET_SWAP_STATUS_WAITING_FOR_GAS,
+            )
+            .order_by(FeeWalletSwap.created_at.desc(), FeeWalletSwap.id.desc())
+            .first()
+        )
+    finally:
+        db.close()
+
+
+def should_skip_waiting_gas_swap(wallet_type: str) -> bool:
+    row = get_waiting_gas_swap(wallet_type)
+    if row is None:
+        return False
+
+    if row.next_retry_at is None:
+        return False
+
+    if row.next_retry_at <= utcnow():
+        return False
+
+    log.info(
+        "wallet_type=%s waiting_for_gas until %s. Skip without creating duplicate row.",
+        wallet_type,
+        row.next_retry_at,
+    )
+    return True
+
+
+def should_send_fee_wallet_gas_alert(row: FeeWalletSwap, now: datetime) -> bool:
+    last = getattr(row, "last_gas_alert_at", None)
+    if last is None:
+        return True
+    return now - last >= fee_wallet_swap_gas_alert_cooldown()
+
+
+def mark_fee_wallet_swap_waiting_for_gas(
+    *,
+    wallet_type: str,
+    wallet_address: str,
+    amount_in_usdt: Decimal,
+    error: str,
+) -> None:
+    now = utcnow()
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(FeeWalletSwap)
+            .filter(
+                FeeWalletSwap.wallet_type == wallet_type,
+                FeeWalletSwap.status == FEE_WALLET_SWAP_STATUS_WAITING_FOR_GAS,
+            )
+            .order_by(FeeWalletSwap.created_at.desc(), FeeWalletSwap.id.desc())
+            .first()
+        )
+
+        if row is None:
+            row = FeeWalletSwap(
+                wallet_type=wallet_type,
+                wallet_address=wallet_address or "",
+                token_in="USDT",
+                token_out="BNB",
+                amount_in_usdt=amount_in_usdt,
+                amount_out_bnb=None,
+                tx_hash=None,
+                status=FEE_WALLET_SWAP_STATUS_WAITING_FOR_GAS,
+                error=error,
+                next_retry_at=now + fee_wallet_swap_gas_retry_delay(),
+            )
+            db.add(row)
+            db.flush()
+        else:
+            row.wallet_address = wallet_address or row.wallet_address or ""
+            row.amount_in_usdt = amount_in_usdt
+            row.amount_out_bnb = None
+            row.tx_hash = None
+            row.status = FEE_WALLET_SWAP_STATUS_WAITING_FOR_GAS
+            row.error = error
+            row.next_retry_at = now + fee_wallet_swap_gas_retry_delay()
+
+        if should_send_fee_wallet_gas_alert(row, now):
+            try:
+                send_telegram_message(
+                    "⚠️ Fee wallet swap waiting for BNB gas\n"
+                    f"wallet_type={wallet_type}\n"
+                    f"wallet={wallet_address}\n"
+                    f"amount_in_usdt={amount_in_usdt}\n"
+                    f"reason={error}\n"
+                    f"next_retry_at={row.next_retry_at}"
+                )
+                row.last_gas_alert_at = now
+            except Exception as exc:
+                log.warning("Fee wallet swap gas Telegram alert failed: %s", exc)
+
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
+def clear_fee_wallet_swap_waiting_for_gas(wallet_type: str) -> None:
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(FeeWalletSwap)
+            .filter(
+                FeeWalletSwap.wallet_type == wallet_type,
+                FeeWalletSwap.status == FEE_WALLET_SWAP_STATUS_WAITING_FOR_GAS,
+            )
+            .all()
+        )
+        for row in rows:
+            row.status = FEE_WALLET_SWAP_STATUS_SKIPPED
+            row.error = "cleared_after_successful_fee_wallet_swap"
+            row.next_retry_at = None
+            row.executed_at = utcnow()
+            db.add(row)
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
+    finally:
+        db.close()
+
+
 def dec_to_int_units(value: Decimal, decimals: int) -> int:
     scale = Decimal(10) ** Decimal(decimals)
     return int((value * scale).to_integral_value(rounding=ROUND_DOWN))
@@ -167,7 +317,13 @@ def record_swap(
             tx_hash=tx_hash,
             status=status,
             error=error,
-            executed_at=utcnow() if status in {"success", "failed", "skipped"} else None,
+            executed_at=utcnow()
+            if status in {
+                FEE_WALLET_SWAP_STATUS_SUCCESS,
+                FEE_WALLET_SWAP_STATUS_FAILED,
+                FEE_WALLET_SWAP_STATUS_SKIPPED,
+            }
+            else None,
         )
         db.add(row)
         db.commit()
@@ -293,6 +449,9 @@ def process_fee_wallet(wallet_type: str) -> None:
     wallet_address_raw = ""
     amount_to_swap_dec = Decimal("0")
 
+    if should_skip_waiting_gas_swap(wallet_type):
+        return
+
     try:
         validate_common_env()
 
@@ -320,7 +479,7 @@ def process_fee_wallet(wallet_type: str) -> None:
                 wallet_type=wallet_type,
                 wallet_address=wallet_address,
                 amount_in_usdt=Decimal("0"),
-                status="skipped",
+                status=FEE_WALLET_SWAP_STATUS_SKIPPED,
                 error="successful swap already exists for current UTC day",
             )
             return
@@ -332,9 +491,20 @@ def process_fee_wallet(wallet_type: str) -> None:
         bnb_before = wei_to_bnb(bnb_before_wei)
 
         if bnb_before < MIN_BNB_FOR_GAS:
-            raise RuntimeError(
-                f"Insufficient BNB for gas: balance={bnb_before}, required_min={MIN_BNB_FOR_GAS}"
+            error = (
+                "insufficient_fee_wallet_swap_gas: "
+                f"wallet_type={wallet_type}; "
+                f"balance_bnb={bnb_before}; "
+                f"required_min_bnb={MIN_BNB_FOR_GAS}"
             )
+            mark_fee_wallet_swap_waiting_for_gas(
+                wallet_type=wallet_type,
+                wallet_address=wallet_address,
+                amount_in_usdt=Decimal("0"),
+                error=error,
+            )
+            log.warning(error)
+            return
 
         usdt_balance_units = int(usdt.functions.balanceOf(wallet_address).call())
         usdt_balance_dec = int_units_to_dec(usdt_balance_units, int(settings.BSC_USDT_DECIMALS))
@@ -351,7 +521,7 @@ def process_fee_wallet(wallet_type: str) -> None:
                 wallet_type=wallet_type,
                 wallet_address=wallet_address,
                 amount_in_usdt=usdt_balance_dec,
-                status="skipped",
+                status=FEE_WALLET_SWAP_STATUS_SKIPPED,
                 error=f"USDT balance below threshold: balance={usdt_balance_dec}, min={min_usdt}",
             )
             return
@@ -439,9 +609,10 @@ def process_fee_wallet(wallet_type: str) -> None:
             amount_in_usdt=amount_to_swap_dec,
             amount_out_bnb=amount_out_bnb,
             tx_hash=tx_hash,
-            status="success",
+            status=FEE_WALLET_SWAP_STATUS_SUCCESS,
             error=None,
         )
+        clear_fee_wallet_swap_waiting_for_gas(wallet_type)
 
         msg = (
             f"✅ Fee wallet swap success ({wallet_type})\n"
@@ -461,7 +632,7 @@ def process_fee_wallet(wallet_type: str) -> None:
             wallet_type=wallet_type,
             wallet_address=wallet_address,
             amount_in_usdt=amount_to_swap_dec,
-            status="failed",
+            status=FEE_WALLET_SWAP_STATUS_FAILED,
             error=err,
         )
 
