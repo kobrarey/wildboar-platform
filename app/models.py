@@ -213,7 +213,10 @@ class WalletTransfer(Base):
     email_slot: Mapped[int | None] = mapped_column(Integer, nullable=True)
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")  # pending|processing|success|failed
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_gas_alert_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")  # pending|processing|waiting_for_gas|success|failed
     compliance_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
 
     block_number: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -270,6 +273,9 @@ class FeeWalletSwap(Base):
     )
 
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_gas_alert_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
@@ -1810,6 +1816,121 @@ class FundSettlementTransfer(Base):
 
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_gas_alert_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class PlatformEmergencyLock(Base):
+    __tablename__ = "platform_emergency_locks"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=sa_text("'active'"),
+    )
+    reason: Mapped[str] = mapped_column(Text, nullable=False)
+    source: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_event_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resolved_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    resolve_reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    metadata_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
+class ApprovedBybitWithdrawalWindow(Base):
+    __tablename__ = "approved_bybit_withdrawal_windows"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    scope: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=sa_text("'global'"),
+    )
+    fund_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    coin: Mapped[str] = mapped_column(String(32), nullable=False)
+    chain: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    address: Mapped[str | None] = mapped_column(String(256), nullable=True)
+
+    amount_min: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+    amount_max: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=sa_text("'active'"),
+    )
+    created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    metadata_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
+class BybitWithdrawalWatchdogEvent(Base):
+    __tablename__ = "bybit_withdrawal_watchdog_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    bybit_withdrawal_id: Mapped[str] = mapped_column(String(128), nullable=False)
+
+    coin: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    chain: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    address: Mapped[str | None] = mapped_column(String(256), nullable=True)
+    amount: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+
+    bybit_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    source_detected: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=sa_text("'bybit_master_api'"),
+    )
+
+    approved_window_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("approved_bybit_withdrawal_windows.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    decision: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    cancel_attempted: Mapped[bool] = mapped_column(
+        Boolean,
+        nullable=False,
+        server_default=sa_text("FALSE"),
+    )
+    cancel_success: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    cancel_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    raw_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
 
 
 class FundOperatorAction(Base):
