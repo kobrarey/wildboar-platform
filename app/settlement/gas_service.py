@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -17,6 +17,7 @@ from app.settlement.statuses import (
     TRANSFER_STATUS_FAILED,
     TRANSFER_STATUS_PENDING,
     TRANSFER_STATUS_SENT,
+    TRANSFER_STATUS_WAITING_FOR_GAS,
     TRANSFER_TYPE_SETTLEMENT_WALLET_GAS_TOPUP,
 )
 from app.telegram import send_telegram_message
@@ -64,6 +65,92 @@ class SettlementWalletGasResult:
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def settlement_gas_retry_delay() -> timedelta:
+    seconds = max(30, int(settings.SETTLEMENT_GAS_WAIT_RETRY_SEC))
+    return timedelta(seconds=seconds)
+
+
+def settlement_gas_alert_cooldown() -> timedelta:
+    seconds = max(60, int(settings.SETTLEMENT_GAS_ALERT_COOLDOWN_SEC))
+    return timedelta(seconds=seconds)
+
+
+def should_send_settlement_gas_alert(row: FundSettlementTransfer, now: datetime) -> bool:
+    last = getattr(row, "last_gas_alert_at", None)
+    if last is None:
+        return True
+    return now - last >= settlement_gas_alert_cooldown()
+
+
+def mark_topup_waiting_for_gas(
+    db: Session,
+    *,
+    row: FundSettlementTransfer | None,
+    batch_id: int,
+    fund_id: int,
+    from_address: str,
+    to_address: str,
+    amount_bnb: Decimal,
+    error: str,
+) -> FundSettlementTransfer:
+    now = utcnow()
+
+    if row is None:
+        row = _create_topup_transfer_row(
+            db,
+            batch_id=batch_id,
+            fund_id=fund_id,
+            from_address=from_address,
+            to_address=to_address,
+            amount_bnb=amount_bnb,
+            status=TRANSFER_STATUS_WAITING_FOR_GAS,
+            tx_hash=None,
+            error=error,
+        )
+    else:
+        row.from_address = from_address
+        row.to_address = to_address
+        row.amount_bnb = amount_bnb
+        row.status = TRANSFER_STATUS_WAITING_FOR_GAS
+        row.tx_hash = None
+        row.error = error
+        row.updated_at = now
+
+    row.next_retry_at = now + settlement_gas_retry_delay()
+
+    if should_send_settlement_gas_alert(row, now):
+        _send_alert(
+            "⚠️ Settlement wallet gas top-up waiting for BNB\n"
+            f"fund_id={fund_id}\n"
+            f"batch_id={batch_id}\n"
+            f"to_wallet={to_address}\n"
+            f"amount_bnb={amount_bnb}\n"
+            f"reason={error}\n"
+            f"next_retry_at={row.next_retry_at}"
+        )
+        row.last_gas_alert_at = now
+
+    db.add(row)
+    db.flush()
+    return row
+
+
+def mark_topup_sent(
+    row: FundSettlementTransfer,
+    *,
+    amount_bnb: Decimal,
+    tx_hash: str | None,
+) -> None:
+    now = utcnow()
+    row.amount_bnb = amount_bnb
+    row.status = TRANSFER_STATUS_SENT
+    row.tx_hash = tx_hash
+    row.error = None
+    row.next_retry_at = None
+    row.updated_at = now
+    row.sent_at = now if tx_hash else None
 
 
 def _dec(value: Any) -> Decimal:
@@ -276,6 +363,7 @@ def _find_existing_topup_transfer(
                 [
                     TRANSFER_STATUS_PENDING,
                     "processing",
+                    TRANSFER_STATUS_WAITING_FOR_GAS,
                     TRANSFER_STATUS_SENT,
                     "confirmed",
                 ]
@@ -386,22 +474,52 @@ def top_up_settlement_wallets_once(
             to_address=wallet_address,
         )
         if existing is not None:
-            results.append(
-                SettlementWalletGasResult(
-                    fund_code=fund.code,
-                    fund_id=fund.id,
-                    wallet_address=wallet_address,
-                    batch_id=batch.id,
-                    bnb_balance=get_bnb_balance(w3, wallet_address),
-                    target_bnb=target_bnb,
-                    min_operational_bnb=min_operational_bnb,
-                    amount_sent_bnb=ZERO,
-                    status="skipped",
-                    tx_hash=existing.tx_hash,
-                    message=f"Existing top-up transfer found id={existing.id}; skipped.",
+            if existing.status == TRANSFER_STATUS_WAITING_FOR_GAS:
+                if existing.next_retry_at is not None and existing.next_retry_at > utcnow():
+                    results.append(
+                        SettlementWalletGasResult(
+                            fund_code=fund.code,
+                            fund_id=fund.id,
+                            wallet_address=wallet_address,
+                            batch_id=batch.id,
+                            bnb_balance=get_bnb_balance(w3, wallet_address),
+                            target_bnb=target_bnb,
+                            min_operational_bnb=min_operational_bnb,
+                            amount_sent_bnb=ZERO,
+                            status=TRANSFER_STATUS_WAITING_FOR_GAS,
+                            tx_hash=existing.tx_hash,
+                            message=(
+                                f"Existing waiting_for_gas top-up transfer id={existing.id}; "
+                                f"next_retry_at={existing.next_retry_at}; skipped until retry time."
+                            ),
+                        )
+                    )
+                    continue
+
+                # Retry window is open. Reuse the existing row instead of creating
+                # a duplicate top-up transfer.
+                existing.status = "processing"
+                existing.updated_at = utcnow()
+                db.add(existing)
+                db.flush()
+
+            if existing.status != "processing":
+                results.append(
+                    SettlementWalletGasResult(
+                        fund_code=fund.code,
+                        fund_id=fund.id,
+                        wallet_address=wallet_address,
+                        batch_id=batch.id,
+                        bnb_balance=get_bnb_balance(w3, wallet_address),
+                        target_bnb=target_bnb,
+                        min_operational_bnb=min_operational_bnb,
+                        amount_sent_bnb=ZERO,
+                        status="skipped",
+                        tx_hash=existing.tx_hash,
+                        message=f"Existing top-up transfer found id={existing.id}; skipped.",
+                    )
                 )
-            )
-            continue
+                continue
 
         balance = get_bnb_balance(w3, wallet_address)
 
@@ -456,18 +574,19 @@ def top_up_settlement_wallets_once(
 
         if ok_balance < desired_amount:
             error = (
-                f"Insufficient OK gas wallet BNB. fund={fund.code} "
+                f"insufficient_ok_gas: fund={fund.code} "
                 f"ok_wallet={ok_wallet_address} needed_bnb={desired_amount} "
                 f"available_bnb={ok_balance}"
             )
-            _create_topup_transfer_row(
+
+            waiting_row = mark_topup_waiting_for_gas(
                 db,
+                row=existing if existing is not None else None,
                 batch_id=batch.id,
                 fund_id=fund.id,
                 from_address=ok_wallet_address,
                 to_address=wallet_address,
                 amount_bnb=desired_amount,
-                status=TRANSFER_STATUS_FAILED,
                 error=error,
             )
             insufficient_messages.append(error)
@@ -482,8 +601,8 @@ def top_up_settlement_wallets_once(
                     target_bnb=target_bnb,
                     min_operational_bnb=min_operational_bnb,
                     amount_sent_bnb=ZERO,
-                    status=TRANSFER_STATUS_FAILED,
-                    tx_hash=None,
+                    status=TRANSFER_STATUS_WAITING_FOR_GAS,
+                    tx_hash=waiting_row.tx_hash,
                     message=error,
                 )
             )
@@ -505,17 +624,24 @@ def top_up_settlement_wallets_once(
             message = "BNB top-up transaction sent."
             ok_balance -= desired_amount
 
-        _create_topup_transfer_row(
-            db,
-            batch_id=batch.id,
-            fund_id=fund.id,
-            from_address=ok_wallet_address,
-            to_address=wallet_address,
-            amount_bnb=desired_amount,
-            status=TRANSFER_STATUS_SENT if not dry_run else "skipped",
-            tx_hash=tx_hash,
-            error=None,
-        )
+        if existing is not None and existing.status == "processing":
+            mark_topup_sent(
+                existing,
+                amount_bnb=desired_amount,
+                tx_hash=tx_hash,
+            )
+        else:
+            _create_topup_transfer_row(
+                db,
+                batch_id=batch.id,
+                fund_id=fund.id,
+                from_address=ok_wallet_address,
+                to_address=wallet_address,
+                amount_bnb=desired_amount,
+                status=TRANSFER_STATUS_SENT if not dry_run else "skipped",
+                tx_hash=tx_hash,
+                error=None,
+            )
 
         results.append(
             SettlementWalletGasResult(
