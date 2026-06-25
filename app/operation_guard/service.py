@@ -17,6 +17,7 @@ from app.models import (
     FundSettlementBatch,
     User,
 )
+from app.emergency_lock import active_platform_emergency_lock_snapshot
 from app.operation_guard.statuses import (
     OP_GUARD_ACTION_TYPES,
     OP_GUARD_DECISION_ALLOWED,
@@ -389,6 +390,46 @@ def check_operation_allowed(
 
     try:
         _validate_action_type(action_type)
+
+        emergency_lock = active_platform_emergency_lock_snapshot(db)
+        if emergency_lock is not None:
+            return _build_decision(
+                db,
+                allowed=False,
+                decision=OP_GUARD_DECISION_BLOCKED,
+                reason=emergency_lock.to_reason(),
+                action_type=action_type,
+                fund_id=fund_id,
+                settlement_batch_id=settlement_batch_id,
+                request_id=request_id,
+                amount_usdt=amount,
+                scope_key=scope_key,
+                scope_type=scope_type,
+                guard_state_id=None,
+                override_id=None,
+                mode_snapshot=None,
+                global_mode=None,
+                fund_mode=None,
+                metadata={
+                    **(metadata or {}),
+                    "platform_emergency_lock": emergency_lock.to_dict()
+                    if hasattr(emergency_lock, "to_dict")
+                    else {
+                        "id": emergency_lock.id,
+                        "status": emergency_lock.status,
+                        "reason": emergency_lock.reason,
+                        "source": emergency_lock.source,
+                        "source_event_id": emergency_lock.source_event_id,
+                        "created_at": emergency_lock.created_at.isoformat()
+                        if emergency_lock.created_at is not None
+                        else None,
+                        "metadata_json": emergency_lock.metadata_json,
+                    },
+                    "emergency_lock_blocks_even_if_operation_guard_disabled": True,
+                    "emergency_lock_blocks_manager_overrides": True,
+                },
+                now=now,
+            )
 
         if not settings.OPERATION_GUARD_ENABLED:
             return _build_decision(
