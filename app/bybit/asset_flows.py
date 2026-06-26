@@ -107,6 +107,39 @@ def _withdrawal_id_from(row: dict[str, Any]) -> str | None:
     return None
 
 
+def _request_id_from(row: dict[str, Any]) -> str | None:
+    for key in ("requestId", "request_id", "withdrawalRequestId"):
+        value = row.get(key)
+        if value is not None and str(value).strip():
+            return str(value).strip()
+    return None
+
+
+def _withdrawal_result_from_row(
+    row: dict[str, Any],
+    *,
+    fallback_request_id: str | None = None,
+) -> BybitWithdrawalResult:
+    request_id = (
+        _request_id_from(row)
+        or str(fallback_request_id or "").strip()
+        or str(_withdrawal_id_from(row) or "").strip()
+    )
+
+    return BybitWithdrawalResult(
+        request_id=request_id,
+        withdrawal_id=_withdrawal_id_from(row),
+        coin=str(row.get("coin") or "").strip().upper(),
+        chain=str(row.get("chain") or "").strip().upper(),
+        address=str(row.get("address") or "").strip(),
+        amount_usdt=_dec(row.get("amount") or row.get("amount_usdt")),
+        fee_type=int(row.get("feeType") or row.get("fee_type") or 0),
+        status=_status_from(row),
+        tx_hash=_tx_hash_from(row),
+        raw=row,
+    )
+
+
 def create_universal_transfer(
     client: BybitV5Client,
     *,
@@ -271,15 +304,52 @@ def query_master_withdrawal(
     if row is None:
         return None
 
-    return BybitWithdrawalResult(
-        request_id=clean_request_id,
-        withdrawal_id=_withdrawal_id_from(row),
-        coin=str(row.get("coin") or "").strip().upper(),
-        chain=str(row.get("chain") or "").strip().upper(),
-        address=str(row.get("address") or "").strip(),
-        amount_usdt=_dec(row.get("amount") or row.get("amount_usdt")),
-        fee_type=int(row.get("feeType") or row.get("fee_type") or 0),
-        status=_status_from(row),
-        tx_hash=_tx_hash_from(row),
-        raw=row,
+    return _withdrawal_result_from_row(row, fallback_request_id=clean_request_id)
+
+
+def list_master_withdrawals(
+    client: BybitV5Client,
+    *,
+    coin: str | None = None,
+    start_time_ms: int | None = None,
+    end_time_ms: int | None = None,
+    limit: int = 50,
+) -> list[BybitWithdrawalResult]:
+    clean_params: dict[str, Any] = {
+        "limit": int(limit),
+    }
+
+    if coin:
+        clean_params["coin"] = str(coin).strip().upper()
+
+    if start_time_ms is not None:
+        clean_params["startTime"] = int(start_time_ms)
+
+    if end_time_ms is not None:
+        clean_params["endTime"] = int(end_time_ms)
+
+    raw = client.get("/v5/asset/withdraw/query-record", clean_params)
+    rows = _result_list(raw)
+
+    return [
+        _withdrawal_result_from_row(row)
+        for row in rows
+        if _withdrawal_id_from(row) or _request_id_from(row)
+    ]
+
+
+def cancel_master_withdrawal(
+    client: BybitV5Client,
+    *,
+    withdrawal_id: str,
+) -> dict[str, Any]:
+    clean_withdrawal_id = str(withdrawal_id or "").strip()
+    if not clean_withdrawal_id:
+        raise BybitAssetFlowError("withdrawal_id is required")
+
+    return client.post(
+        "/v5/asset/withdraw/cancel",
+        {
+            "id": clean_withdrawal_id,
+        },
     )
