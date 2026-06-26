@@ -353,3 +353,27 @@ def cancel_master_withdrawal(
             "id": clean_withdrawal_id,
         },
     )
+
+
+def freeze_sub_uid(
+    client: BybitV5Client,
+    *,
+    subuid: int,
+    frozen: int,
+) -> dict[str, Any]:
+    clean_subuid = int(subuid)
+    clean_frozen = int(frozen)
+
+    if clean_subuid <= 0:
+        raise BybitAssetFlowError("subuid must be positive")
+
+    if clean_frozen not in (0, 1):
+        raise BybitAssetFlowError("frozen must be 0 or 1")
+
+    return client.post(
+        "/v5/user/frozen-sub-member",
+        {
+            "subuid": clean_subuid,
+            "frozen": clean_frozen,
+        },
+    )

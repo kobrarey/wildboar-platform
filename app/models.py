@@ -1933,6 +1933,72 @@ class BybitWithdrawalWatchdogEvent(Base):
     )
 
 
+class ApprovedBybitSubaccountUnfreezeWindow(Base):
+    __tablename__ = "approved_bybit_subaccount_unfreeze_windows"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    fund_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    bybit_sub_uid: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    starts_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(
+        String(32),
+        nullable=False,
+        server_default=sa_text("'active'"),
+    )
+
+    created_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    metadata_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+
+class BybitSubaccountFreezeGuardEvent(Base):
+    __tablename__ = "bybit_subaccount_freeze_guard_events"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+
+    fund_id: Mapped[int | None] = mapped_column(
+        Integer,
+        ForeignKey("funds.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    bybit_sub_uid: Mapped[str] = mapped_column(String(64), nullable=False)
+    desired_frozen: Mapped[int] = mapped_column(Integer, nullable=False)
+    actual_action: Mapped[str] = mapped_column(String(32), nullable=False)
+
+    approved_window_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("approved_bybit_subaccount_unfreeze_windows.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+
+    decision: Mapped[str] = mapped_column(String(64), nullable=False)
+    error: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    raw_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+
 class FundOperatorAction(Base):
     __tablename__ = "fund_operator_actions"
 
