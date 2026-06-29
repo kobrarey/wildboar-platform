@@ -84,6 +84,9 @@ def require_live_earn_whitelisted(
     categories = allowed_categories()
     product_ids = allowed_product_ids()
 
+    require_product_id_whitelist = bool(settings.ALLOCATION_EARN_REQUIRE_PRODUCT_ID_WHITELIST)
+    dynamic_product_id_allowed = (not require_product_id_whitelist) and not product_ids
+
     diagnostics = {
         "fund_code": fund_code_norm,
         "coin": coin_norm,
@@ -96,6 +99,8 @@ def require_live_earn_whitelisted(
         "allowed_product_ids": sorted(product_ids),
         "earn_enabled": bool(settings.ALLOCATION_EARN_ENABLED),
         "earn_allow_live": bool(settings.ALLOCATION_EARN_ALLOW_LIVE),
+        "require_product_id_whitelist": require_product_id_whitelist,
+        "dynamic_product_id_allowed": dynamic_product_id_allowed,
     }
 
     if not bool(settings.ALLOCATION_EARN_ENABLED):
@@ -161,20 +166,20 @@ def require_live_earn_whitelisted(
             diagnostics=diagnostics,
         )
 
-    # Product whitelist is mandatory for real live Earn.
-    if not product_ids:
-        return LiveEarnWhitelistDecision(
-            ok=False,
-            reason="earn_product_id_whitelist_empty",
-            diagnostics=diagnostics,
-        )
-
-    if product_id_norm not in product_ids:
-        return LiveEarnWhitelistDecision(
-            ok=False,
-            reason="earn_product_id_not_whitelisted",
-            diagnostics=diagnostics,
-        )
+    if product_ids:
+        if product_id_norm not in product_ids:
+            return LiveEarnWhitelistDecision(
+                ok=False,
+                reason="earn_product_id_not_whitelisted",
+                diagnostics=diagnostics,
+            )
+    else:
+        if require_product_id_whitelist:
+            return LiveEarnWhitelistDecision(
+                ok=False,
+                reason="earn_product_id_whitelist_empty",
+                diagnostics=diagnostics,
+            )
 
     if amount_dec <= ZERO:
         return LiveEarnWhitelistDecision(

@@ -272,6 +272,7 @@ class Settings(BaseSettings):
 
     # --- stage 25.3: guarded live Earn allocation execution ---
     ALLOCATION_EARN_ALLOW_LIVE: bool = False
+    ALLOCATION_EARN_REQUIRE_PRODUCT_ID_WHITELIST: bool = True
     ALLOCATION_EARN_ALLOWED_FUND_CODES: str = "wb_test"
     ALLOCATION_EARN_ALLOWED_COINS: str = "USDT"
     ALLOCATION_EARN_ALLOWED_PRODUCT_IDS: str = ""
