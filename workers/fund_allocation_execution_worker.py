@@ -21,6 +21,7 @@ from app.allocation.statuses import (
     ALLOCATION_BATCH_STATUS_PLAN_CREATED,
     ALLOCATION_LEG_STATUS_PLANNED,
     DERIVATIVE_SUPPORTED_LEG_TYPES,
+    LEG_TYPE_BUY_THEN_STAKE,
     LEG_TYPE_RESIDUAL_USDT_EARN,
     LEG_TYPE_SPOT_BUY,
     LEG_TYPE_STABLE_CASH,
@@ -31,6 +32,7 @@ from app.allocation.statuses import (
 from app.allocation.live_execution import (
     mark_allocation_batch_failed_requires_review,
     mark_leg_residual_cash_without_external_call,
+    mark_policy_skipped_leg_without_external_call,
     mark_stable_cash_leg_filled_without_external_call,
     preflight_live_allocation_batch,
     refresh_live_allocation_batch_progress,
@@ -38,6 +40,11 @@ from app.allocation.live_execution import (
 from app.allocation.live_earn_config import (
     allocation_earn_live_enabled,
     residual_earn_to_cash_when_live_disabled,
+)
+from app.allocation.live_policy import (
+    DERIVATIVE_OPTION_SKIP_REASON,
+    BUY_THEN_STAKE_SPOT_ONLY_REASON,
+    classify_live_leg_policy,
 )
 from app.allocation.live_earn_orders import (
     build_live_earn_stake_order_plan,
@@ -480,11 +487,28 @@ def _complete_residual_cash_only_batch(
         raise RuntimeError(f"Allocation batch not found: {allocation_batch_id}")
 
     for leg_id in residual_leg_ids:
-        mark_leg_residual_cash_without_external_call(
-            db,
-            allocation_leg_id=int(leg_id),
-            reason="live_earn_disabled_residual_kept_as_cash",
+        leg = (
+            db.query(FundAllocationLeg)
+            .filter(FundAllocationLeg.id == int(leg_id))
+            .first()
         )
+        if leg is None:
+            raise RuntimeError(f"Allocation leg not found: {leg_id}")
+
+        policy_decision = classify_live_leg_policy(leg)
+
+        if policy_decision.policy_skipped:
+            mark_policy_skipped_leg_without_external_call(
+                db,
+                allocation_leg_id=int(leg_id),
+                reason=policy_decision.reason or DERIVATIVE_OPTION_SKIP_REASON,
+            )
+        else:
+            mark_leg_residual_cash_without_external_call(
+                db,
+                allocation_leg_id=int(leg_id),
+                reason="live_earn_disabled_residual_kept_as_cash",
+            )
 
     batch.status = ALLOCATION_BATCH_STATUS_ALLOCATION_COMPLETED_WITH_RESIDUAL_CASH
     batch.residual_cash_usdt = sum(
@@ -722,6 +746,57 @@ def _mark_stable_cash_leg_in_own_session(
         log.exception(
             "Allocation live stable_cash leg failed leg_id=%s error=%s",
             allocation_leg_id,
+            exc,
+        )
+        return False
+
+    finally:
+        db.close()
+
+
+def _mark_policy_skipped_leg_in_own_session(
+    *,
+    allocation_leg_id: int,
+    dry_run: bool,
+    reason: str,
+) -> bool:
+    db = SessionLocal()
+
+    try:
+        leg = mark_policy_skipped_leg_without_external_call(
+            db,
+            allocation_leg_id=int(allocation_leg_id),
+            reason=reason,
+        )
+        allocation_batch_id = int(leg.allocation_batch_id)
+
+        if dry_run:
+            db.rollback()
+        else:
+            db.commit()
+
+        log.info(
+            "Allocation live policy-skipped leg completed without external calls "
+            "leg_id=%s batch_id=%s leg_type=%s reason=%s external_calls=0",
+            allocation_leg_id,
+            allocation_batch_id,
+            leg.leg_type,
+            reason,
+        )
+
+        _refresh_live_batch_progress_in_own_session(
+            allocation_batch_id=allocation_batch_id,
+            dry_run=dry_run,
+        )
+
+        return True
+
+    except Exception as exc:
+        db.rollback()
+        log.exception(
+            "Allocation live policy skip failed leg_id=%s reason=%s error=%s",
+            allocation_leg_id,
+            reason,
             exc,
         )
         return False
@@ -1201,12 +1276,31 @@ def _process_live_spot_leg_in_own_session(
                 fund_code=fund_code,
             )
 
-        if leg_type != LEG_TYPE_SPOT_BUY:
+        leg = (
+            db1.query(FundAllocationLeg)
+            .filter(FundAllocationLeg.id == int(allocation_leg_id))
+            .first()
+        )
+        if leg is None:
+            raise RuntimeError(f"Allocation leg not found: {allocation_leg_id}")
+
+        policy_decision = classify_live_leg_policy(leg)
+
+        if policy_decision.policy_skipped:
+            db1.close()
+            return _mark_policy_skipped_leg_in_own_session(
+                allocation_leg_id=int(allocation_leg_id),
+                dry_run=dry_run,
+                reason=policy_decision.reason or DERIVATIVE_OPTION_SKIP_REASON,
+            )
+
+        if leg_type not in {LEG_TYPE_SPOT_BUY, LEG_TYPE_BUY_THEN_STAKE}:
             log.error(
                 "Allocation live adapter blocked unsupported leg after preflight "
-                "leg_id=%s leg_type=%s external_calls=0",
+                "leg_id=%s leg_type=%s policy_reason=%s external_calls=0",
                 allocation_leg_id,
                 leg_type,
+                policy_decision.reason,
             )
             return False
 

@@ -31,6 +31,7 @@ from app.allocation.statuses import (
     DERIVATIVE_SUPPORTED_LEG_TYPES,
     EXECUTION_MODE_CASH_NOOP,
     EXECUTION_MODE_RESIDUAL_CASH,
+    EXECUTION_MODE_SKIPPED,
     LEG_TYPE_BUY_THEN_STAKE,
     LEG_TYPE_RESIDUAL_USDT_EARN,
     LEG_TYPE_SPOT_BUY,
@@ -42,6 +43,12 @@ from app.models import (
     FundAllocationBatch,
     FundAllocationLeg,
     FundRuntimeState,
+)
+from app.allocation.live_policy import (
+    DERIVATIVE_OPTION_SKIP_REASON,
+    classify_live_leg_policy,
+    derivative_live_policy,
+    buy_then_stake_live_policy,
 )
 
 
@@ -380,13 +387,41 @@ def preflight_live_allocation_batch(
             )
             continue
 
-        if _is_derivative_or_option_leg(leg):
+        policy_decision = classify_live_leg_policy(leg)
+
+        if policy_decision.policy_skipped:
+            residual_cash_leg_ids.append(int(leg.id))
+            continue
+
+        if policy_decision.fail_closed:
             issues.append(
                 _issue_for_leg(
                     leg,
-                    reason="unsupported_live_allocation_leg_type: derivative_or_option",
+                    reason=policy_decision.reason or "live_policy_fail_closed",
                 )
             )
+            continue
+
+        if leg_type == LEG_TYPE_BUY_THEN_STAKE:
+            if not _normalize_text(leg.symbol):
+                issues.append(
+                    _issue_for_leg(
+                        leg,
+                        reason="buy_then_stake_spot_only_symbol_required",
+                    )
+                )
+                continue
+
+            if dec(leg.target_usdt) <= ZERO and dec(leg.target_qty) <= ZERO:
+                issues.append(
+                    _issue_for_leg(
+                        leg,
+                        reason="buy_then_stake_spot_only_target_required",
+                    )
+                )
+                continue
+
+            supported_leg_ids.append(int(leg.id))
             continue
 
         if leg_type in LIVE_SUPPORTED_LEG_TYPES:
@@ -450,15 +485,6 @@ def preflight_live_allocation_batch(
             supported_leg_ids.append(int(leg.id))
             continue
 
-        if leg_type == LEG_TYPE_BUY_THEN_STAKE:
-            issues.append(
-                _issue_for_leg(
-                    leg,
-                    reason="buy_then_stake_not_used_by_wb_test_current_local_db_and_not_enabled_for_live",
-                )
-            )
-            continue
-
         if leg_type in LIVE_RESIDUAL_CASH_LEG_TYPES:
             residual_cash_leg_ids.append(int(leg.id))
             continue
@@ -501,6 +527,8 @@ def preflight_live_allocation_batch(
             ),
             "earn_live_enabled": allocation_earn_live_enabled(),
             "residual_earn_to_cash_when_live_disabled": residual_earn_to_cash_when_live_disabled(),
+            "allocation_derivative_live_policy": derivative_live_policy(),
+            "allocation_buy_then_stake_live_policy": buy_then_stake_live_policy(),
             "external_calls": 0,
         },
     )
@@ -535,6 +563,44 @@ def mark_allocation_batch_failed_requires_review(
     db.flush()
 
     return batch
+
+
+def mark_policy_skipped_leg_without_external_call(
+    db: Session,
+    *,
+    allocation_leg_id: int,
+    reason: str,
+    now: datetime | None = None,
+) -> FundAllocationLeg:
+    now = now or utcnow()
+
+    leg = (
+        db.query(FundAllocationLeg)
+        .filter(FundAllocationLeg.id == int(allocation_leg_id))
+        .with_for_update()
+        .first()
+    )
+
+    if leg is None:
+        raise LiveAllocationExecutionError(
+            f"Allocation leg not found: {allocation_leg_id}"
+        )
+
+    target_usdt = dec(leg.target_usdt)
+
+    leg.status = ALLOCATION_LEG_STATUS_RESIDUAL_CASH
+    leg.execution_mode = EXECUTION_MODE_SKIPPED
+    leg.residual_usdt = target_usdt
+    leg.actual_cash_used_usdt = ZERO
+    leg.actual_margin_change_usdt = ZERO
+    leg.error = reason
+    leg.confirmed_at = now
+    leg.updated_at = now
+
+    db.add(leg)
+    db.flush()
+
+    return leg
 
 
 def mark_leg_residual_cash_without_external_call(

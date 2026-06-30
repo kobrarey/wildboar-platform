@@ -289,6 +289,10 @@ class Settings(BaseSettings):
     ALLOCATION_OPTIONS_ENABLED: bool = False
     ALLOCATION_DERIVATIVE_RESIDUAL_ON_GUARD_FAIL: bool = True
 
+    # --- stage 26.2.7: explicit live allocation policies ---
+    ALLOCATION_DERIVATIVE_LIVE_POLICY: str = "fail_closed"
+    ALLOCATION_BUY_THEN_STAKE_LIVE_POLICY: str = "fail_closed"
+
     # --- stage 22.6: positive-net allocation integration / reconciliation ---
     POSITIVE_NET_ALLOCATION_ENABLED: bool = False
     POSITIVE_NET_ALLOCATION_MOCK_ONLY: bool = True

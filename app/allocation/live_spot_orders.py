@@ -32,9 +32,15 @@ from app.allocation.statuses import (
     ALLOCATION_LEG_STATUS_PARTIAL_FILLED_RESIDUALIZED,
     ALLOCATION_LEG_STATUS_PLANNED,
     EXECUTION_MODE_MARKET,
+    LEG_TYPE_BUY_THEN_STAKE,
     LEG_TYPE_SPOT_BUY,
 )
 from app.models import FundAllocationLeg
+from app.allocation.live_policy import (
+    BUY_THEN_STAKE_SPOT_ONLY_REASON,
+    BUY_THEN_STAKE_LIVE_POLICY_SPOT_ONLY,
+    buy_then_stake_live_policy,
+)
 from app.operation_guard.hooks import require_bybit_allocation_trade_order_guard
 
 
@@ -120,6 +126,9 @@ def _normalize_text(value: Any) -> str:
 
 def _leg_category(leg: FundAllocationLeg) -> str:
     raw = _normalize_text(leg.category).lower()
+    if leg.leg_type == LEG_TYPE_BUY_THEN_STAKE:
+        return "spot"
+
     if raw:
         return raw
 
@@ -138,7 +147,7 @@ def _leg_side(leg: FundAllocationLeg) -> str:
     if raw in {"sell", "short"}:
         return "Sell"
 
-    if leg.leg_type == LEG_TYPE_SPOT_BUY:
+    if leg.leg_type in {LEG_TYPE_SPOT_BUY, LEG_TYPE_BUY_THEN_STAKE}:
         return "Buy"
 
     return "Buy"
@@ -246,7 +255,16 @@ def build_live_spot_market_order_plan(
     config = get_allocation_execution_config()
     leg = _get_leg_for_update(db, allocation_leg_id=allocation_leg_id)
 
-    if leg.leg_type != LEG_TYPE_SPOT_BUY:
+    if leg.leg_type == LEG_TYPE_BUY_THEN_STAKE:
+        if buy_then_stake_live_policy() != BUY_THEN_STAKE_LIVE_POLICY_SPOT_ONLY:
+            raise LiveSpotOrderError(
+                f"buy_then_stake live policy is not spot_only: leg_id={leg.id}"
+            )
+
+        leg.category = "spot"
+        leg.error = BUY_THEN_STAKE_SPOT_ONLY_REASON
+
+    elif leg.leg_type != LEG_TYPE_SPOT_BUY:
         raise LiveSpotOrderError(
             f"Unsupported live spot leg_type: leg_id={leg.id}, leg_type={leg.leg_type}"
         )
@@ -334,7 +352,11 @@ def build_live_spot_market_order_plan(
     leg.order_link_id = order_link_id
     leg.execution_mode = EXECUTION_MODE_MARKET
     leg.status = ALLOCATION_LEG_STATUS_MARKET_ORDER_SENT
-    leg.error = None
+    leg.error = (
+        BUY_THEN_STAKE_SPOT_ONLY_REASON
+        if leg.leg_type == LEG_TYPE_BUY_THEN_STAKE
+        else None
+    )
     leg.sent_at = leg.sent_at or utcnow()
     leg.updated_at = utcnow()
 
@@ -513,7 +535,11 @@ def apply_bybit_order_to_leg(
             if residual_usdt <= Decimal("0.00000001")
             else ALLOCATION_LEG_STATUS_PARTIAL_FILLED_RESIDUALIZED
         )
-        leg.error = None
+        leg.error = (
+            BUY_THEN_STAKE_SPOT_ONLY_REASON
+            if leg.leg_type == LEG_TYPE_BUY_THEN_STAKE
+            else None
+        )
         leg.confirmed_at = utcnow()
         action = "reconciled_filled"
         ok = True

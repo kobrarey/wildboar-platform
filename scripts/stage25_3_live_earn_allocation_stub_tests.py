@@ -486,10 +486,15 @@ def test_mixed_batch_source_coverage() -> None:
             or "submit_bybit_earn_stake_order" in worker
         ),
     )
+    live_policy = Path("app/allocation/live_policy.py").read_text(encoding="utf-8")
+    live_spot_orders = Path("app/allocation/live_spot_orders.py").read_text(encoding="utf-8")
+
     assert_ok(
-        "BUY_THEN_STAKE_SAFE_BLOCKED_FOR_CURRENT_WB_TEST_AUDIT",
-        "buy_then_stake_not_used_by_wb_test_current_local_db_and_not_enabled_for_live"
-        in live_execution,
+        "BUY_THEN_STAKE_EXPLICIT_POLICY_FOR_STAGE26_2_7",
+        "BUY_THEN_STAKE_LIVE_POLICY_FAIL_CLOSED" in live_policy
+        and "BUY_THEN_STAKE_LIVE_POLICY_SPOT_ONLY" in live_policy
+        and "BUY_THEN_STAKE_SPOT_ONLY_REASON" in live_spot_orders
+        and "classify_live_leg_policy" in live_execution,
     )
 
 
@@ -575,10 +580,15 @@ def test_stage25_4_mixed_batch_regression_source_order() -> None:
         "ALLOCATION_LEG_STATUS_RESIDUAL_EARN_COMPLETED" in live_execution
         and "refresh_live_allocation_batch_progress" in live_execution,
     )
+    live_policy = Path("app/allocation/live_policy.py").read_text(encoding="utf-8")
+    live_spot_orders = Path("app/allocation/live_spot_orders.py").read_text(encoding="utf-8")
+
     assert_ok(
-        "STAGE25_4_BUY_THEN_STAKE_STILL_SAFE_BLOCKED",
-        "buy_then_stake_not_used_by_wb_test_current_local_db_and_not_enabled_for_live"
-        in live_execution,
+        "STAGE25_4_BUY_THEN_STAKE_EXPLICIT_POLICY_STAGE26_2_7",
+        "BUY_THEN_STAKE_LIVE_POLICY_FAIL_CLOSED" in live_policy
+        and "BUY_THEN_STAKE_LIVE_POLICY_SPOT_ONLY" in live_policy
+        and "BUY_THEN_STAKE_SPOT_ONLY_REASON" in live_spot_orders
+        and "classify_live_leg_policy" in live_execution,
     )
 
 
