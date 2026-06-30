@@ -13,6 +13,7 @@ from app.allocation.snapshot_service import (
     AllocationSnapshotHolding,
     STABLECOINS,
     dec,
+    infer_spot_symbol,
     json_safe,
 )
 from app.allocation.statuses import (
@@ -357,6 +358,19 @@ def _planned_leg_from_holding(
         leg_group = LEG_GROUP_CASH
         leg_type = LEG_TYPE_STABLE_CASH
         target_qty = target_usdt
+
+    elif holding.leg_group == HOLDING_GROUP_FUNDING_WALLET:
+        # Stage 26.2.8C:
+        # Non-stable assets found in FUND wallet represent existing economic exposure.
+        # For a positive-net allocation, scale them through the safe live spot-buy path.
+        # We keep location=FUND as source audit metadata; execution target is spot/UNIFIED.
+        leg_group = LEG_GROUP_SPOT
+        leg_type = LEG_TYPE_SPOT_BUY
+        symbol = symbol or infer_spot_symbol(coin)
+        category = "spot"
+        side = "Buy"
+        target_qty = _target_qty_from_size(holding, scale)
+        error = "funding_wallet_asset_scaled_as_spot_buy"
 
     elif holding.leg_group == HOLDING_GROUP_SPOT:
         leg_group = LEG_GROUP_SPOT

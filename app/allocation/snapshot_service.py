@@ -541,7 +541,7 @@ def _parse_position_holdings(payload: dict[str, Any]) -> list[AllocationSnapshot
     out: list[AllocationSnapshotHolding] = []
 
     for item in _position_items(payload):
-        category = str(get_any(item, "category", default="") or "").lower()
+        category = str(get_any(item, "category", "_wb_endpoint_category", default="") or "").lower()
         symbol = normalize_symbol(get_any(item, "symbol"))
         side = normalize_side(get_any(item, "side"))
         size = dec(get_any(item, "size", "qty", "position_size"))

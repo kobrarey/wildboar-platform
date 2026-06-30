@@ -12,7 +12,11 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from app.allocation.bybit_snapshot_reader import build_allocation_snapshot_from_bybit
+from app.allocation.bybit_snapshot_reader import (
+    _holding_from_position,
+    _tag_position_rows,
+    build_allocation_snapshot_from_bybit,
+)
 from app.allocation.live_earn_config import allocation_earn_live_enabled
 from app.allocation.live_policy import (
     BUY_THEN_STAKE_LIVE_POLICY_FAIL_CLOSED,
@@ -32,7 +36,10 @@ from app.allocation.snapshot_service import (
 )
 from app.allocation.statuses import (
     ALLOCATION_LEG_STATUS_PLANNED,
+    ALLOCATION_LEG_STATUS_SKIPPED_ZERO_VALUE,
+    LEG_TYPE_OTHER,
     LEG_TYPE_RESIDUAL_USDT_EARN,
+    LEG_TYPE_SPOT_BUY,
     LEG_TYPE_USDT_EARN_STAKE,
 )
 from app.bybit.credentials import get_active_fund_bybit_client
@@ -439,6 +446,135 @@ def build_fixture_snapshot() -> AllocationSnapshot:
     )
 
 
+def build_stage26_2_8c_production_blocker_snapshot() -> AllocationSnapshot:
+    return AllocationSnapshot(
+        fund_id=1,
+        fund_code="wb_test",
+        snapshot_ts=datetime.now(timezone.utc),
+        account_type="UNIFIED",
+        snapshot_source="stage26_2_8c_real_production_blockers_fixture",
+        risk=AllocationAccountRisk(
+            total_equity_usdt=Decimal("537.85742384"),
+            total_wallet_balance_usdt=Decimal("537.85742384"),
+            total_available_usdt=Decimal("400"),
+            total_initial_margin_usdt=Decimal("10"),
+            total_maintenance_margin_usdt=Decimal("5"),
+            account_im_rate=Decimal("0.02"),
+            account_mm_rate=Decimal("0.01"),
+        ),
+        holdings=[
+            AllocationSnapshotHolding(
+                leg_group="cash",
+                leg_type="stable_cash",
+                coin="USDT",
+                category="wallet",
+                location="UNIFIED",
+                size=Decimal("100"),
+                usd_value=Decimal("100"),
+            ),
+            AllocationSnapshotHolding(
+                leg_group="spot",
+                leg_type="spot_holding",
+                coin="BTC",
+                symbol="BTCUSDT",
+                category="spot",
+                location="UNIFIED",
+                size=Decimal("0.001"),
+                usd_value=Decimal("100"),
+            ),
+            AllocationSnapshotHolding(
+                leg_group="earn",
+                leg_type="earn_holding",
+                coin="USDT",
+                category="earn",
+                location="EARN",
+                size=Decimal("100"),
+                usd_value=Decimal("100"),
+                product="Earn",
+                product_category="FlexibleSaving",
+            ),
+            AllocationSnapshotHolding(
+                leg_group="funding_wallet",
+                leg_type="funding_wallet_asset",
+                coin="LDO",
+                symbol="LDOUSDT",
+                category="funding",
+                location="FUND",
+                size=Decimal("1"),
+                usd_value=Decimal("0.50"),
+                extra={"source": "stage26_2_8c_regression_funding_wallet_asset"},
+            ),
+            AllocationSnapshotHolding(
+                leg_group="perp",
+                leg_type="perp_position",
+                coin="ENA",
+                symbol="ENAUSDT",
+                category="linear",
+                side="Sell",
+                location="UNIFIED",
+                size=Decimal("0"),
+                notional_usd=Decimal("0"),
+            ),
+            AllocationSnapshotHolding(
+                leg_group="perp",
+                leg_type="perp_position",
+                coin="ETH",
+                symbol="ETHUSDT",
+                category="linear",
+                side="Buy",
+                location="UNIFIED",
+                size=Decimal("0"),
+                notional_usd=Decimal("0"),
+            ),
+            AllocationSnapshotHolding(
+                leg_group="perp",
+                leg_type="perp_position",
+                coin="BTC",
+                symbol="BTCUSDT",
+                category="linear",
+                side="Buy",
+                location="UNIFIED",
+                size=Decimal("0"),
+                notional_usd=Decimal("0"),
+            ),
+            AllocationSnapshotHolding(
+                leg_group="short_option",
+                leg_type="short_option_position",
+                coin="BTC",
+                symbol="BTC-25SEP26-80000-C-USDT",
+                category="option",
+                side="Sell",
+                location="UNIFIED",
+                size=Decimal("0"),
+                notional_usd=Decimal("0"),
+            ),
+            AllocationSnapshotHolding(
+                leg_group="long_option",
+                leg_type="long_option_position",
+                coin="BTC",
+                symbol="BTC-25SEP26-78000-C-USDT",
+                category="option",
+                side="Buy",
+                location="UNIFIED",
+                size=Decimal("0"),
+                notional_usd=Decimal("0"),
+            ),
+            AllocationSnapshotHolding(
+                leg_group="long_option",
+                leg_type="long_option_position",
+                coin="ETH",
+                symbol="ETH-25SEP26-2200-C-USDT",
+                category="option",
+                side="Buy",
+                location="UNIFIED",
+                size=Decimal("0"),
+                notional_usd=Decimal("0"),
+            ),
+        ],
+        raw_summary_json={"source": "stage26_2_8c_real_production_blockers_fixture"},
+    )
+
+
 def build_snapshot(
     db: Any,
     *,
@@ -557,26 +693,42 @@ def classify_plan(legs: list[FundAllocationLeg]) -> dict[str, Any]:
 
     for leg in legs:
         decision = classify_live_leg_policy(leg)
+        leg_status = str(leg.status or "")
 
         row_fail_closed = bool(decision.fail_closed)
         row_supported_live = bool(decision.supported_live)
         row_policy_skipped = bool(decision.policy_skipped)
         row_reason = decision.reason
+        row_policy_action = decision.action
+        row_required_guard_actions = list(decision.required_guard_actions)
 
-        if str(leg.status or "") != ALLOCATION_LEG_STATUS_PLANNED:
+        if leg_status == ALLOCATION_LEG_STATUS_SKIPPED_ZERO_VALUE:
+            row_fail_closed = False
+            row_supported_live = False
+            row_policy_skipped = True
+            row_reason = "planned_zero_value_noop"
+            row_policy_action = "planned_zero_value_noop"
+            row_required_guard_actions = []
+
+        elif leg_status != ALLOCATION_LEG_STATUS_PLANNED:
             row_fail_closed = True
             row_supported_live = False
             row_policy_skipped = False
             row_reason = f"unsupported_verifier_leg_status: {leg.status}"
+            row_required_guard_actions = []
 
-        if leg.leg_type in {LEG_TYPE_USDT_EARN_STAKE, LEG_TYPE_RESIDUAL_USDT_EARN} and not earn_enabled:
+        elif (
+            leg.leg_type in {LEG_TYPE_USDT_EARN_STAKE, LEG_TYPE_RESIDUAL_USDT_EARN}
+            and not earn_enabled
+        ):
             row_fail_closed = True
             row_supported_live = False
             row_policy_skipped = False
             row_reason = "allocation_earn_live_disabled"
+            row_required_guard_actions = []
 
         if not row_fail_closed:
-            required_guard_actions.update(decision.required_guard_actions)
+            required_guard_actions.update(row_required_guard_actions)
 
         row = {
             "leg_index": int(leg.leg_index),
@@ -589,12 +741,12 @@ def classify_plan(legs: list[FundAllocationLeg]) -> dict[str, Any]:
             "location": leg.location,
             "target_usdt": decimal_to_str(dec(leg.target_usdt)),
             "target_qty": decimal_to_str(dec(leg.target_qty)) if leg.target_qty is not None else None,
-            "policy_action": decision.action,
+            "policy_action": row_policy_action,
             "policy_reason": row_reason,
             "supported_live": row_supported_live,
             "policy_skipped": row_policy_skipped,
             "fail_closed": row_fail_closed,
-            "required_guard_actions": list(decision.required_guard_actions) if not row_fail_closed else [],
+            "required_guard_actions": row_required_guard_actions if not row_fail_closed else [],
         }
         rows.append(row)
 
@@ -845,6 +997,132 @@ def configure_controlled_policy() -> dict[str, Any]:
     return original
 
 
+def test_stage26_2_8c_position_endpoint_category_tagging() -> None:
+    linear_rows = _tag_position_rows(
+        [
+            {
+                "symbol": "ETHUSDT",
+                "baseCoin": "ETH",
+                "side": "Buy",
+                "size": "1",
+                "positionValue": "100",
+            }
+        ],
+        category="linear",
+    )
+    linear_holding = _holding_from_position(linear_rows[0])
+
+    assert_ok(
+        "STAGE26_2_8C_LINEAR_POSITION_WITHOUT_ROW_CATEGORY_TAGGED_AS_PERP",
+        linear_holding is not None and linear_holding.leg_group == "perp",
+    )
+
+    short_option_rows = _tag_position_rows(
+        [
+            {
+                "symbol": "BTC-25SEP26-80000-C-USDT",
+                "baseCoin": "BTC",
+                "side": "Sell",
+                "size": "1",
+                "positionValue": "10",
+            }
+        ],
+        category="option",
+    )
+    short_option_holding = _holding_from_position(short_option_rows[0])
+
+    assert_ok(
+        "STAGE26_2_8C_OPTION_SELL_WITHOUT_ROW_CATEGORY_TAGGED_AS_SHORT_OPTION",
+        short_option_holding is not None and short_option_holding.leg_group == "short_option",
+    )
+
+    long_option_rows = _tag_position_rows(
+        [
+            {
+                "symbol": "ETH-25SEP26-2200-C-USDT",
+                "baseCoin": "ETH",
+                "side": "Buy",
+                "size": "1",
+                "positionValue": "10",
+            }
+        ],
+        category="option",
+    )
+    long_option_holding = _holding_from_position(long_option_rows[0])
+
+    assert_ok(
+        "STAGE26_2_8C_OPTION_BUY_WITHOUT_ROW_CATEGORY_TAGGED_AS_LONG_OPTION",
+        long_option_holding is not None and long_option_holding.leg_group == "long_option",
+    )
+
+
+def test_stage26_2_8c_real_production_blockers_regression() -> None:
+    snapshot = build_stage26_2_8c_production_blocker_snapshot()
+    plan = build_plan(snapshot, positive_net_usdt=Decimal("10"))
+
+    original = configure_controlled_policy()
+    try:
+        result = classify_plan(plan["leg_models"])
+    finally:
+        restore_policy(original)
+
+    rows = result["rows"]
+
+    funding_ldo_rows = [
+        row
+        for row in rows
+        if row["coin"] == "LDO"
+        and row["symbol"] == "LDOUSDT"
+        and row["location"] == "FUND"
+    ]
+
+    assert_ok(
+        "STAGE26_2_8C_FUNDING_LDO_ROW_PRESENT",
+        len(funding_ldo_rows) == 1,
+    )
+    assert_ok(
+        "STAGE26_2_8C_FUNDING_LDO_NOT_OTHER",
+        funding_ldo_rows[0]["leg_type"] != LEG_TYPE_OTHER,
+    )
+    assert_ok(
+        "STAGE26_2_8C_FUNDING_LDO_SCALED_AS_SPOT_BUY",
+        funding_ldo_rows[0]["leg_type"] == LEG_TYPE_SPOT_BUY,
+    )
+
+    zero_value_rows = [
+        row
+        for row in rows
+        if row["policy_reason"] == "planned_zero_value_noop"
+    ]
+
+    assert_ok(
+        "STAGE26_2_8C_ZERO_VALUE_ROWS_PRESENT",
+        len(zero_value_rows) >= 6,
+    )
+    assert_ok(
+        "STAGE26_2_8C_ZERO_VALUE_ROWS_SAFE_NOOP",
+        all(
+            row["policy_skipped"] is True
+            and row["supported_live"] is False
+            and row["fail_closed"] is False
+            and row["required_guard_actions"] == []
+            for row in zero_value_rows
+        ),
+    )
+
+    assert_ok("STAGE26_2_8C_PRODUCTION_BLOCKER_FIXTURE_READY", result["ready"] is True)
+    assert_ok("STAGE26_2_8C_PRODUCTION_BLOCKER_FAIL_CLOSED_ZERO", len(result["fail_closed"]) == 0)
+
+    assert_ok(
+        "STAGE26_2_8C_REQUIRED_GUARDS_TRADE_EARN_ONLY",
+        "bybit_allocation_trade_order" in result["required_guard_actions"]
+        and "bybit_allocation_earn_order" in result["required_guard_actions"]
+        and "bybit_allocation_strategy_order" not in result["required_guard_actions"],
+    )
+
+    print("STAGE26_2_8C_REAL_PRODUCTION_BLOCKERS_REGRESSION_OK")
+
+
 def run_self_test() -> int:
     script_path = "scripts/stage26_2_8_verify_production_wb_test_actual_path.py"
     source = read(script_path)
@@ -889,6 +1167,9 @@ def run_self_test() -> int:
     assert_ok("SELFTEST_SOURCE_NO_LIFECYCLE_IMPORT", "app.lifecycle" not in imports and "workers" not in imports)
     forbidden_freeze_endpoint = "frozen" + "-sub-member"
     assert_ok("SELFTEST_SOURCE_NO_FREEZE_GUARD", forbidden_freeze_endpoint not in source)
+
+    test_stage26_2_8c_position_endpoint_category_tagging()
+    test_stage26_2_8c_real_production_blockers_regression()
 
     print("STAGE26_2_8A_PRODUCTION_VERIFIER_LOCAL_SAFETY_TESTS_OK")
     return 0

@@ -247,6 +247,22 @@ def _fetch_spot_tickers(client: BybitV5Client) -> dict[str, Any]:
     return tickers
 
 
+def _tag_position_rows(
+    rows: list[dict[str, Any]],
+    *,
+    category: str,
+) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+
+    for row in rows:
+        item = dict(row)
+        item.setdefault("category", category)
+        item["_wb_endpoint_category"] = category
+        out.append(item)
+
+    return out
+
+
 def _fetch_positions(
     client: BybitV5Client,
     *,
@@ -258,46 +274,58 @@ def _fetch_positions(
     list[dict[str, Any]],
     list[dict[str, Any]],
 ]:
-    linear_usdt = _paginate_get(
-        client,
-        "/v5/position/list",
-        {
-            "category": "linear",
-            "settleCoin": "USDT",
-        },
+    linear_usdt = _tag_position_rows(
+        _paginate_get(
+            client,
+            "/v5/position/list",
+            {
+                "category": "linear",
+                "settleCoin": "USDT",
+            },
+        ),
+        category="linear",
     )
-    linear_usdc = _paginate_get(
-        client,
-        "/v5/position/list",
-        {
-            "category": "linear",
-            "settleCoin": "USDC",
-        },
+    linear_usdc = _tag_position_rows(
+        _paginate_get(
+            client,
+            "/v5/position/list",
+            {
+                "category": "linear",
+                "settleCoin": "USDC",
+            },
+        ),
+        category="linear",
     )
 
     inverse: list[dict[str, Any]] = []
     for coin in inverse_coins:
         inverse.extend(
-            _paginate_get(
-                client,
-                "/v5/position/list",
-                {
-                    "category": "inverse",
-                    "settleCoin": coin,
-                },
+            _tag_position_rows(
+                _paginate_get(
+                    client,
+                    "/v5/position/list",
+                    {
+                        "category": "inverse",
+                        "settleCoin": coin,
+                    },
+                ),
+                category="inverse",
             )
         )
 
     options: list[dict[str, Any]] = []
     for coin in option_coins:
         options.extend(
-            _paginate_get(
-                client,
-                "/v5/position/list",
-                {
-                    "category": "option",
-                    "baseCoin": coin,
-                },
+            _tag_position_rows(
+                _paginate_get(
+                    client,
+                    "/v5/position/list",
+                    {
+                        "category": "option",
+                        "baseCoin": coin,
+                    },
+                ),
+                category="option",
             )
         )
 
@@ -660,7 +688,7 @@ def _holding_from_earn_row(
 
 
 def _holding_from_position(row: dict[str, Any]) -> AllocationSnapshotHolding | None:
-    category = str(get_any(row, "category", default="") or "").lower()
+    category = str(get_any(row, "category", "_wb_endpoint_category", default="") or "").lower()
     symbol = normalize_symbol(get_any(row, "symbol"))
     side = normalize_side(get_any(row, "side"))
     size = dec(get_any(row, "size", "qty", "position_size"))
