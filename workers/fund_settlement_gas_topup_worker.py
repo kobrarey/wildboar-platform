@@ -33,6 +33,23 @@ def _parse_settlement_date(raw: str | None) -> date | None:
         ) from exc
 
 
+def _split_fund_codes(raw: str | None) -> set[str]:
+    if not raw:
+        return set()
+    return {item.strip().lower() for item in raw.split(",") if item.strip()}
+
+
+def _fund_codes_from_args(args: argparse.Namespace) -> set[str] | None:
+    codes: set[str] = set()
+
+    for raw in args.fund_code or []:
+        codes.update(_split_fund_codes(raw))
+
+    codes.update(_split_fund_codes(args.fund_codes))
+
+    return codes or None
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Top up BNB gas on active fund settlement wallets."
@@ -72,6 +89,22 @@ def parse_args() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--fund-code",
+        action="append",
+        default=[],
+        help=(
+            "Limit gas top-up to one fund code. Can be repeated. "
+            "Example: --fund-code wb_test"
+        ),
+    )
+
+    parser.add_argument(
+        "--fund-codes",
+        default=None,
+        help="Comma-separated fund-code filter. Example: --fund-codes wb_test,wb10",
+    )
+
+    parser.add_argument(
         "--sleep-sec",
         type=int,
         default=60,
@@ -84,12 +117,14 @@ def parse_args() -> argparse.Namespace:
 def _run_once(args: argparse.Namespace) -> int:
     settlement_date = _parse_settlement_date(args.settlement_date)
     actual_date = settlement_date or get_default_settlement_date()
+    fund_codes = _fund_codes_from_args(args)
 
     log.info(
-        "Settlement gas top-up run started settlement_date=%s retry=%s dry_run=%s",
+        "Settlement gas top-up run started settlement_date=%s retry=%s dry_run=%s fund_codes=%s",
         actual_date.isoformat(),
         bool(args.retry),
         bool(args.dry_run),
+        sorted(fund_codes) if fund_codes else "from_env_or_all",
     )
 
     db = SessionLocal()
@@ -100,6 +135,7 @@ def _run_once(args: argparse.Namespace) -> int:
             settlement_date=actual_date,
             retry_mode=bool(args.retry),
             dry_run=bool(args.dry_run),
+            fund_codes=fund_codes,
         )
 
         if args.dry_run:
@@ -111,15 +147,22 @@ def _run_once(args: argparse.Namespace) -> int:
         for result in results:
             log.info(
                 "Gas top-up result fund=%s batch_id=%s wallet=%s status=%s "
-                "bnb_balance=%s target_bnb=%s min_operational_bnb=%s "
+                "topup_mode=%s bnb_balance=%s target_bnb=%s min_operational_bnb=%s "
+                "target_deficit_bnb=%s operational_deficit_bnb=%s "
+                "ok_balance_before=%s ok_balance_after_estimated=%s "
                 "amount_sent_bnb=%s tx_hash=%s message=%s",
                 result.fund_code,
                 result.batch_id,
                 result.wallet_address,
                 result.status,
+                result.topup_mode,
                 result.bnb_balance,
                 result.target_bnb,
                 result.min_operational_bnb,
+                result.target_deficit_bnb,
+                result.operational_deficit_bnb,
+                result.ok_balance_before,
+                result.ok_balance_after_estimated,
                 result.amount_sent_bnb,
                 result.tx_hash,
                 result.message,
