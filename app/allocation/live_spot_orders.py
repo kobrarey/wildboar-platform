@@ -16,6 +16,7 @@ from app.allocation.execution_config import get_allocation_execution_config
 from app.allocation.idempotency import make_market_order_link_id
 from app.allocation.instrument_info import (
     InstrumentInfo,
+    InstrumentValidationResult,
     get_instrument_info,
     validate_instrument_for_leg,
 )
@@ -31,7 +32,10 @@ from app.allocation.statuses import (
     ALLOCATION_LEG_STATUS_MARKET_ORDER_SENT,
     ALLOCATION_LEG_STATUS_PARTIAL_FILLED_RESIDUALIZED,
     ALLOCATION_LEG_STATUS_PLANNED,
+    ALLOCATION_LEG_STATUS_SKIPPED_MIN_ORDER,
+    ALLOCATION_LEG_STATUS_SKIPPED_SYMBOL_NOT_TRADING,
     EXECUTION_MODE_MARKET,
+    EXECUTION_MODE_SKIPPED,
     LEG_TYPE_BUY_THEN_STAKE,
     LEG_TYPE_SPOT_BUY,
 )
@@ -46,6 +50,11 @@ from app.operation_guard.hooks import require_bybit_allocation_trade_order_guard
 
 ZERO = Decimal("0")
 ONE = Decimal("1")
+
+SAFE_TERMINAL_SPOT_VALIDATION_STATUSES = {
+    ALLOCATION_LEG_STATUS_SKIPPED_MIN_ORDER,
+    ALLOCATION_LEG_STATUS_SKIPPED_SYMBOL_NOT_TRADING,
+}
 
 
 class LiveSpotOrderError(RuntimeError):
@@ -68,6 +77,27 @@ class LiveSpotOrderPlan:
     required_usdt: Decimal
     instrument: dict[str, Any]
     liquidity: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class LiveSpotTerminalSkipResult:
+    allocation_leg_id: int
+    allocation_batch_id: int
+    fund_id: int
+    settlement_batch_id: int
+    ok: bool
+    status: str
+    execution_mode: str
+    action: str
+    reason: str | None
+    category: str
+    symbol: str
+    target_usdt: Decimal
+    target_qty: Decimal
+    required_qty: Decimal | None
+    required_usdt: Decimal
+    instrument: dict[str, Any]
+    validation: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -205,6 +235,64 @@ def _instrument_diagnostics(info: InstrumentInfo) -> dict[str, Any]:
     }
 
 
+def _validation_diagnostics(validation: InstrumentValidationResult) -> dict[str, Any]:
+    return {
+        "ok": validation.ok,
+        "status": validation.status,
+        "execution_mode": validation.execution_mode,
+        "rounded_qty": validation.rounded_qty,
+        "rounded_price": validation.rounded_price,
+        "min_order_qty": validation.min_order_qty,
+        "min_order_amt": validation.min_order_amt,
+        "error": validation.error,
+        "warnings": validation.warnings,
+    }
+
+
+def apply_spot_validation_terminal_skip_to_leg(
+    leg: FundAllocationLeg,
+    *,
+    validation: InstrumentValidationResult,
+    info: InstrumentInfo,
+) -> LiveSpotTerminalSkipResult:
+    if validation.status not in SAFE_TERMINAL_SPOT_VALIDATION_STATUSES:
+        raise LiveSpotOrderError(
+            f"Unsafe live spot validation status cannot be terminal-skipped: {validation.status}"
+        )
+
+    target_usdt = dec(leg.target_usdt)
+    target_qty = dec(leg.target_qty)
+
+    leg.status = validation.status
+    leg.execution_mode = EXECUTION_MODE_SKIPPED
+    leg.residual_usdt = target_usdt
+    leg.required_qty = validation.rounded_qty
+    leg.required_usdt = target_usdt
+    leg.order_link_id = None
+    leg.error = validation.error or validation.status
+    leg.updated_at = utcnow()
+
+    return LiveSpotTerminalSkipResult(
+        allocation_leg_id=int(leg.id),
+        allocation_batch_id=int(leg.allocation_batch_id),
+        fund_id=int(leg.fund_id),
+        settlement_batch_id=int(leg.settlement_batch_id),
+        ok=True,
+        status=leg.status,
+        execution_mode=EXECUTION_MODE_SKIPPED,
+        action="terminal_validation_skip",
+        reason=leg.error,
+        category=info.category,
+        symbol=info.symbol,
+        target_usdt=target_usdt,
+        target_qty=target_qty,
+        required_qty=validation.rounded_qty,
+        required_usdt=target_usdt,
+        instrument=_json_dict(_instrument_diagnostics(info)),
+        validation=_json_dict(_validation_diagnostics(validation)),
+    )
+
+
 def _liquidity_diagnostics(liquidity: LiquidityCheckResult) -> dict[str, Any]:
     return {
         "ok": liquidity.ok,
@@ -242,7 +330,8 @@ def build_live_spot_market_order_plan(
     *,
     allocation_leg_id: int,
     client: Any,
-) -> LiveSpotOrderPlan:
+    allow_terminal_skip: bool = False,
+) -> LiveSpotOrderPlan | LiveSpotTerminalSkipResult:
     """
     Build a protected market order plan for a spot allocation leg.
 
@@ -294,6 +383,16 @@ def build_live_spot_market_order_plan(
 
     validation = validate_instrument_for_leg(leg, info)
     if not validation.ok:
+        if allow_terminal_skip and validation.status in SAFE_TERMINAL_SPOT_VALIDATION_STATUSES:
+            result = apply_spot_validation_terminal_skip_to_leg(
+                leg,
+                validation=validation,
+                info=info,
+            )
+            db.add(leg)
+            db.flush()
+            return result
+
         raise LiveSpotOrderError(
             f"Live spot instrument validation failed: {validation.error}"
         )
@@ -378,6 +477,20 @@ def build_live_spot_market_order_plan(
         required_usdt=liquidity.required_usdt,
         instrument=_json_dict(_instrument_diagnostics(info)),
         liquidity=_json_dict(_liquidity_diagnostics(liquidity)),
+    )
+
+
+def prepare_live_spot_market_order_or_terminal_skip(
+    db: Session,
+    *,
+    allocation_leg_id: int,
+    client: Any,
+) -> LiveSpotOrderPlan | LiveSpotTerminalSkipResult:
+    return build_live_spot_market_order_plan(
+        db,
+        allocation_leg_id=allocation_leg_id,
+        client=client,
+        allow_terminal_skip=True,
     )
 
 

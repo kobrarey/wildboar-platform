@@ -56,6 +56,7 @@ from app.allocation.live_earn_orders import (
 from app.allocation.live_spot_orders import (
     build_live_spot_market_order_plan,
     mark_live_spot_order_create_failed,
+    prepare_live_spot_market_order_or_terminal_skip,
     reconcile_live_spot_market_leg_by_link_id,
     require_trade_guard_for_plan,
     submit_bybit_spot_market_order,
@@ -1369,14 +1370,38 @@ def _process_live_spot_leg_in_own_session(
         finally:
             db2.close()
 
-    # Phase 3: build plan and persist deterministic orderLinkId before POST.
+    # Phase 3: build plan or terminalize safe validation skip before POST.
     db3 = SessionLocal()
     try:
-        plan = build_live_spot_market_order_plan(
+        plan_or_skip = prepare_live_spot_market_order_or_terminal_skip(
             db3,
             allocation_leg_id=int(allocation_leg_id),
             client=client,
         )
+
+        if getattr(plan_or_skip, "action", "") == "terminal_validation_skip":
+            allocation_batch_id = int(plan_or_skip.allocation_batch_id)
+
+            if dry_run:
+                db3.rollback()
+            else:
+                db3.commit()
+
+            log.info(
+                "Allocation live spot validation terminal skip "
+                "leg_id=%s status=%s reason=%s external_post_calls=0 guard_required=0",
+                allocation_leg_id,
+                plan_or_skip.status,
+                plan_or_skip.reason,
+            )
+
+            _refresh_live_batch_progress_in_own_session(
+                allocation_batch_id=allocation_batch_id,
+                dry_run=dry_run,
+            )
+            return True
+
+        plan = plan_or_skip
 
         if dry_run:
             db3.rollback()
@@ -1405,7 +1430,6 @@ def _process_live_spot_leg_in_own_session(
             exc,
         )
         return False
-
     finally:
         db3.close()
 

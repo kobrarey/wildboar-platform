@@ -17,6 +17,11 @@ from app.allocation.bybit_snapshot_reader import (
     _tag_position_rows,
     build_allocation_snapshot_from_bybit,
 )
+from app.allocation.instrument_info import (
+    InstrumentInfo,
+    get_instrument_info,
+    validate_instrument_for_leg,
+)
 from app.allocation.live_earn_config import allocation_earn_live_enabled
 from app.allocation.live_policy import (
     BUY_THEN_STAKE_LIVE_POLICY_FAIL_CLOSED,
@@ -25,6 +30,7 @@ from app.allocation.live_policy import (
     DERIVATIVE_LIVE_POLICY_SKIP_EXISTING_EXPOSURE_SCALING,
     classify_live_leg_policy,
 )
+from app.allocation.live_spot_orders import apply_spot_validation_terminal_skip_to_leg
 from app.allocation.plan_service import _build_planned_legs
 from app.allocation.snapshot_service import (
     AllocationAccountRisk,
@@ -36,7 +42,10 @@ from app.allocation.snapshot_service import (
 )
 from app.allocation.statuses import (
     ALLOCATION_LEG_STATUS_PLANNED,
+    ALLOCATION_LEG_STATUS_SKIPPED_MIN_ORDER,
+    ALLOCATION_LEG_STATUS_SKIPPED_SYMBOL_NOT_TRADING,
     ALLOCATION_LEG_STATUS_SKIPPED_ZERO_VALUE,
+    LEG_TYPE_BUY_THEN_STAKE,
     LEG_TYPE_OTHER,
     LEG_TYPE_RESIDUAL_USDT_EARN,
     LEG_TYPE_SPOT_BUY,
@@ -119,6 +128,89 @@ class NoPostBybitClient:
     def post(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         self.post_calls += 1
         raise VerificationBlocked(f"Bybit POST is forbidden in this verifier: {path}")
+
+
+class Stage26SpotValidationFakeClient:
+    def __init__(
+        self,
+        *,
+        min_order_amt_by_symbol: dict[str, str] | None = None,
+        status_by_symbol: dict[str, str] | None = None,
+    ):
+        self.min_order_amt_by_symbol = {
+            str(k).upper(): str(v)
+            for k, v in (min_order_amt_by_symbol or {}).items()
+        }
+        self.status_by_symbol = {
+            str(k).upper(): str(v)
+            for k, v in (status_by_symbol or {}).items()
+        }
+        self.public_get_calls: list[tuple[str, dict[str, Any]]] = []
+        self.get_calls: list[tuple[str, dict[str, Any]]] = []
+        self.post_calls = 0
+
+    def public_get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        params = params or {}
+        self.public_get_calls.append((path, dict(params)))
+
+        if path == "/v5/market/instruments-info":
+            symbol = str(params.get("symbol") or "").upper()
+            category = str(params.get("category") or "spot").lower()
+            status = self.status_by_symbol.get(symbol, "Trading")
+            min_order_amt = self.min_order_amt_by_symbol.get(symbol, "1")
+
+            return {
+                "retCode": 0,
+                "retMsg": "OK",
+                "result": {
+                    "list": [
+                        {
+                            "symbol": symbol,
+                            "category": category,
+                            "status": status,
+                            "baseCoin": symbol.removesuffix("USDT") if symbol.endswith("USDT") else symbol,
+                            "quoteCoin": "USDT",
+                            "priceFilter": {
+                                "tickSize": "0.0001",
+                            },
+                            "lotSizeFilter": {
+                                "qtyStep": "0.000001",
+                                "minOrderQty": "0.000001",
+                                "maxOrderQty": "100000000",
+                                "minOrderAmt": min_order_amt,
+                                "maxMarketOrderQty": "100000000",
+                                "maxLimitOrderQty": "100000000",
+                            },
+                        }
+                    ]
+                },
+            }
+
+        if path == "/v5/market/tickers":
+            symbol = str(params.get("symbol") or "").upper()
+            return {
+                "retCode": 0,
+                "retMsg": "OK",
+                "result": {
+                    "list": [
+                        {
+                            "symbol": symbol,
+                            "lastPrice": "1",
+                        }
+                    ]
+                },
+            }
+
+        raise RuntimeError(f"Unexpected fake public_get path={path} params={params}")
+
+    def get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        params = params or {}
+        self.get_calls.append((path, dict(params)))
+        return self.public_get(path, params)
+
+    def post(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        self.post_calls += 1
+        raise VerificationBlocked(f"POST is forbidden in Stage 26.2.8D fake client: {path}")
 
 
 def assert_ok(name: str, condition: bool) -> None:
@@ -682,7 +774,136 @@ def build_plan(snapshot: AllocationSnapshot, *, positive_net_usdt: Decimal) -> d
     }
 
 
-def classify_plan(legs: list[FundAllocationLeg]) -> dict[str, Any]:
+def _is_spot_execution_path_leg(leg: FundAllocationLeg) -> bool:
+    return str(leg.leg_type or "") in {LEG_TYPE_SPOT_BUY, LEG_TYPE_BUY_THEN_STAKE}
+
+
+def _spot_execution_path_category(leg: FundAllocationLeg) -> str:
+    if str(leg.leg_type or "") == LEG_TYPE_BUY_THEN_STAKE:
+        return "spot"
+
+    raw = str(leg.category or "").strip().lower()
+    return raw or "spot"
+
+
+def check_spot_execution_path_readonly(
+    leg: FundAllocationLeg,
+    *,
+    client: Any,
+) -> dict[str, Any]:
+    symbol = str(leg.symbol or "").strip().upper()
+    category = _spot_execution_path_category(leg)
+    target_usdt = dec(leg.target_usdt)
+
+    base = {
+        "execution_path_checked": True,
+        "execution_path_action": None,
+        "execution_path_reason": None,
+        "spot_validation_status": None,
+        "spot_min_order_amt": None,
+        "spot_target_usdt": str(target_usdt),
+        "required_guard_actions": ["bybit_allocation_trade_order"],
+        "supported_live": True,
+        "policy_skipped": False,
+        "fail_closed": False,
+    }
+
+    if not symbol:
+        base.update(
+            {
+                "execution_path_action": "fail_closed",
+                "execution_path_reason": "spot_execution_path_symbol_required",
+                "supported_live": False,
+                "policy_skipped": False,
+                "fail_closed": True,
+                "required_guard_actions": [],
+            }
+        )
+        return base
+
+    if category != "spot":
+        base.update(
+            {
+                "execution_path_action": "fail_closed",
+                "execution_path_reason": f"spot_execution_path_category_not_spot: {category}",
+                "supported_live": False,
+                "policy_skipped": False,
+                "fail_closed": True,
+                "required_guard_actions": [],
+            }
+        )
+        return base
+
+    try:
+        info = get_instrument_info(
+            client,
+            category="spot",
+            symbol=symbol,
+        )
+        validation = validate_instrument_for_leg(leg, info)
+    except Exception as exc:
+        base.update(
+            {
+                "execution_path_action": "fail_closed",
+                "execution_path_reason": f"spot_execution_path_read_failed: {exc}",
+                "supported_live": False,
+                "policy_skipped": False,
+                "fail_closed": True,
+                "required_guard_actions": [],
+            }
+        )
+        return base
+
+    base["spot_validation_status"] = validation.status
+    base["spot_min_order_amt"] = str(validation.min_order_amt) if validation.min_order_amt is not None else None
+
+    if validation.ok:
+        base.update(
+            {
+                "execution_path_action": "orderable",
+                "execution_path_reason": None,
+                "required_guard_actions": ["bybit_allocation_trade_order"],
+                "supported_live": True,
+                "policy_skipped": False,
+                "fail_closed": False,
+            }
+        )
+        return base
+
+    if validation.status in {
+        ALLOCATION_LEG_STATUS_SKIPPED_MIN_ORDER,
+        ALLOCATION_LEG_STATUS_SKIPPED_SYMBOL_NOT_TRADING,
+    }:
+        base.update(
+            {
+                "execution_path_action": "terminal_skip",
+                "execution_path_reason": validation.error or validation.status,
+                "required_guard_actions": [],
+                "supported_live": False,
+                "policy_skipped": True,
+                "fail_closed": False,
+            }
+        )
+        return base
+
+    base.update(
+        {
+            "execution_path_action": "fail_closed",
+            "execution_path_reason": validation.error or validation.status,
+            "required_guard_actions": [],
+            "supported_live": False,
+            "policy_skipped": False,
+            "fail_closed": True,
+        }
+    )
+    return base
+
+
+def classify_plan(
+    legs: list[FundAllocationLeg],
+    *,
+    spot_execution_client: Any | None = None,
+) -> dict[str, Any]:
     supported_items = []
     skipped_items = []
     failed_items = []
@@ -701,6 +922,13 @@ def classify_plan(legs: list[FundAllocationLeg]) -> dict[str, Any]:
         row_reason = decision.reason
         row_policy_action = decision.action
         row_required_guard_actions = list(decision.required_guard_actions)
+
+        execution_path_checked = False
+        execution_path_action = None
+        execution_path_reason = None
+        spot_validation_status = None
+        spot_min_order_amt = None
+        spot_target_usdt = str(dec(leg.target_usdt))
 
         if leg_status == ALLOCATION_LEG_STATUS_SKIPPED_ZERO_VALUE:
             row_fail_closed = False
@@ -727,6 +955,33 @@ def classify_plan(legs: list[FundAllocationLeg]) -> dict[str, Any]:
             row_reason = "allocation_earn_live_disabled"
             row_required_guard_actions = []
 
+        if (
+            not row_fail_closed
+            and row_supported_live
+            and spot_execution_client is not None
+            and _is_spot_execution_path_leg(leg)
+        ):
+            execution_check = check_spot_execution_path_readonly(
+                leg,
+                client=spot_execution_client,
+            )
+
+            execution_path_checked = bool(execution_check["execution_path_checked"])
+            execution_path_action = execution_check["execution_path_action"]
+            execution_path_reason = execution_check["execution_path_reason"]
+            spot_validation_status = execution_check["spot_validation_status"]
+            spot_min_order_amt = execution_check["spot_min_order_amt"]
+            spot_target_usdt = execution_check["spot_target_usdt"]
+
+            row_supported_live = bool(execution_check["supported_live"])
+            row_policy_skipped = bool(execution_check["policy_skipped"])
+            row_fail_closed = bool(execution_check["fail_closed"])
+
+            if execution_path_reason is not None:
+                row_reason = execution_path_reason
+
+            row_required_guard_actions = list(execution_check["required_guard_actions"])
+
         if not row_fail_closed:
             required_guard_actions.update(row_required_guard_actions)
 
@@ -747,6 +1002,12 @@ def classify_plan(legs: list[FundAllocationLeg]) -> dict[str, Any]:
             "policy_skipped": row_policy_skipped,
             "fail_closed": row_fail_closed,
             "required_guard_actions": row_required_guard_actions if not row_fail_closed else [],
+            "execution_path_checked": execution_path_checked,
+            "execution_path_action": execution_path_action,
+            "execution_path_reason": execution_path_reason,
+            "spot_validation_status": spot_validation_status,
+            "spot_min_order_amt": spot_min_order_amt,
+            "spot_target_usdt": spot_target_usdt,
         }
         rows.append(row)
 
@@ -788,6 +1049,12 @@ def print_leg_rows(rows: list[dict[str, Any]]) -> None:
             f"policy_skipped={row['policy_skipped']}",
             f"fail_closed={row['fail_closed']}",
             f"required_guard_actions={row['required_guard_actions']}",
+            f"execution_path_checked={row['execution_path_checked']}",
+            f"execution_path_action={row['execution_path_action']}",
+            f"execution_path_reason={row['execution_path_reason']}",
+            f"spot_validation_status={row['spot_validation_status']}",
+            f"spot_min_order_amt={row['spot_min_order_amt']}",
+            f"spot_target_usdt={row['spot_target_usdt']}",
         ]
         print("PLANNED_LEG " + " ".join(parts))
 
@@ -883,8 +1150,20 @@ def run_verification(args: argparse.Namespace) -> int:
             no_post_client_holder=no_post_client_holder,
         )
 
+        if no_post_client_holder["client"] is None:
+            client = get_active_fund_bybit_client(
+                db,
+                fund_id=int(fund.id),
+                coin="USDT",
+                chain_type="BSC",
+            )
+            no_post_client_holder["client"] = NoPostBybitClient(client)
+
         plan = build_plan(snapshot, positive_net_usdt=positive_net_usdt)
-        classification = classify_plan(plan["leg_models"])
+        classification = classify_plan(
+            plan["leg_models"],
+            spot_execution_client=no_post_client_holder["client"],
+        )
 
         after_fund_orders = db.query(FundOrder).filter(FundOrder.fund_id == int(fund.id)).count()
         fund_orders_created = after_fund_orders - before_fund_orders
@@ -995,6 +1274,57 @@ def configure_controlled_policy() -> dict[str, Any]:
     settings.ALLOCATION_EARN_ALLOWED_PRODUCT_IDS = ""
 
     return original
+
+
+def test_stage26_2_8d_live_spot_terminal_skip_service_result() -> None:
+    info = InstrumentInfo(
+        symbol="LDOUSDT",
+        category="spot",
+        status="Trading",
+        base_coin="LDO",
+        quote_coin="USDT",
+        tick_size=Decimal("0.0001"),
+        qty_step=Decimal("0.000001"),
+        min_order_qty=Decimal("0.000001"),
+        max_order_qty=Decimal("100000000"),
+        min_order_amt=Decimal("1"),
+        max_market_order_qty=Decimal("100000000"),
+        max_limit_order_qty=Decimal("100000000"),
+        raw={},
+    )
+    leg = FundAllocationLeg(
+        id=1,
+        allocation_batch_id=10,
+        settlement_batch_id=20,
+        fund_id=1,
+        leg_index=1,
+        leg_key="stage26_2_8d_ldo_min_order",
+        leg_group="spot",
+        leg_type=LEG_TYPE_SPOT_BUY,
+        coin="LDO",
+        symbol="LDOUSDT",
+        category="spot",
+        side="Buy",
+        location="FUND",
+        target_usdt=Decimal("0.0005"),
+        target_qty=Decimal("0.0005"),
+        status=ALLOCATION_LEG_STATUS_PLANNED,
+        execution_mode="planned",
+    )
+
+    validation = validate_instrument_for_leg(leg, info)
+    result = apply_spot_validation_terminal_skip_to_leg(
+        leg,
+        validation=validation,
+        info=info,
+    )
+
+    assert_ok("STAGE26_2_8D_SERVICE_VALIDATION_IS_MIN_ORDER", validation.status == ALLOCATION_LEG_STATUS_SKIPPED_MIN_ORDER)
+    assert_ok("STAGE26_2_8D_SERVICE_TERMINAL_SKIP_STATUS", leg.status == ALLOCATION_LEG_STATUS_SKIPPED_MIN_ORDER)
+    assert_ok("STAGE26_2_8D_SERVICE_TERMINAL_SKIP_MODE", leg.execution_mode == "skipped")
+    assert_ok("STAGE26_2_8D_SERVICE_TERMINAL_SKIP_RESIDUAL", dec(leg.residual_usdt) == Decimal("0.0005"))
+    assert_ok("STAGE26_2_8D_SERVICE_TERMINAL_SKIP_NO_ORDER_LINK", leg.order_link_id is None)
+    assert_ok("STAGE26_2_8D_SERVICE_TERMINAL_SKIP_RESULT_OK", result.ok is True and result.action == "terminal_validation_skip")
 
 
 def test_stage26_2_8c_position_endpoint_category_tagging() -> None:
@@ -1123,6 +1453,60 @@ def test_stage26_2_8c_real_production_blockers_regression() -> None:
     print("STAGE26_2_8C_REAL_PRODUCTION_BLOCKERS_REGRESSION_OK")
 
 
+def test_stage26_2_8d_production_verifier_execution_path_check() -> None:
+    snapshot = build_stage26_2_8c_production_blocker_snapshot()
+
+    for holding in snapshot.holdings:
+        if (
+            holding.leg_group == "funding_wallet"
+            and holding.coin == "LDO"
+            and holding.symbol == "LDOUSDT"
+        ):
+            object.__setattr__(holding, "usd_value", Decimal("0.03"))
+            object.__setattr__(holding, "size", Decimal("0.03"))
+
+    plan = build_plan(snapshot, positive_net_usdt=Decimal("10"))
+    fake_client = Stage26SpotValidationFakeClient(
+        min_order_amt_by_symbol={
+            "LDOUSDT": "1",
+            "BTCUSDT": "0.000001",
+        }
+    )
+
+    original = configure_controlled_policy()
+    try:
+        result = classify_plan(
+            plan["leg_models"],
+            spot_execution_client=fake_client,
+        )
+    finally:
+        restore_policy(original)
+
+    rows = result["rows"]
+    ldo_rows = [
+        row
+        for row in rows
+        if row["coin"] == "LDO"
+        and row["symbol"] == "LDOUSDT"
+        and row["location"] == "FUND"
+    ]
+
+    assert_ok("STAGE26_2_8D_TINY_FUNDING_LDO_ROW_PRESENT", len(ldo_rows) == 1)
+    assert_ok("STAGE26_2_8D_TINY_FUNDING_LDO_IS_SPOT_BUY", ldo_rows[0]["leg_type"] == LEG_TYPE_SPOT_BUY)
+    assert_ok("STAGE26_2_8D_TINY_FUNDING_LDO_EXEC_PATH_CHECKED", ldo_rows[0]["execution_path_checked"] is True)
+    assert_ok("STAGE26_2_8D_TINY_FUNDING_LDO_TERMINAL_SKIP", ldo_rows[0]["execution_path_action"] == "terminal_skip")
+    assert_ok("STAGE26_2_8D_TINY_FUNDING_LDO_MIN_ORDER_STATUS", ldo_rows[0]["spot_validation_status"] == ALLOCATION_LEG_STATUS_SKIPPED_MIN_ORDER)
+    assert_ok("STAGE26_2_8D_TINY_FUNDING_LDO_NO_GUARD_REQUIRED", ldo_rows[0]["required_guard_actions"] == [])
+    assert_ok("STAGE26_2_8D_TINY_FUNDING_LDO_NOT_FAIL_CLOSED", ldo_rows[0]["fail_closed"] is False)
+
+    assert_ok("STAGE26_2_8D_VERIFIER_RESULT_READY", result["ready"] is True)
+    assert_ok("STAGE26_2_8D_VERIFIER_FAIL_CLOSED_ZERO", len(result["fail_closed"]) == 0)
+    assert_ok("STAGE26_2_8D_FAKE_CLIENT_NO_POST", fake_client.post_calls == 0)
+
+    print("STAGE26_2_8D_SPOT_MIN_ORDER_TERMINAL_SKIP_REGRESSION_OK")
+    print("STAGE26_2_8D_PRODUCTION_VERIFIER_EXECUTION_PATH_CHECK_OK")
+
+
 def run_self_test() -> int:
     script_path = "scripts/stage26_2_8_verify_production_wb_test_actual_path.py"
     source = read(script_path)
@@ -1168,8 +1552,10 @@ def run_self_test() -> int:
     forbidden_freeze_endpoint = "frozen" + "-sub-member"
     assert_ok("SELFTEST_SOURCE_NO_FREEZE_GUARD", forbidden_freeze_endpoint not in source)
 
+    test_stage26_2_8d_live_spot_terminal_skip_service_result()
     test_stage26_2_8c_position_endpoint_category_tagging()
     test_stage26_2_8c_real_production_blockers_regression()
+    test_stage26_2_8d_production_verifier_execution_path_check()
 
     print("STAGE26_2_8A_PRODUCTION_VERIFIER_LOCAL_SAFETY_TESTS_OK")
     return 0
