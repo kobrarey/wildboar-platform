@@ -17,10 +17,17 @@ from app.allocation.bybit_snapshot_reader import (
     _tag_position_rows,
     build_allocation_snapshot_from_bybit,
 )
+from app.allocation.bybit_orders import build_protected_market_order_payload
+from app.allocation.execution_config import get_allocation_execution_config
 from app.allocation.instrument_info import (
     InstrumentInfo,
     get_instrument_info,
     validate_instrument_for_leg,
+)
+from app.allocation.liquidity import (
+    check_liquidity_corridor,
+    get_last_price,
+    get_orderbook,
 )
 from app.allocation.live_earn_config import allocation_earn_live_enabled
 from app.allocation.live_policy import (
@@ -136,6 +143,8 @@ class Stage26SpotValidationFakeClient:
         *,
         min_order_amt_by_symbol: dict[str, str] | None = None,
         status_by_symbol: dict[str, str] | None = None,
+        last_price_by_symbol: dict[str, str] | None = None,
+        orderbook_mode_by_symbol: dict[str, str] | None = None,
     ):
         self.min_order_amt_by_symbol = {
             str(k).upper(): str(v)
@@ -144,6 +153,14 @@ class Stage26SpotValidationFakeClient:
         self.status_by_symbol = {
             str(k).upper(): str(v)
             for k, v in (status_by_symbol or {}).items()
+        }
+        self.last_price_by_symbol = {
+            str(k).upper(): str(v)
+            for k, v in (last_price_by_symbol or {}).items()
+        }
+        self.orderbook_mode_by_symbol = {
+            str(k).upper(): str(v)
+            for k, v in (orderbook_mode_by_symbol or {}).items()
         }
         self.public_get_calls: list[tuple[str, dict[str, Any]]] = []
         self.get_calls: list[tuple[str, dict[str, Any]]] = []
@@ -195,9 +212,33 @@ class Stage26SpotValidationFakeClient:
                     "list": [
                         {
                             "symbol": symbol,
-                            "lastPrice": "1",
+                            "lastPrice": self.last_price_by_symbol.get(symbol, "1"),
                         }
                     ]
+                },
+            }
+
+        if path == "/v5/market/orderbook":
+            symbol = str(params.get("symbol") or "").upper()
+            mode = self.orderbook_mode_by_symbol.get(symbol, "sufficient")
+
+            if mode == "empty":
+                bids: list[list[str]] = []
+                asks: list[list[str]] = []
+            elif mode == "insufficient":
+                bids = [["0.9999", "0.000001"]]
+                asks = [["1.0001", "0.000001"]]
+            else:
+                bids = [["0.9999", "1000000"]]
+                asks = [["1.0001", "1000000"]]
+
+            return {
+                "retCode": 0,
+                "retMsg": "OK",
+                "result": {
+                    "s": symbol,
+                    "b": bids,
+                    "a": asks,
                 },
             }
 
@@ -786,11 +827,37 @@ def _spot_execution_path_category(leg: FundAllocationLeg) -> str:
     return raw or "spot"
 
 
+def _spot_execution_path_side(leg: FundAllocationLeg) -> str:
+    raw = str(leg.side or "").strip().lower()
+
+    if raw in {"sell", "short"}:
+        return "Sell"
+
+    return "Buy"
+
+
+def _target_qty_for_liquidity_check(
+    *,
+    leg: FundAllocationLeg,
+    last_price: Decimal,
+) -> Decimal:
+    target_qty = dec(leg.target_qty)
+    if target_qty > Decimal("0"):
+        return target_qty
+
+    target_usdt = dec(leg.target_usdt)
+    if target_usdt > Decimal("0") and dec(last_price) > Decimal("0"):
+        return target_usdt / dec(last_price)
+
+    return Decimal("0")
+
+
 def check_spot_execution_path_readonly(
     leg: FundAllocationLeg,
     *,
     client: Any,
 ) -> dict[str, Any]:
+    config = get_allocation_execution_config()
     symbol = str(leg.symbol or "").strip().upper()
     category = _spot_execution_path_category(leg)
     target_usdt = dec(leg.target_usdt)
@@ -802,6 +869,17 @@ def check_spot_execution_path_readonly(
         "spot_validation_status": None,
         "spot_min_order_amt": None,
         "spot_target_usdt": str(target_usdt),
+        "liquidity_checked": False,
+        "liquidity_ok": None,
+        "liquidity_error": None,
+        "last_price": None,
+        "best_bid": None,
+        "best_ask": None,
+        "available_liquidity_qty": None,
+        "available_liquidity_usdt": None,
+        "required_qty": None,
+        "required_usdt": None,
+        "order_payload_build_ok": False,
         "required_guard_actions": ["bybit_allocation_trade_order"],
         "supported_live": True,
         "policy_skipped": False,
@@ -845,7 +923,7 @@ def check_spot_execution_path_readonly(
         base.update(
             {
                 "execution_path_action": "fail_closed",
-                "execution_path_reason": f"spot_execution_path_read_failed: {exc}",
+                "execution_path_reason": f"spot_execution_path_instrument_read_failed: {exc}",
                 "supported_live": False,
                 "policy_skipped": False,
                 "fail_closed": True,
@@ -857,7 +935,102 @@ def check_spot_execution_path_readonly(
     base["spot_validation_status"] = validation.status
     base["spot_min_order_amt"] = str(validation.min_order_amt) if validation.min_order_amt is not None else None
 
-    if validation.ok:
+    if not validation.ok:
+        if validation.status in {
+            ALLOCATION_LEG_STATUS_SKIPPED_MIN_ORDER,
+            ALLOCATION_LEG_STATUS_SKIPPED_SYMBOL_NOT_TRADING,
+        }:
+            base.update(
+                {
+                    "execution_path_action": "terminal_skip",
+                    "execution_path_reason": validation.error or validation.status,
+                    "required_guard_actions": [],
+                    "supported_live": False,
+                    "policy_skipped": True,
+                    "fail_closed": False,
+                }
+            )
+            return base
+
+        base.update(
+            {
+                "execution_path_action": "fail_closed",
+                "execution_path_reason": validation.error or validation.status,
+                "required_guard_actions": [],
+                "supported_live": False,
+                "policy_skipped": False,
+                "fail_closed": True,
+            }
+        )
+        return base
+
+    try:
+        last_price = get_last_price(
+            client,
+            category=info.category,
+            symbol=info.symbol,
+        )
+        orderbook = get_orderbook(
+            client,
+            category=info.category,
+            symbol=info.symbol,
+        )
+        target_qty = _target_qty_for_liquidity_check(
+            leg=leg,
+            last_price=last_price,
+        )
+        liquidity = check_liquidity_corridor(
+            side=_spot_execution_path_side(leg),
+            target_qty=target_qty,
+            target_usdt=target_usdt,
+            last_price=last_price,
+            orderbook=orderbook,
+            corridor_pct=config.liquidity_corridor_pct,
+            liquidity_multiplier=Decimal("1.0"),
+        )
+
+        base.update(
+            {
+                "liquidity_checked": True,
+                "liquidity_ok": bool(liquidity.ok),
+                "liquidity_error": liquidity.error,
+                "last_price": str(liquidity.last_price),
+                "best_bid": str(liquidity.best_bid) if liquidity.best_bid is not None else None,
+                "best_ask": str(liquidity.best_ask) if liquidity.best_ask is not None else None,
+                "available_liquidity_qty": str(liquidity.available_liquidity_qty),
+                "available_liquidity_usdt": str(liquidity.available_liquidity_usdt),
+                "required_qty": str(liquidity.required_qty),
+                "required_usdt": str(liquidity.required_usdt),
+            }
+        )
+
+        if not liquidity.ok:
+            base.update(
+                {
+                    "execution_path_action": "fail_closed",
+                    "execution_path_reason": liquidity.error or "spot_liquidity_check_failed",
+                    "required_guard_actions": [],
+                    "supported_live": False,
+                    "policy_skipped": False,
+                    "fail_closed": True,
+                    "order_payload_build_ok": False,
+                }
+            )
+            return base
+
+        order_payload = build_protected_market_order_payload(
+            category=info.category,
+            symbol=info.symbol,
+            side=_spot_execution_path_side(leg),
+            target_qty=liquidity.required_qty,
+            target_usdt=target_usdt,
+            order_link_id=f"stage26-verify-{int(leg.leg_index)}-{int(leg.id or 0)}",
+            slippage_pct=config.market_slippage_pct,
+        )
+
+        if not order_payload.payload.get("orderLinkId"):
+            raise RuntimeError("protected market payload missing orderLinkId")
+
         base.update(
             {
                 "execution_path_action": "orderable",
@@ -866,37 +1039,24 @@ def check_spot_execution_path_readonly(
                 "supported_live": True,
                 "policy_skipped": False,
                 "fail_closed": False,
+                "order_payload_build_ok": True,
             }
         )
         return base
 
-    if validation.status in {
-        ALLOCATION_LEG_STATUS_SKIPPED_MIN_ORDER,
-        ALLOCATION_LEG_STATUS_SKIPPED_SYMBOL_NOT_TRADING,
-    }:
+    except Exception as exc:
         base.update(
             {
-                "execution_path_action": "terminal_skip",
-                "execution_path_reason": validation.error or validation.status,
+                "execution_path_action": "fail_closed",
+                "execution_path_reason": f"spot_execution_path_pre_order_failed: {exc}",
                 "required_guard_actions": [],
                 "supported_live": False,
-                "policy_skipped": True,
-                "fail_closed": False,
+                "policy_skipped": False,
+                "fail_closed": True,
+                "order_payload_build_ok": False,
             }
         )
         return base
-
-    base.update(
-        {
-            "execution_path_action": "fail_closed",
-            "execution_path_reason": validation.error or validation.status,
-            "required_guard_actions": [],
-            "supported_live": False,
-            "policy_skipped": False,
-            "fail_closed": True,
-        }
-    )
-    return base
 
 
 def classify_plan(
@@ -929,6 +1089,17 @@ def classify_plan(
         spot_validation_status = None
         spot_min_order_amt = None
         spot_target_usdt = str(dec(leg.target_usdt))
+        liquidity_checked = False
+        liquidity_ok = None
+        liquidity_error = None
+        last_price = None
+        best_bid = None
+        best_ask = None
+        available_liquidity_qty = None
+        available_liquidity_usdt = None
+        required_qty = None
+        required_usdt = None
+        order_payload_build_ok = False
 
         if leg_status == ALLOCATION_LEG_STATUS_SKIPPED_ZERO_VALUE:
             row_fail_closed = False
@@ -972,6 +1143,17 @@ def classify_plan(
             spot_validation_status = execution_check["spot_validation_status"]
             spot_min_order_amt = execution_check["spot_min_order_amt"]
             spot_target_usdt = execution_check["spot_target_usdt"]
+            liquidity_checked = execution_check["liquidity_checked"]
+            liquidity_ok = execution_check["liquidity_ok"]
+            liquidity_error = execution_check["liquidity_error"]
+            last_price = execution_check["last_price"]
+            best_bid = execution_check["best_bid"]
+            best_ask = execution_check["best_ask"]
+            available_liquidity_qty = execution_check["available_liquidity_qty"]
+            available_liquidity_usdt = execution_check["available_liquidity_usdt"]
+            required_qty = execution_check["required_qty"]
+            required_usdt = execution_check["required_usdt"]
+            order_payload_build_ok = execution_check["order_payload_build_ok"]
 
             row_supported_live = bool(execution_check["supported_live"])
             row_policy_skipped = bool(execution_check["policy_skipped"])
@@ -1008,6 +1190,17 @@ def classify_plan(
             "spot_validation_status": spot_validation_status,
             "spot_min_order_amt": spot_min_order_amt,
             "spot_target_usdt": spot_target_usdt,
+            "liquidity_checked": liquidity_checked,
+            "liquidity_ok": liquidity_ok,
+            "liquidity_error": liquidity_error,
+            "last_price": last_price,
+            "best_bid": best_bid,
+            "best_ask": best_ask,
+            "available_liquidity_qty": available_liquidity_qty,
+            "available_liquidity_usdt": available_liquidity_usdt,
+            "required_qty": required_qty,
+            "required_usdt": required_usdt,
+            "order_payload_build_ok": order_payload_build_ok,
         }
         rows.append(row)
 
@@ -1055,6 +1248,17 @@ def print_leg_rows(rows: list[dict[str, Any]]) -> None:
             f"spot_validation_status={row['spot_validation_status']}",
             f"spot_min_order_amt={row['spot_min_order_amt']}",
             f"spot_target_usdt={row['spot_target_usdt']}",
+            f"liquidity_checked={row['liquidity_checked']}",
+            f"liquidity_ok={row['liquidity_ok']}",
+            f"liquidity_error={row['liquidity_error']}",
+            f"last_price={row['last_price']}",
+            f"best_bid={row['best_bid']}",
+            f"best_ask={row['best_ask']}",
+            f"available_liquidity_qty={row['available_liquidity_qty']}",
+            f"available_liquidity_usdt={row['available_liquidity_usdt']}",
+            f"required_qty={row['required_qty']}",
+            f"required_usdt={row['required_usdt']}",
+            f"order_payload_build_ok={row['order_payload_build_ok']}",
         ]
         print("PLANNED_LEG " + " ".join(parts))
 
@@ -1453,6 +1657,163 @@ def test_stage26_2_8c_real_production_blockers_regression() -> None:
     print("STAGE26_2_8C_REAL_PRODUCTION_BLOCKERS_REGRESSION_OK")
 
 
+def _make_stage26_2_8e_spot_leg(
+    *,
+    symbol: str,
+    target_usdt: Decimal = Decimal("10"),
+    target_qty: Decimal = Decimal("10"),
+) -> FundAllocationLeg:
+    return FundAllocationLeg(
+        id=1,
+        allocation_batch_id=10,
+        settlement_batch_id=20,
+        fund_id=1,
+        leg_index=1,
+        leg_key=f"stage26_2_8e_{symbol.lower()}",
+        leg_group="spot",
+        leg_type=LEG_TYPE_SPOT_BUY,
+        coin=symbol.removesuffix("USDT"),
+        symbol=symbol,
+        category="spot",
+        side="Buy",
+        location="UNIFIED",
+        target_usdt=target_usdt,
+        target_qty=target_qty,
+        status=ALLOCATION_LEG_STATUS_PLANNED,
+        execution_mode="planned",
+    )
+
+
+def test_stage26_2_8e_spot_liquidity_execution_path_regression() -> None:
+    orderable_leg = _make_stage26_2_8e_spot_leg(symbol="OKUSDT")
+    orderable_client = Stage26SpotValidationFakeClient(
+        min_order_amt_by_symbol={"OKUSDT": "1"},
+        orderbook_mode_by_symbol={"OKUSDT": "sufficient"},
+    )
+    orderable = check_spot_execution_path_readonly(
+        orderable_leg,
+        client=orderable_client,
+    )
+
+    assert_ok("STAGE26_2_8E_ORDERABLE_SPOT_FULL_PATH_ORDERABLE", orderable["execution_path_action"] == "orderable")
+    assert_ok("STAGE26_2_8E_ORDERABLE_SPOT_LIQUIDITY_OK", orderable["liquidity_ok"] is True)
+    assert_ok("STAGE26_2_8E_ORDERABLE_SPOT_PAYLOAD_OK", orderable["order_payload_build_ok"] is True)
+    assert_ok("STAGE26_2_8E_ORDERABLE_SPOT_TRADE_GUARD_REQUIRED", orderable["required_guard_actions"] == ["bybit_allocation_trade_order"])
+
+    empty_leg = _make_stage26_2_8e_spot_leg(symbol="EMPTYUSDT")
+    empty_client = Stage26SpotValidationFakeClient(
+        min_order_amt_by_symbol={"EMPTYUSDT": "1"},
+        orderbook_mode_by_symbol={"EMPTYUSDT": "empty"},
+    )
+    empty = check_spot_execution_path_readonly(
+        empty_leg,
+        client=empty_client,
+    )
+
+    assert_ok("STAGE26_2_8E_EMPTY_ORDERBOOK_FAIL_CLOSED", empty["execution_path_action"] == "fail_closed")
+    assert_ok("STAGE26_2_8E_EMPTY_ORDERBOOK_NOT_READY", empty["fail_closed"] is True)
+    assert_ok("STAGE26_2_8E_EMPTY_ORDERBOOK_NO_PAYLOAD", empty["order_payload_build_ok"] is False)
+
+    insufficient_leg = _make_stage26_2_8e_spot_leg(symbol="THINUSDT")
+    insufficient_client = Stage26SpotValidationFakeClient(
+        min_order_amt_by_symbol={"THINUSDT": "1"},
+        orderbook_mode_by_symbol={"THINUSDT": "insufficient"},
+    )
+    insufficient = check_spot_execution_path_readonly(
+        insufficient_leg,
+        client=insufficient_client,
+    )
+
+    assert_ok("STAGE26_2_8E_INSUFFICIENT_LIQUIDITY_FAIL_CLOSED", insufficient["execution_path_action"] == "fail_closed")
+    assert_ok("STAGE26_2_8E_INSUFFICIENT_LIQUIDITY_NOT_READY", insufficient["fail_closed"] is True)
+    assert_ok("STAGE26_2_8E_INSUFFICIENT_LIQUIDITY_NO_PAYLOAD", insufficient["order_payload_build_ok"] is False)
+
+    below_min_leg = _make_stage26_2_8e_spot_leg(
+        symbol="MINUSDT",
+        target_usdt=Decimal("0.01"),
+        target_qty=Decimal("0.01"),
+    )
+    below_min_client = Stage26SpotValidationFakeClient(
+        min_order_amt_by_symbol={"MINUSDT": "1"},
+        orderbook_mode_by_symbol={"MINUSDT": "sufficient"},
+    )
+    below_min = check_spot_execution_path_readonly(
+        below_min_leg,
+        client=below_min_client,
+    )
+
+    assert_ok("STAGE26_2_8E_BELOW_MIN_TERMINAL_SKIP", below_min["execution_path_action"] == "terminal_skip")
+    assert_ok("STAGE26_2_8E_BELOW_MIN_NO_GUARD", below_min["required_guard_actions"] == [])
+    assert_ok("STAGE26_2_8E_BELOW_MIN_NOT_FAIL_CLOSED", below_min["fail_closed"] is False)
+    assert_ok("STAGE26_2_8E_FAKE_CLIENT_NO_POST", orderable_client.post_calls == 0 and empty_client.post_calls == 0 and insufficient_client.post_calls == 0 and below_min_client.post_calls == 0)
+
+    print("STAGE26_2_8E_SPOT_LIQUIDITY_EXECUTION_PATH_REGRESSION_OK")
+
+
+def test_stage26_2_8e_production_verifier_full_spot_path() -> None:
+    ready_leg = _make_stage26_2_8e_spot_leg(symbol="READYUSDT")
+    ready_client = Stage26SpotValidationFakeClient(
+        min_order_amt_by_symbol={"READYUSDT": "1"},
+        orderbook_mode_by_symbol={"READYUSDT": "sufficient"},
+    )
+
+    original = configure_controlled_policy()
+    try:
+        ready_result = classify_plan(
+            [ready_leg],
+            spot_execution_client=ready_client,
+        )
+    finally:
+        restore_policy(original)
+
+    ready_row = ready_result["rows"][0]
+    assert_ok("STAGE26_2_8E_CLASSIFY_READY_ORDERABLE", ready_result["ready"] is True)
+    assert_ok("STAGE26_2_8E_CLASSIFY_READY_FULL_PATH_CHECKED", ready_row["execution_path_checked"] is True and ready_row["liquidity_checked"] is True)
+    assert_ok("STAGE26_2_8E_CLASSIFY_READY_PAYLOAD_OK", ready_row["order_payload_build_ok"] is True)
+
+    empty_leg = _make_stage26_2_8e_spot_leg(symbol="EMPTYREADYUSDT")
+    empty_client = Stage26SpotValidationFakeClient(
+        min_order_amt_by_symbol={"EMPTYREADYUSDT": "1"},
+        orderbook_mode_by_symbol={"EMPTYREADYUSDT": "empty"},
+    )
+
+    original = configure_controlled_policy()
+    try:
+        empty_result = classify_plan(
+            [empty_leg],
+            spot_execution_client=empty_client,
+        )
+    finally:
+        restore_policy(original)
+
+    empty_row = empty_result["rows"][0]
+    assert_ok("STAGE26_2_8E_CLASSIFY_EMPTY_ORDERBOOK_NOT_READY", empty_result["ready"] is False)
+    assert_ok("STAGE26_2_8E_CLASSIFY_EMPTY_ORDERBOOK_FAIL_CLOSED", empty_row["fail_closed"] is True)
+    assert_ok("STAGE26_2_8E_CLASSIFY_EMPTY_ORDERBOOK_NO_PAYLOAD", empty_row["order_payload_build_ok"] is False)
+
+    insufficient_leg = _make_stage26_2_8e_spot_leg(symbol="THINREADYUSDT")
+    insufficient_client = Stage26SpotValidationFakeClient(
+        min_order_amt_by_symbol={"THINREADYUSDT": "1"},
+        orderbook_mode_by_symbol={"THINREADYUSDT": "insufficient"},
+    )
+
+    original = configure_controlled_policy()
+    try:
+        insufficient_result = classify_plan(
+            [insufficient_leg],
+            spot_execution_client=insufficient_client,
+        )
+    finally:
+        restore_policy(original)
+
+    insufficient_row = insufficient_result["rows"][0]
+    assert_ok("STAGE26_2_8E_CLASSIFY_INSUFFICIENT_LIQUIDITY_NOT_READY", insufficient_result["ready"] is False)
+    assert_ok("STAGE26_2_8E_CLASSIFY_INSUFFICIENT_LIQUIDITY_FAIL_CLOSED", insufficient_row["fail_closed"] is True)
+    assert_ok("STAGE26_2_8E_CLASSIFY_INSUFFICIENT_LIQUIDITY_NO_PAYLOAD", insufficient_row["order_payload_build_ok"] is False)
+
+    print("STAGE26_2_8E_PRODUCTION_VERIFIER_FULL_SPOT_PATH_OK")
+
+
 def test_stage26_2_8d_production_verifier_execution_path_check() -> None:
     snapshot = build_stage26_2_8c_production_blocker_snapshot()
 
@@ -1556,6 +1917,8 @@ def run_self_test() -> int:
     test_stage26_2_8c_position_endpoint_category_tagging()
     test_stage26_2_8c_real_production_blockers_regression()
     test_stage26_2_8d_production_verifier_execution_path_check()
+    test_stage26_2_8e_spot_liquidity_execution_path_regression()
+    test_stage26_2_8e_production_verifier_full_spot_path()
 
     print("STAGE26_2_8A_PRODUCTION_VERIFIER_LOCAL_SAFETY_TESTS_OK")
     return 0

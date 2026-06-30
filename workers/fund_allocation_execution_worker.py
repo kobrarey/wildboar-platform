@@ -12,7 +12,10 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.lifecycle import evaluate_live_gate
 from app.allocation.derivative_handlers import handle_derivative_leg_mock
+from app.allocation.bybit_orders import BybitOrderPayloadError
 from app.allocation.execution_engine import prepare_execution_for_leg
+from app.allocation.instrument_info import InstrumentInfoError
+from app.allocation.liquidity import LiquidityError
 from app.allocation.residual_service import process_residual_leg_mock
 from app.allocation.spot_earn_handlers import handle_spot_earn_leg_mock
 from app.allocation.statuses import (
@@ -54,6 +57,7 @@ from app.allocation.live_earn_orders import (
     submit_bybit_earn_stake_order,
 )
 from app.allocation.live_spot_orders import (
+    LiveSpotOrderError,
     build_live_spot_market_order_plan,
     mark_live_spot_order_create_failed,
     prepare_live_spot_market_order_or_terminal_skip,
@@ -67,6 +71,14 @@ from app.models import Fund, FundAllocationBatch, FundAllocationLeg
 
 
 log = logging.getLogger(__name__)
+
+
+SPOT_PLAN_DETERMINISTIC_FAILURE_TYPES = (
+    LiveSpotOrderError,
+    InstrumentInfoError,
+    LiquidityError,
+    BybitOrderPayloadError,
+)
 
 
 SUPPORTED_FUNDS = {
@@ -1217,6 +1229,57 @@ def _process_live_earn_leg_in_own_session(
         db6.close()
 
 
+def _mark_live_spot_plan_failure_requires_review_in_own_session(
+    *,
+    allocation_leg_id: int,
+    dry_run: bool,
+    error: str,
+) -> bool:
+    db = SessionLocal()
+
+    try:
+        result = mark_live_spot_order_create_failed(
+            db,
+            allocation_leg_id=int(allocation_leg_id),
+            error=error,
+        )
+        allocation_batch_id = int(result.allocation_batch_id)
+
+        if dry_run:
+            db.rollback()
+        else:
+            db.commit()
+
+        log.error(
+            "Allocation live spot deterministic plan failure marked requires_review "
+            "leg_id=%s status=%s error=%s external_post_calls=0 guard_required=0",
+            allocation_leg_id,
+            result.status,
+            error,
+        )
+
+        _refresh_live_batch_progress_in_own_session(
+            allocation_batch_id=allocation_batch_id,
+            dry_run=dry_run,
+        )
+
+        return False
+
+    except Exception as exc:
+        db.rollback()
+        log.exception(
+            "Allocation live spot deterministic plan failure marking failed "
+            "leg_id=%s original_error=%s mark_error=%s",
+            allocation_leg_id,
+            error,
+            exc,
+        )
+        return False
+
+    finally:
+        db.close()
+
+
 def _process_live_spot_leg_in_own_session(
     *,
     allocation_leg_id: int,
@@ -1422,10 +1485,22 @@ def _process_live_spot_leg_in_own_session(
             plan.order_link_id,
         )
 
+    except SPOT_PLAN_DETERMINISTIC_FAILURE_TYPES as exc:
+        db3.rollback()
+        log.exception(
+            "Allocation live spot deterministic plan failed leg_id=%s error=%s",
+            allocation_leg_id,
+            exc,
+        )
+        return _mark_live_spot_plan_failure_requires_review_in_own_session(
+            allocation_leg_id=int(allocation_leg_id),
+            dry_run=dry_run,
+            error=f"spot_order_plan_deterministic_failed: {exc}",
+        )
     except Exception as exc:
         db3.rollback()
         log.exception(
-            "Allocation live spot plan failed leg_id=%s error=%s",
+            "Allocation live spot uncertain plan failed leg_id=%s error=%s",
             allocation_leg_id,
             exc,
         )
