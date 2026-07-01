@@ -9,7 +9,9 @@ from sqlalchemy.orm import Session
 
 from app.allocation.earn_orders import build_earn_stake_payload
 from app.allocation.earn_products import (
+    EarnProductInfo,
     EarnProductUnavailableError,
+    EarnValidationResult,
     get_earn_product_info,
     validate_earn_product_for_stake,
 )
@@ -19,8 +21,10 @@ from app.allocation.statuses import (
     ALLOCATION_LEG_STATUS_FAILED_REQUIRES_REVIEW,
     ALLOCATION_LEG_STATUS_MARKET_ORDER_SENT,
     ALLOCATION_LEG_STATUS_PLANNED,
+    ALLOCATION_LEG_STATUS_SKIPPED_EARN_UNAVAILABLE,
     EXECUTION_MODE_EARN_STAKE,
     EXECUTION_MODE_RESIDUAL_EARN,
+    EXECUTION_MODE_SKIPPED,
     LEG_TYPE_RESIDUAL_USDT_EARN,
     LEG_TYPE_USDT_EARN_STAKE,
 )
@@ -47,6 +51,26 @@ class LiveEarnOrderPlan:
     payload: dict[str, Any]
     category: str
     product_id: str
+    coin: str
+    amount: Decimal
+    stake_amount: Decimal
+    residual_amount: Decimal
+    diagnostics: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class LiveEarnTerminalSkipResult:
+    allocation_leg_id: int
+    allocation_batch_id: int
+    fund_id: int
+    settlement_batch_id: int
+    ok: bool
+    status: str
+    execution_mode: str
+    action: str
+    reason: str | None
+    category: str | None
+    product_id: str | None
     coin: str
     amount: Decimal
     stake_amount: Decimal
@@ -168,13 +192,119 @@ def _earn_category_for_leg(leg: FundAllocationLeg, product_category: str) -> str
     return product_category
 
 
+def _earn_product_diagnostics(product: EarnProductInfo | None) -> dict[str, Any] | None:
+    if product is None:
+        return None
+
+    return {
+        "product_id": product.product_id,
+        "category": product.category,
+        "coin": product.coin,
+        "status": product.status,
+        "min_stake_amount": product.min_stake_amount,
+        "max_stake_amount": product.max_stake_amount,
+        "precision": product.precision,
+    }
+
+
+def _earn_validation_diagnostics(
+    validation: EarnValidationResult | None,
+) -> dict[str, Any] | None:
+    if validation is None:
+        return None
+
+    return {
+        "ok": validation.ok,
+        "status": validation.status,
+        "product_id": validation.product_id,
+        "category": validation.category,
+        "coin": validation.coin,
+        "original_amount": validation.original_amount,
+        "rounded_amount": validation.rounded_amount,
+        "stake_amount": validation.stake_amount,
+        "residual_amount": validation.residual_amount,
+        "min_stake_amount": validation.min_stake_amount,
+        "max_stake_amount": validation.max_stake_amount,
+        "error": validation.error,
+        "warnings": validation.warnings,
+    }
+
+
+def apply_earn_validation_terminal_skip_to_leg(
+    leg: FundAllocationLeg,
+    *,
+    reason: str,
+    coin: str,
+    category: str | None,
+    amount: Decimal,
+    product: EarnProductInfo | None = None,
+    validation: EarnValidationResult | None = None,
+) -> LiveEarnTerminalSkipResult:
+    amount_dec = dec(amount)
+    residual_amount = (
+        dec(validation.residual_amount)
+        if validation is not None
+        else amount_dec
+    )
+
+    leg.status = ALLOCATION_LEG_STATUS_SKIPPED_EARN_UNAVAILABLE
+    leg.execution_mode = EXECUTION_MODE_SKIPPED
+    leg.residual_usdt = residual_amount if _normalize_coin(coin) == "USDT" else dec(leg.target_usdt)
+    leg.required_qty = Decimal("0")
+    leg.required_usdt = Decimal("0")
+    leg.order_link_id = None
+    leg.earn_order_id = None
+    leg.bybit_order_id = None
+
+    if product is not None:
+        leg.earn_product_id = product.product_id
+        leg.earn_product_category = product.category
+        leg.earn_product_status = product.status
+        leg.earn_min_stake_amount = product.min_stake_amount
+        leg.earn_max_stake_amount = product.max_stake_amount
+        leg.earn_precision = dec(product.precision)
+
+    leg.error = reason
+    leg.updated_at = utcnow()
+
+    product_id = product.product_id if product is not None else None
+    product_category = product.category if product is not None else category
+
+    return LiveEarnTerminalSkipResult(
+        allocation_leg_id=int(leg.id),
+        allocation_batch_id=int(leg.allocation_batch_id),
+        fund_id=int(leg.fund_id),
+        settlement_batch_id=int(leg.settlement_batch_id),
+        ok=True,
+        status=ALLOCATION_LEG_STATUS_SKIPPED_EARN_UNAVAILABLE,
+        execution_mode=EXECUTION_MODE_SKIPPED,
+        action="terminal_earn_validation_skip",
+        reason=reason,
+        category=product_category,
+        product_id=product_id,
+        coin=_normalize_coin(coin) or "USDT",
+        amount=amount_dec,
+        stake_amount=Decimal("0"),
+        residual_amount=residual_amount,
+        diagnostics=_json_dict(
+            {
+                "product": _earn_product_diagnostics(product),
+                "validation": _earn_validation_diagnostics(validation),
+                "external_post_calls": 0,
+                "guard_required": 0,
+            }
+        ),
+    )
+
+
 def build_live_earn_stake_order_plan(
     db: Session,
     *,
     allocation_leg_id: int,
     client: Any,
     default_category: str,
-) -> LiveEarnOrderPlan:
+    allow_terminal_skip: bool = False,
+) -> LiveEarnOrderPlan | LiveEarnTerminalSkipResult:
     """
     Build and persist a live Earn stake plan.
 
@@ -209,6 +339,20 @@ def build_live_earn_stake_order_plan(
             category=category,
         )
     except EarnProductUnavailableError as exc:
+        if allow_terminal_skip:
+            result = apply_earn_validation_terminal_skip_to_leg(
+                leg,
+                reason=f"earn_product_unavailable_terminal_skip_to_residual_cash: {exc}",
+                coin=coin,
+                category=category,
+                amount=amount,
+                product=None,
+                validation=None,
+            )
+            db.add(leg)
+            db.flush()
+            return result
+
         raise LiveEarnOrderError(str(exc)) from exc
 
     validation = validate_earn_product_for_stake(
@@ -217,6 +361,26 @@ def build_live_earn_stake_order_plan(
     )
 
     if not validation.ok:
+        if (
+            allow_terminal_skip
+            and validation.status == ALLOCATION_LEG_STATUS_SKIPPED_EARN_UNAVAILABLE
+        ):
+            result = apply_earn_validation_terminal_skip_to_leg(
+                leg,
+                reason=(
+                    "earn_validation_terminal_skip_to_residual_cash: "
+                    f"{validation.error or validation.status}"
+                ),
+                coin=product.coin,
+                category=product.category,
+                amount=amount,
+                product=product,
+                validation=validation,
+            )
+            db.add(leg)
+            db.flush()
+            return result
+
         raise LiveEarnOrderError(validation.error or "earn_product_validation_failed")
 
     whitelist = require_live_earn_whitelisted(
@@ -306,6 +470,22 @@ def build_live_earn_stake_order_plan(
                 "external_post_calls": 0,
             }
         ),
+    )
+
+
+def prepare_live_earn_stake_order_or_terminal_skip(
+    db: Session,
+    *,
+    allocation_leg_id: int,
+    client: Any,
+    default_category: str,
+) -> LiveEarnOrderPlan | LiveEarnTerminalSkipResult:
+    return build_live_earn_stake_order_plan(
+        db,
+        allocation_leg_id=allocation_leg_id,
+        client=client,
+        default_category=default_category,
+        allow_terminal_skip=True,
     )
 
 

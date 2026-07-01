@@ -52,6 +52,7 @@ from app.allocation.live_policy import (
 from app.allocation.live_earn_orders import (
     build_live_earn_stake_order_plan,
     mark_live_earn_order_create_failed,
+    prepare_live_earn_stake_order_or_terminal_skip,
     reconcile_live_earn_stake_leg_by_link_id,
     require_earn_guard_for_plan,
     submit_bybit_earn_stake_order,
@@ -994,15 +995,39 @@ def _process_live_earn_leg_in_own_session(
         finally:
             db2.close()
 
-    # Phase 3: build plan and persist deterministic earn_order_id/orderLinkId before POST.
+    # Phase 3: build plan or terminalize safe Earn validation skip before POST.
     db3 = SessionLocal()
     try:
-        plan = build_live_earn_stake_order_plan(
+        plan_or_skip = prepare_live_earn_stake_order_or_terminal_skip(
             db3,
             allocation_leg_id=int(allocation_leg_id),
             client=client,
             default_category=settings.ALLOCATION_USDT_EARN_CATEGORY,
         )
+
+        if getattr(plan_or_skip, "action", "") == "terminal_earn_validation_skip":
+            allocation_batch_id = int(plan_or_skip.allocation_batch_id)
+
+            if dry_run:
+                db3.rollback()
+            else:
+                db3.commit()
+
+            log.info(
+                "Allocation live Earn validation terminal skip "
+                "leg_id=%s status=%s reason=%s external_post_calls=0 guard_required=0",
+                allocation_leg_id,
+                plan_or_skip.status,
+                plan_or_skip.reason,
+            )
+
+            _refresh_live_batch_progress_in_own_session(
+                allocation_batch_id=allocation_batch_id,
+                dry_run=dry_run,
+            )
+            return True
+
+        plan = plan_or_skip
 
         if dry_run:
             db3.rollback()

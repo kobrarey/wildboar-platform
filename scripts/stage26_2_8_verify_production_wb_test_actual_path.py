@@ -18,6 +18,12 @@ from app.allocation.bybit_snapshot_reader import (
     build_allocation_snapshot_from_bybit,
 )
 from app.allocation.bybit_orders import build_protected_market_order_payload
+from app.allocation.earn_orders import build_earn_stake_payload
+from app.allocation.earn_products import (
+    EarnProductUnavailableError,
+    get_earn_product_info,
+    validate_earn_product_for_stake,
+)
 from app.allocation.execution_config import get_allocation_execution_config
 from app.allocation.instrument_info import (
     InstrumentInfo,
@@ -29,7 +35,10 @@ from app.allocation.liquidity import (
     get_last_price,
     get_orderbook,
 )
-from app.allocation.live_earn_config import allocation_earn_live_enabled
+from app.allocation.live_earn_config import (
+    allocation_earn_live_enabled,
+    require_live_earn_whitelisted,
+)
 from app.allocation.live_policy import (
     BUY_THEN_STAKE_LIVE_POLICY_FAIL_CLOSED,
     BUY_THEN_STAKE_LIVE_POLICY_SPOT_ONLY,
@@ -49,6 +58,7 @@ from app.allocation.snapshot_service import (
 )
 from app.allocation.statuses import (
     ALLOCATION_LEG_STATUS_PLANNED,
+    ALLOCATION_LEG_STATUS_SKIPPED_EARN_UNAVAILABLE,
     ALLOCATION_LEG_STATUS_SKIPPED_MIN_ORDER,
     ALLOCATION_LEG_STATUS_SKIPPED_SYMBOL_NOT_TRADING,
     ALLOCATION_LEG_STATUS_SKIPPED_ZERO_VALUE,
@@ -145,6 +155,11 @@ class Stage26SpotValidationFakeClient:
         status_by_symbol: dict[str, str] | None = None,
         last_price_by_symbol: dict[str, str] | None = None,
         orderbook_mode_by_symbol: dict[str, str] | None = None,
+        earn_product_id_by_coin: dict[str, str] | None = None,
+        earn_product_status_by_coin: dict[str, str] | None = None,
+        earn_min_stake_by_coin: dict[str, str] | None = None,
+        earn_precision_by_coin: dict[str, str] | None = None,
+        earn_error_by_coin: dict[str, str] | None = None,
     ):
         self.min_order_amt_by_symbol = {
             str(k).upper(): str(v)
@@ -161,6 +176,26 @@ class Stage26SpotValidationFakeClient:
         self.orderbook_mode_by_symbol = {
             str(k).upper(): str(v)
             for k, v in (orderbook_mode_by_symbol or {}).items()
+        }
+        self.earn_product_id_by_coin = {
+            str(k).upper(): str(v)
+            for k, v in (earn_product_id_by_coin or {}).items()
+        }
+        self.earn_product_status_by_coin = {
+            str(k).upper(): str(v)
+            for k, v in (earn_product_status_by_coin or {}).items()
+        }
+        self.earn_min_stake_by_coin = {
+            str(k).upper(): str(v)
+            for k, v in (earn_min_stake_by_coin or {}).items()
+        }
+        self.earn_precision_by_coin = {
+            str(k).upper(): str(v)
+            for k, v in (earn_precision_by_coin or {}).items()
+        }
+        self.earn_error_by_coin = {
+            str(k).upper(): str(v)
+            for k, v in (earn_error_by_coin or {}).items()
         }
         self.public_get_calls: list[tuple[str, dict[str, Any]]] = []
         self.get_calls: list[tuple[str, dict[str, Any]]] = []
@@ -247,6 +282,37 @@ class Stage26SpotValidationFakeClient:
     def get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
         params = params or {}
         self.get_calls.append((path, dict(params)))
+
+        if path == "/v5/earn/product":
+            coin = str(params.get("coin") or "USDT").upper()
+            category = str(params.get("category") or "FlexibleSaving")
+
+            if coin in self.earn_error_by_coin:
+                raise RuntimeError(self.earn_error_by_coin[coin])
+
+            product_id = self.earn_product_id_by_coin.get(
+                coin,
+                f"{coin}-{category}-001",
+            )
+
+            return {
+                "retCode": 0,
+                "retMsg": "OK",
+                "result": {
+                    "list": [
+                        {
+                            "productId": product_id,
+                            "coin": coin,
+                            "category": category,
+                            "status": self.earn_product_status_by_coin.get(coin, "Available"),
+                            "minStakeAmount": self.earn_min_stake_by_coin.get(coin, "0.1"),
+                            "maxStakeAmount": "100000000",
+                            "precision": self.earn_precision_by_coin.get(coin, "2"),
+                        }
+                    ]
+                },
+            }
+
         return self.public_get(path, params)
 
     def post(self, path: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -815,6 +881,37 @@ def build_plan(snapshot: AllocationSnapshot, *, positive_net_usdt: Decimal) -> d
     }
 
 
+def _is_earn_execution_path_leg(leg: FundAllocationLeg) -> bool:
+    return str(leg.leg_type or "") in {
+        LEG_TYPE_USDT_EARN_STAKE,
+        LEG_TYPE_RESIDUAL_USDT_EARN,
+    }
+
+
+def _earn_execution_path_coin(leg: FundAllocationLeg) -> str:
+    return str(leg.coin or "USDT").strip().upper() or "USDT"
+
+
+def _earn_execution_path_category(leg: FundAllocationLeg) -> str:
+    raw = str(leg.category or "").strip()
+
+    if raw and raw.lower() not in {"earn", "spot"}:
+        return raw
+
+    return str(settings.ALLOCATION_USDT_EARN_CATEGORY)
+
+
+def _earn_execution_path_amount(leg: FundAllocationLeg) -> Decimal:
+    coin = _earn_execution_path_coin(leg)
+    target_usdt = dec(leg.target_usdt)
+    target_qty = dec(leg.target_qty)
+
+    if coin == "USDT":
+        return target_usdt if target_usdt > Decimal("0") else target_qty
+
+    return target_qty if target_qty > Decimal("0") else target_usdt
+
+
 def _is_spot_execution_path_leg(leg: FundAllocationLeg) -> bool:
     return str(leg.leg_type or "") in {LEG_TYPE_SPOT_BUY, LEG_TYPE_BUY_THEN_STAKE}
 
@@ -1059,10 +1156,216 @@ def check_spot_execution_path_readonly(
         return base
 
 
+def check_earn_execution_path_readonly(
+    leg: FundAllocationLeg,
+    *,
+    client: Any,
+    fund_code: str,
+) -> dict[str, Any]:
+    coin = _earn_execution_path_coin(leg)
+    category = _earn_execution_path_category(leg)
+    target_amount = _earn_execution_path_amount(leg)
+
+    base = {
+        "earn_execution_path_checked": True,
+        "earn_execution_path_action": None,
+        "earn_execution_path_reason": None,
+        "earn_product_id": None,
+        "earn_product_category": category,
+        "earn_product_status": None,
+        "earn_min_stake_amount": None,
+        "earn_target_amount": str(target_amount),
+        "earn_stake_amount": None,
+        "earn_residual_amount": None,
+        "earn_payload_build_ok": False,
+        "required_guard_actions": ["bybit_allocation_earn_order"],
+        "supported_live": True,
+        "policy_skipped": False,
+        "fail_closed": False,
+    }
+
+    if not coin:
+        base.update(
+            {
+                "earn_execution_path_action": "fail_closed",
+                "earn_execution_path_reason": "earn_execution_path_coin_required",
+                "required_guard_actions": [],
+                "supported_live": False,
+                "policy_skipped": False,
+                "fail_closed": True,
+            }
+        )
+        return base
+
+    if not category:
+        base.update(
+            {
+                "earn_execution_path_action": "fail_closed",
+                "earn_execution_path_reason": "earn_execution_path_category_required",
+                "required_guard_actions": [],
+                "supported_live": False,
+                "policy_skipped": False,
+                "fail_closed": True,
+            }
+        )
+        return base
+
+    try:
+        product = get_earn_product_info(
+            client,
+            coin=coin,
+            category=category,
+        )
+    except EarnProductUnavailableError as exc:
+        base.update(
+            {
+                "earn_execution_path_action": "terminal_skip",
+                "earn_execution_path_reason": (
+                    "earn_product_unavailable_terminal_skip_to_residual_cash: "
+                    f"{exc}"
+                ),
+                "required_guard_actions": [],
+                "supported_live": False,
+                "policy_skipped": True,
+                "fail_closed": False,
+                "earn_residual_amount": str(target_amount),
+            }
+        )
+        return base
+    except Exception as exc:
+        base.update(
+            {
+                "earn_execution_path_action": "fail_closed",
+                "earn_execution_path_reason": f"earn_product_read_failed: {exc}",
+                "required_guard_actions": [],
+                "supported_live": False,
+                "policy_skipped": False,
+                "fail_closed": True,
+            }
+        )
+        return base
+
+    base.update(
+        {
+            "earn_product_id": product.product_id,
+            "earn_product_category": product.category,
+            "earn_product_status": product.status,
+            "earn_min_stake_amount": str(product.min_stake_amount),
+        }
+    )
+
+    validation = validate_earn_product_for_stake(
+        product=product,
+        amount=target_amount,
+    )
+
+    base.update(
+        {
+            "earn_stake_amount": str(validation.stake_amount),
+            "earn_residual_amount": str(validation.residual_amount),
+        }
+    )
+
+    if not validation.ok:
+        if validation.status == ALLOCATION_LEG_STATUS_SKIPPED_EARN_UNAVAILABLE:
+            base.update(
+                {
+                    "earn_execution_path_action": "terminal_skip",
+                    "earn_execution_path_reason": (
+                        "earn_validation_terminal_skip_to_residual_cash: "
+                        f"{validation.error or validation.status}"
+                    ),
+                    "required_guard_actions": [],
+                    "supported_live": False,
+                    "policy_skipped": True,
+                    "fail_closed": False,
+                    "earn_payload_build_ok": False,
+                }
+            )
+            return base
+
+        base.update(
+            {
+                "earn_execution_path_action": "fail_closed",
+                "earn_execution_path_reason": validation.error or validation.status,
+                "required_guard_actions": [],
+                "supported_live": False,
+                "policy_skipped": False,
+                "fail_closed": True,
+                "earn_payload_build_ok": False,
+            }
+        )
+        return base
+
+    whitelist = require_live_earn_whitelisted(
+        fund_code=fund_code,
+        coin=product.coin,
+        category=product.category,
+        product_id=product.product_id,
+        amount=validation.stake_amount,
+    )
+
+    if not whitelist.ok:
+        base.update(
+            {
+                "earn_execution_path_action": "fail_closed",
+                "earn_execution_path_reason": f"earn_whitelist_blocked: {whitelist.reason}",
+                "required_guard_actions": [],
+                "supported_live": False,
+                "policy_skipped": False,
+                "fail_closed": True,
+                "earn_payload_build_ok": False,
+            }
+        )
+        return base
+
+    try:
+        payload = build_earn_stake_payload(
+            category=product.category,
+            product_id=product.product_id,
+            coin=product.coin,
+            amount=validation.stake_amount,
+            order_link_id=f"stage26-earn-verify-{int(leg.leg_index)}-{int(leg.id or 0)}",
+            account_type="UNIFIED",
+        )
+
+        if not payload.payload.get("productId"):
+            raise RuntimeError("earn payload missing productId")
+
+    except Exception as exc:
+        base.update(
+            {
+                "earn_execution_path_action": "fail_closed",
+                "earn_execution_path_reason": f"earn_payload_build_failed: {exc}",
+                "required_guard_actions": [],
+                "supported_live": False,
+                "policy_skipped": False,
+                "fail_closed": True,
+                "earn_payload_build_ok": False,
+            }
+        )
+        return base
+
+    base.update(
+        {
+            "earn_execution_path_action": "orderable",
+            "earn_execution_path_reason": None,
+            "required_guard_actions": ["bybit_allocation_earn_order"],
+            "supported_live": True,
+            "policy_skipped": False,
+            "fail_closed": False,
+            "earn_payload_build_ok": True,
+        }
+    )
+    return base
+
+
 def classify_plan(
     legs: list[FundAllocationLeg],
     *,
     spot_execution_client: Any | None = None,
+    earn_execution_client: Any | None = None,
+    fund_code: str = "wb_test",
 ) -> dict[str, Any]:
     supported_items = []
     skipped_items = []
@@ -1100,6 +1403,17 @@ def classify_plan(
         required_qty = None
         required_usdt = None
         order_payload_build_ok = False
+        earn_execution_path_checked = False
+        earn_execution_path_action = None
+        earn_execution_path_reason = None
+        earn_product_id = None
+        earn_product_category = None
+        earn_product_status = None
+        earn_min_stake_amount = None
+        earn_target_amount = None
+        earn_stake_amount = None
+        earn_residual_amount = None
+        earn_payload_build_ok = False
 
         if leg_status == ALLOCATION_LEG_STATUS_SKIPPED_ZERO_VALUE:
             row_fail_closed = False
@@ -1164,6 +1478,39 @@ def classify_plan(
 
             row_required_guard_actions = list(execution_check["required_guard_actions"])
 
+        if (
+            not row_fail_closed
+            and row_supported_live
+            and earn_execution_client is not None
+            and _is_earn_execution_path_leg(leg)
+        ):
+            earn_check = check_earn_execution_path_readonly(
+                leg,
+                client=earn_execution_client,
+                fund_code=fund_code,
+            )
+
+            earn_execution_path_checked = bool(earn_check["earn_execution_path_checked"])
+            earn_execution_path_action = earn_check["earn_execution_path_action"]
+            earn_execution_path_reason = earn_check["earn_execution_path_reason"]
+            earn_product_id = earn_check["earn_product_id"]
+            earn_product_category = earn_check["earn_product_category"]
+            earn_product_status = earn_check["earn_product_status"]
+            earn_min_stake_amount = earn_check["earn_min_stake_amount"]
+            earn_target_amount = earn_check["earn_target_amount"]
+            earn_stake_amount = earn_check["earn_stake_amount"]
+            earn_residual_amount = earn_check["earn_residual_amount"]
+            earn_payload_build_ok = bool(earn_check["earn_payload_build_ok"])
+
+            row_supported_live = bool(earn_check["supported_live"])
+            row_policy_skipped = bool(earn_check["policy_skipped"])
+            row_fail_closed = bool(earn_check["fail_closed"])
+
+            if earn_execution_path_reason is not None:
+                row_reason = earn_execution_path_reason
+
+            row_required_guard_actions = list(earn_check["required_guard_actions"])
+
         if not row_fail_closed:
             required_guard_actions.update(row_required_guard_actions)
 
@@ -1201,6 +1548,17 @@ def classify_plan(
             "required_qty": required_qty,
             "required_usdt": required_usdt,
             "order_payload_build_ok": order_payload_build_ok,
+            "earn_execution_path_checked": earn_execution_path_checked,
+            "earn_execution_path_action": earn_execution_path_action,
+            "earn_execution_path_reason": earn_execution_path_reason,
+            "earn_product_id": earn_product_id,
+            "earn_product_category": earn_product_category,
+            "earn_product_status": earn_product_status,
+            "earn_min_stake_amount": earn_min_stake_amount,
+            "earn_target_amount": earn_target_amount,
+            "earn_stake_amount": earn_stake_amount,
+            "earn_residual_amount": earn_residual_amount,
+            "earn_payload_build_ok": earn_payload_build_ok,
         }
         rows.append(row)
 
@@ -1259,6 +1617,17 @@ def print_leg_rows(rows: list[dict[str, Any]]) -> None:
             f"required_qty={row['required_qty']}",
             f"required_usdt={row['required_usdt']}",
             f"order_payload_build_ok={row['order_payload_build_ok']}",
+            f"earn_execution_path_checked={row['earn_execution_path_checked']}",
+            f"earn_execution_path_action={row['earn_execution_path_action']}",
+            f"earn_execution_path_reason={row['earn_execution_path_reason']}",
+            f"earn_product_id={row['earn_product_id']}",
+            f"earn_product_category={row['earn_product_category']}",
+            f"earn_product_status={row['earn_product_status']}",
+            f"earn_min_stake_amount={row['earn_min_stake_amount']}",
+            f"earn_target_amount={row['earn_target_amount']}",
+            f"earn_stake_amount={row['earn_stake_amount']}",
+            f"earn_residual_amount={row['earn_residual_amount']}",
+            f"earn_payload_build_ok={row['earn_payload_build_ok']}",
         ]
         print("PLANNED_LEG " + " ".join(parts))
 
@@ -1367,6 +1736,8 @@ def run_verification(args: argparse.Namespace) -> int:
         classification = classify_plan(
             plan["leg_models"],
             spot_execution_client=no_post_client_holder["client"],
+            earn_execution_client=no_post_client_holder["client"],
+            fund_code=fund_code,
         )
 
         after_fund_orders = db.query(FundOrder).filter(FundOrder.fund_id == int(fund.id)).count()
@@ -1657,6 +2028,199 @@ def test_stage26_2_8c_real_production_blockers_regression() -> None:
     print("STAGE26_2_8C_REAL_PRODUCTION_BLOCKERS_REGRESSION_OK")
 
 
+def _make_stage26_2_8f_earn_leg(
+    *,
+    target_usdt: Decimal = Decimal("0.9"),
+    coin: str = "USDT",
+) -> FundAllocationLeg:
+    return FundAllocationLeg(
+        id=1,
+        allocation_batch_id=10,
+        settlement_batch_id=20,
+        fund_id=1,
+        leg_index=1,
+        leg_key="stage26_2_8f_earn",
+        leg_group="earn",
+        leg_type=LEG_TYPE_USDT_EARN_STAKE,
+        coin=coin,
+        symbol=None,
+        category="earn",
+        side=None,
+        location="EARN",
+        target_usdt=target_usdt,
+        target_qty=target_usdt,
+        status=ALLOCATION_LEG_STATUS_PLANNED,
+        execution_mode="planned",
+    )
+
+
+def test_stage26_2_8f_earn_execution_path_regression() -> None:
+    below_min_leg = _make_stage26_2_8f_earn_leg(target_usdt=Decimal("0.9"))
+    below_min_client = Stage26SpotValidationFakeClient(
+        earn_min_stake_by_coin={"USDT": "1"},
+        earn_product_status_by_coin={"USDT": "Available"},
+    )
+    below_min = check_earn_execution_path_readonly(
+        below_min_leg,
+        client=below_min_client,
+        fund_code="wb_test",
+    )
+
+    assert_ok("STAGE26_2_8F_BELOW_MIN_EARN_TERMINAL_SKIP", below_min["earn_execution_path_action"] == "terminal_skip")
+    assert_ok("STAGE26_2_8F_BELOW_MIN_EARN_NO_GUARD", below_min["required_guard_actions"] == [])
+    assert_ok("STAGE26_2_8F_BELOW_MIN_EARN_NOT_FAIL_CLOSED", below_min["fail_closed"] is False)
+
+    orderable_leg = _make_stage26_2_8f_earn_leg(target_usdt=Decimal("0.9"))
+    orderable_client = Stage26SpotValidationFakeClient(
+        earn_min_stake_by_coin={"USDT": "0.1"},
+        earn_product_status_by_coin={"USDT": "Available"},
+    )
+    original = configure_controlled_policy()
+    try:
+        orderable = check_earn_execution_path_readonly(
+            orderable_leg,
+            client=orderable_client,
+            fund_code="wb_test",
+        )
+    finally:
+        restore_policy(original)
+
+    assert_ok("STAGE26_2_8F_ORDERABLE_EARN_FULL_PATH_ORDERABLE", orderable["earn_execution_path_action"] == "orderable")
+    assert_ok("STAGE26_2_8F_ORDERABLE_EARN_PAYLOAD_OK", orderable["earn_payload_build_ok"] is True)
+    assert_ok("STAGE26_2_8F_ORDERABLE_EARN_GUARD_REQUIRED", orderable["required_guard_actions"] == ["bybit_allocation_earn_order"])
+
+    unavailable_leg = _make_stage26_2_8f_earn_leg(target_usdt=Decimal("0.9"))
+    unavailable_client = Stage26SpotValidationFakeClient(
+        earn_min_stake_by_coin={"USDT": "0.1"},
+        earn_product_status_by_coin={"USDT": "Unavailable"},
+    )
+    unavailable = check_earn_execution_path_readonly(
+        unavailable_leg,
+        client=unavailable_client,
+        fund_code="wb_test",
+    )
+
+    assert_ok("STAGE26_2_8F_UNAVAILABLE_EARN_TERMINAL_SKIP", unavailable["earn_execution_path_action"] == "terminal_skip")
+    assert_ok("STAGE26_2_8F_UNAVAILABLE_EARN_NO_GUARD", unavailable["required_guard_actions"] == [])
+    assert_ok("STAGE26_2_8F_UNAVAILABLE_EARN_NOT_FAIL_CLOSED", unavailable["fail_closed"] is False)
+
+    uncertain_leg = _make_stage26_2_8f_earn_leg(target_usdt=Decimal("0.9"))
+    uncertain_client = Stage26SpotValidationFakeClient(
+        earn_error_by_coin={"USDT": "earn api timeout uncertain"},
+    )
+    uncertain = check_earn_execution_path_readonly(
+        uncertain_leg,
+        client=uncertain_client,
+        fund_code="wb_test",
+    )
+
+    assert_ok("STAGE26_2_8F_UNCERTAIN_EARN_ERROR_FAIL_CLOSED", uncertain["earn_execution_path_action"] == "fail_closed")
+    assert_ok("STAGE26_2_8F_UNCERTAIN_EARN_ERROR_NOT_READY", uncertain["fail_closed"] is True)
+
+    whitelist_leg = _make_stage26_2_8f_earn_leg(target_usdt=Decimal("0.9"))
+    whitelist_client = Stage26SpotValidationFakeClient(
+        earn_min_stake_by_coin={"USDT": "0.1"},
+        earn_product_id_by_coin={"USDT": "USDT-FlexibleSaving-001"},
+    )
+
+    original = policy_snapshot()
+    try:
+        settings.ALLOCATION_EARN_ENABLED = True
+        settings.ALLOCATION_EARN_ALLOW_LIVE = True
+        settings.ALLOCATION_EARN_REQUIRE_PRODUCT_ID_WHITELIST = True
+        settings.ALLOCATION_EARN_ALLOWED_FUND_CODES = "wb_test"
+        settings.ALLOCATION_EARN_ALLOWED_COINS = ""
+        settings.ALLOCATION_EARN_ALLOWED_CATEGORIES = "FlexibleSaving"
+        settings.ALLOCATION_EARN_ALLOWED_PRODUCT_IDS = "OTHER-PRODUCT"
+
+        whitelist = check_earn_execution_path_readonly(
+            whitelist_leg,
+            client=whitelist_client,
+            fund_code="wb_test",
+        )
+    finally:
+        restore_policy(original)
+
+    assert_ok("STAGE26_2_8F_WHITELIST_BLOCKED_FAIL_CLOSED", whitelist["earn_execution_path_action"] == "fail_closed")
+    assert_ok("STAGE26_2_8F_WHITELIST_BLOCKED_NOT_READY", whitelist["fail_closed"] is True)
+    assert_ok(
+        "STAGE26_2_8F_FAKE_CLIENT_NO_POST",
+        below_min_client.post_calls == 0
+        and orderable_client.post_calls == 0
+        and unavailable_client.post_calls == 0
+        and uncertain_client.post_calls == 0
+        and whitelist_client.post_calls == 0,
+    )
+
+    print("STAGE26_2_8F_EARN_EXECUTION_PATH_REGRESSION_OK")
+
+
+def test_stage26_2_8f_production_verifier_full_earn_path() -> None:
+    orderable_leg = _make_stage26_2_8f_earn_leg(target_usdt=Decimal("0.9"))
+    orderable_client = Stage26SpotValidationFakeClient(
+        earn_min_stake_by_coin={"USDT": "0.1"},
+        earn_product_status_by_coin={"USDT": "Available"},
+    )
+
+    original = configure_controlled_policy()
+    try:
+        orderable_result = classify_plan(
+            [orderable_leg],
+            earn_execution_client=orderable_client,
+            fund_code="wb_test",
+        )
+    finally:
+        restore_policy(original)
+
+    orderable_row = orderable_result["rows"][0]
+    assert_ok("STAGE26_2_8F_CLASSIFY_ORDERABLE_EARN_READY", orderable_result["ready"] is True)
+    assert_ok("STAGE26_2_8F_CLASSIFY_ORDERABLE_EARN_PATH_CHECKED", orderable_row["earn_execution_path_checked"] is True)
+    assert_ok("STAGE26_2_8F_CLASSIFY_ORDERABLE_EARN_PAYLOAD_OK", orderable_row["earn_payload_build_ok"] is True)
+    assert_ok("STAGE26_2_8F_CLASSIFY_ORDERABLE_EARN_GUARD", "bybit_allocation_earn_order" in orderable_result["required_guard_actions"])
+
+    below_min_leg = _make_stage26_2_8f_earn_leg(target_usdt=Decimal("0.9"))
+    below_min_client = Stage26SpotValidationFakeClient(
+        earn_min_stake_by_coin={"USDT": "1"},
+        earn_product_status_by_coin={"USDT": "Available"},
+    )
+
+    original = configure_controlled_policy()
+    try:
+        below_min_result = classify_plan(
+            [below_min_leg],
+            earn_execution_client=below_min_client,
+            fund_code="wb_test",
+        )
+    finally:
+        restore_policy(original)
+
+    below_min_row = below_min_result["rows"][0]
+    assert_ok("STAGE26_2_8F_CLASSIFY_BELOW_MIN_EARN_READY", below_min_result["ready"] is True)
+    assert_ok("STAGE26_2_8F_CLASSIFY_BELOW_MIN_EARN_TERMINAL_SKIP", below_min_row["earn_execution_path_action"] == "terminal_skip")
+    assert_ok("STAGE26_2_8F_CLASSIFY_BELOW_MIN_EARN_NO_GUARD", below_min_row["required_guard_actions"] == [])
+
+    uncertain_leg = _make_stage26_2_8f_earn_leg(target_usdt=Decimal("0.9"))
+    uncertain_client = Stage26SpotValidationFakeClient(
+        earn_error_by_coin={"USDT": "earn api timeout uncertain"},
+    )
+
+    original = configure_controlled_policy()
+    try:
+        uncertain_result = classify_plan(
+            [uncertain_leg],
+            earn_execution_client=uncertain_client,
+            fund_code="wb_test",
+        )
+    finally:
+        restore_policy(original)
+
+    uncertain_row = uncertain_result["rows"][0]
+    assert_ok("STAGE26_2_8F_CLASSIFY_UNCERTAIN_EARN_NOT_READY", uncertain_result["ready"] is False)
+    assert_ok("STAGE26_2_8F_CLASSIFY_UNCERTAIN_EARN_FAIL_CLOSED", uncertain_row["fail_closed"] is True)
+
+    print("STAGE26_2_8F_PRODUCTION_VERIFIER_FULL_EARN_PATH_OK")
+
+
 def _make_stage26_2_8e_spot_leg(
     *,
     symbol: str,
@@ -1919,6 +2483,8 @@ def run_self_test() -> int:
     test_stage26_2_8d_production_verifier_execution_path_check()
     test_stage26_2_8e_spot_liquidity_execution_path_regression()
     test_stage26_2_8e_production_verifier_full_spot_path()
+    test_stage26_2_8f_earn_execution_path_regression()
+    test_stage26_2_8f_production_verifier_full_earn_path()
 
     print("STAGE26_2_8A_PRODUCTION_VERIFIER_LOCAL_SAFETY_TESTS_OK")
     return 0
