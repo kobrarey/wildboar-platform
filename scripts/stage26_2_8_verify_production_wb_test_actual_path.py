@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
+import io
 import json
 import sys
 from collections import Counter
@@ -80,6 +82,11 @@ READY_MARKER = "STAGE26_2_8_PRODUCTION_WB_TEST_ACTUAL_ALLOCATION_PATH_READY_OK"
 NOT_READY_MARKER = "STAGE26_2_8_PRODUCTION_WB_TEST_ACTUAL_ALLOCATION_PATH_NOT_READY"
 FIXTURE_ONLY_MARKER = "STAGE26_2_8_PRODUCTION_WB_TEST_ACTUAL_ALLOCATION_PATH_BLOCKED_FIXTURE_ONLY"
 SNAPSHOT_UNAVAILABLE_MARKER = "STAGE26_2_8_PRODUCTION_WB_TEST_ACTUAL_ALLOCATION_PATH_BLOCKED_SNAPSHOT_UNAVAILABLE"
+
+CONFIRMATION_PATH_MARKER = "STAGE26_2_12_PRODUCTION_VERIFIER_CONFIRMATION_PATH_OK"
+CONFIRMATION_PATH_ACTUAL_RUN_MARKER = (
+    "STAGE26_2_12_PRODUCTION_VERIFIER_CONFIRMATION_PATH_ACTUAL_RUN_MARKER_OK"
+)
 
 
 class VerificationBlocked(RuntimeError):
@@ -360,6 +367,131 @@ def ast_call_names(path: str) -> set[str]:
                 out.add(func.attr)
 
     return out
+
+
+def verify_settlement_transfer_confirmation_path(
+    *,
+    emit_assert_ok: bool = False,
+) -> dict[str, Any]:
+    worker_path = "workers/fund_settlement_transfer_confirmation_worker.py"
+    transfer_service_path = "app/settlement/transfer_service.py"
+
+    checks: dict[str, bool] = {}
+    failures: list[str] = []
+
+    def record(name: str, ok: bool, marker: str | None = None) -> None:
+        checks[name] = bool(ok)
+        if emit_assert_ok and marker is not None:
+            assert_ok(marker, bool(ok))
+        if not ok:
+            failures.append(name)
+
+    try:
+        from app.settlement.transfer_service import (
+            confirm_sent_settlement_transfer,
+            confirm_sent_settlement_transfers_for_batch,
+        )
+        import workers.fund_settlement_transfer_confirmation_worker as confirmation_worker
+    except Exception as exc:
+        return {
+            "ok": False,
+            "checks": checks,
+            "reason": f"confirmation_path_import_failed: {exc}",
+        }
+
+    worker_source = read(worker_path)
+    transfer_service_source = read(transfer_service_path)
+    worker_calls = ast_call_names(worker_path)
+
+    record(
+        "worker_importable",
+        confirmation_worker is not None,
+        "STAGE26_2_12_VERIFIER_CONFIRMATION_WORKER_IMPORTABLE",
+    )
+    record(
+        "service_confirm_one_importable",
+        callable(confirm_sent_settlement_transfer),
+        "STAGE26_2_12_VERIFIER_CONFIRMATION_SERVICE_IMPORTABLE",
+    )
+    record(
+        "service_confirm_batch_importable",
+        callable(confirm_sent_settlement_transfers_for_batch),
+        "STAGE26_2_12_VERIFIER_CONFIRMATION_BATCH_SERVICE_IMPORTABLE",
+    )
+    record(
+        "worker_no_usdt_send",
+        "_send_usdt_transfer" not in worker_calls and "_send_usdt_transfer" not in worker_source,
+        "STAGE26_2_12_VERIFIER_CONFIRMATION_WORKER_NO_USDT_SEND",
+    )
+    record(
+        "worker_no_native_bnb_send",
+        "send_native_bnb" not in worker_calls and "send_native_bnb" not in worker_source,
+        "STAGE26_2_12_VERIFIER_CONFIRMATION_WORKER_NO_NATIVE_BNB_SEND",
+    )
+    record(
+        "worker_no_raw_tx_send",
+        "send_raw_transaction" not in worker_calls and "send_raw_transaction" not in worker_source,
+        "STAGE26_2_12_VERIFIER_CONFIRMATION_WORKER_NO_RAW_TX_SEND",
+    )
+    record(
+        "service_has_public_confirm_one",
+        "def confirm_sent_settlement_transfer" in transfer_service_source,
+        "STAGE26_2_12_VERIFIER_CONFIRMATION_SERVICE_HAS_PUBLIC_FUNCTION",
+    )
+    record(
+        "service_has_public_confirm_batch",
+        "def confirm_sent_settlement_transfers_for_batch" in transfer_service_source,
+        "STAGE26_2_12_VERIFIER_CONFIRMATION_BATCH_SERVICE_HAS_PUBLIC_FUNCTION",
+    )
+    record(
+        "worker_imports_confirmation_service",
+        "confirm_sent_settlement_transfer" in worker_source,
+        "STAGE26_2_12_VERIFIER_CONFIRMATION_WORKER_USES_CONFIRMATION_SERVICE",
+    )
+    record(
+        "worker_no_fund_order_create",
+        "FundOrder(" not in worker_source and "FundOrder" not in worker_calls,
+        "STAGE26_2_12_VERIFIER_CONFIRMATION_WORKER_NO_FUND_ORDER_CREATE",
+    )
+    record(
+        "worker_no_settlement_batch_create",
+        "FundSettlementBatch(" not in worker_source
+        and "create_settlement_batch" not in worker_source
+        and "start_settlement_batch" not in worker_source,
+        "STAGE26_2_12_VERIFIER_CONFIRMATION_WORKER_NO_BATCH_CREATE",
+    )
+
+    return {
+        "ok": not failures,
+        "checks": checks,
+        "reason": "; ".join(failures) if failures else None,
+    }
+
+
+def emit_actual_ready_markers_after_confirmation_path(
+    *,
+    confirmation_path_result: dict[str, Any] | None = None,
+) -> bool:
+    result = confirmation_path_result
+
+    if result is None:
+        try:
+            result = verify_settlement_transfer_confirmation_path()
+        except Exception as exc:
+            result = {
+                "ok": False,
+                "reason": f"confirmation_path_verification_exception: {exc}",
+            }
+
+    if not result.get("ok"):
+        reason = result.get("reason") or "unknown"
+        print(f"confirmation_path_verification_failed: {reason}")
+        print(NOT_READY_MARKER)
+        return False
+
+    print(CONFIRMATION_PATH_MARKER)
+    print(READY_MARKER)
+    return True
 
 
 def print_kv(key: str, value: Any) -> None:
@@ -1784,7 +1916,9 @@ def run_verification(args: argparse.Namespace) -> int:
             print(NOT_READY_MARKER)
             return 1
 
-        print(READY_MARKER)
+        if not emit_actual_ready_markers_after_confirmation_path():
+            return 1
+
         return 0
 
     except VerificationBlocked as exc:
@@ -2432,6 +2566,86 @@ def test_stage26_2_8d_production_verifier_execution_path_check() -> None:
     print("STAGE26_2_8D_PRODUCTION_VERIFIER_EXECUTION_PATH_CHECK_OK")
 
 
+def test_stage26_2_12_confirmation_path_actual_run_marker(source: str) -> None:
+    helper_start = source.index("def emit_actual_ready_markers_after_confirmation_path")
+    helper_end = source.index("def print_kv")
+    helper_source = source[helper_start:helper_end]
+
+    verifier_start = source.index("def run_verification")
+    verifier_end = source.index("def configure_default_policy")
+    verifier_source = source[verifier_start:verifier_end]
+
+    assert_ok(
+        "STAGE26_2_12_PRODUCTION_VERIFIER_CONFIRMATION_PATH_ACTUAL_RUN_VALIDATES_BEFORE_READY",
+        "verify_settlement_transfer_confirmation_path()" in helper_source
+        and "print(READY_MARKER)" in helper_source
+        and helper_source.index("verify_settlement_transfer_confirmation_path()")
+        < helper_source.index("print(READY_MARKER)")
+        and "emit_actual_ready_markers_after_confirmation_path()" in verifier_source,
+    )
+
+    ok_buffer = io.StringIO()
+    with contextlib.redirect_stdout(ok_buffer):
+        ok = emit_actual_ready_markers_after_confirmation_path(
+            confirmation_path_result={
+                "ok": True,
+                "checks": {"forced_ok": True},
+                "reason": None,
+            }
+        )
+
+    ok_output = ok_buffer.getvalue()
+    assert_ok(
+        CONFIRMATION_PATH_ACTUAL_RUN_MARKER,
+        ok is True
+        and CONFIRMATION_PATH_MARKER in ok_output
+        and READY_MARKER in ok_output
+        and ok_output.index(CONFIRMATION_PATH_MARKER) < ok_output.index(READY_MARKER),
+    )
+
+    fail_buffer = io.StringIO()
+    with contextlib.redirect_stdout(fail_buffer):
+        failed_ok = emit_actual_ready_markers_after_confirmation_path(
+            confirmation_path_result={
+                "ok": False,
+                "checks": {"forced_failure": False},
+                "reason": "forced_failure",
+            }
+        )
+
+    fail_output = fail_buffer.getvalue()
+    assert_ok(
+        "STAGE26_2_12_PRODUCTION_VERIFIER_CONFIRMATION_PATH_ACTUAL_RUN_FAIL_CLOSED_OK",
+        failed_ok is False
+        and "confirmation_path_verification_failed: forced_failure" in fail_output
+        and NOT_READY_MARKER in fail_output
+        and READY_MARKER not in fail_output
+        and CONFIRMATION_PATH_MARKER not in fail_output,
+    )
+
+    fixture_args = argparse.Namespace(
+        fund_code="wb_test",
+        positive_net_usdt="10",
+        snapshot_json=None,
+        rollback=True,
+        fixture_mode=True,
+        self_test=False,
+    )
+
+    fixture_buffer = io.StringIO()
+    with contextlib.redirect_stdout(fixture_buffer):
+        fixture_rc = run_verification(fixture_args)
+
+    fixture_output = fixture_buffer.getvalue()
+    assert_ok(
+        "STAGE26_2_12_PRODUCTION_VERIFIER_CONFIRMATION_PATH_FIXTURE_NO_MARKER_OK",
+        fixture_rc == 2
+        and FIXTURE_ONLY_MARKER in fixture_output
+        and CONFIRMATION_PATH_MARKER not in fixture_output
+        and READY_MARKER not in fixture_output,
+    )
+
+
 def run_self_test() -> int:
     script_path = "scripts/stage26_2_8_verify_production_wb_test_actual_path.py"
     source = read(script_path)
@@ -2470,39 +2684,12 @@ def run_self_test() -> int:
     )
     calls = ast_call_names(script_path)
 
-    worker_path = "workers/fund_settlement_transfer_confirmation_worker.py"
-    transfer_service_path = "app/settlement/transfer_service.py"
-
-    worker_source = read(worker_path)
-    worker_calls = ast_call_names(worker_path)
-
-    from app.settlement.transfer_service import confirm_sent_settlement_transfer
-    import workers.fund_settlement_transfer_confirmation_worker as confirmation_worker
-
+    confirmation_path = verify_settlement_transfer_confirmation_path(emit_assert_ok=True)
     assert_ok(
-        "STAGE26_2_12_VERIFIER_CONFIRMATION_WORKER_IMPORTABLE",
-        confirmation_worker is not None,
+        "STAGE26_2_12_VERIFIER_CONFIRMATION_PATH_SHARED_OK",
+        confirmation_path["ok"] is True,
     )
-    assert_ok(
-        "STAGE26_2_12_VERIFIER_CONFIRMATION_SERVICE_IMPORTABLE",
-        callable(confirm_sent_settlement_transfer),
-    )
-    assert_ok(
-        "STAGE26_2_12_VERIFIER_CONFIRMATION_WORKER_NO_USDT_SEND",
-        "_send_usdt_transfer" not in worker_calls and "_send_usdt_transfer" not in worker_source,
-    )
-    assert_ok(
-        "STAGE26_2_12_VERIFIER_CONFIRMATION_WORKER_NO_NATIVE_BNB_SEND",
-        "send_native_bnb" not in worker_calls and "send_native_bnb" not in worker_source,
-    )
-    assert_ok(
-        "STAGE26_2_12_VERIFIER_CONFIRMATION_WORKER_NO_RAW_TX_SEND",
-        "send_raw_transaction" not in worker_calls and "send_raw_transaction" not in worker_source,
-    )
-    assert_ok(
-        "STAGE26_2_12_VERIFIER_CONFIRMATION_SERVICE_HAS_PUBLIC_FUNCTION",
-        "def confirm_sent_settlement_transfer" in read(transfer_service_path),
-    )
+    test_stage26_2_12_confirmation_path_actual_run_marker(source)
 
     assert_ok("SELFTEST_SOURCE_NO_CLIENT_POST_CALL", "post" not in calls)
     assert_ok("SELFTEST_SOURCE_NO_FUND_ORDER_CREATE", "FundOrder" not in calls)
@@ -2521,7 +2708,7 @@ def run_self_test() -> int:
     test_stage26_2_8f_production_verifier_full_earn_path()
 
     print("STAGE26_2_8A_PRODUCTION_VERIFIER_LOCAL_SAFETY_TESTS_OK")
-    print("STAGE26_2_12_PRODUCTION_VERIFIER_CONFIRMATION_PATH_OK")
+    print(CONFIRMATION_PATH_MARKER)
     return 0
 
 
