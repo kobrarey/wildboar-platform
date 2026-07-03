@@ -29,12 +29,14 @@ from app.settlement.gas_service import (
     get_web3,
     send_native_bnb,
 )
+from app.settlement.pricing_lock import unlock_pricing_for_fund
 from app.settlement.statuses import (
     BATCH_STATUS_AWAITING_NEGATIVE_NET_EXECUTION,
     BATCH_STATUS_AWAITING_POSITIVE_NET_EXECUTION,
     BATCH_STATUS_COLLECTING_BUY_USDT,
     BATCH_STATUS_FAILED,
     BATCH_STATUS_FAILED_REQUIRES_REVIEW,
+    BATCH_STATUS_GAS_CHECKING,
     BATCH_STATUS_GAS_READY,
     BATCH_STATUS_BUY_USDT_COLLECTED,
     ORDER_SIDE_BUY,
@@ -91,6 +93,31 @@ class BuyCollectionResult:
     pending_orders_count: int
     failed_orders_count: int
     batch_status: str
+    message: str
+
+
+@dataclass(frozen=True)
+class TxReceiptCheckResult:
+    action: str  # missing | pending | confirmed | failed | error
+    receipt_status: int | None
+    confirmations: int
+    block_number: int | None
+    current_block: int | None
+    error: str | None = None
+
+
+@dataclass(frozen=True)
+class SettlementTransferConfirmationResult:
+    transfer_id: int
+    batch_id: int | None
+    order_id: int | None
+    transfer_type: str | None
+    tx_hash: str | None
+    action: str  # pending | confirmed | failed | already_confirmed | skipped
+    receipt_status: int | None
+    confirmations: int
+    batch_status: str | None
+    order_status: str | None
     message: str
 
 
@@ -302,19 +329,128 @@ def _create_or_update_transfer(
     return existing
 
 
-def _check_tx_confirmed(w3: Web3, tx_hash: str | None) -> bool:
+def _receipt_get(receipt: Any, key: str, default: Any = None) -> Any:
+    if receipt is None:
+        return default
+    if hasattr(receipt, "get"):
+        return receipt.get(key, default)
+    return getattr(receipt, key, default)
+
+
+def _get_tx_receipt_check(
+    w3: Web3,
+    tx_hash: str | None,
+    *,
+    min_confirmations: int | None = None,
+) -> TxReceiptCheckResult:
     if not tx_hash:
-        return False
+        return TxReceiptCheckResult(
+            action="missing",
+            receipt_status=None,
+            confirmations=0,
+            block_number=None,
+            current_block=None,
+            error="tx_hash_missing",
+        )
 
     try:
         receipt = w3.eth.get_transaction_receipt(tx_hash)
-    except Exception:
-        return False
+    except Exception as exc:
+        return TxReceiptCheckResult(
+            action="pending",
+            receipt_status=None,
+            confirmations=0,
+            block_number=None,
+            current_block=None,
+            error=f"receipt_unavailable: {exc}",
+        )
 
     if receipt is None:
-        return False
+        return TxReceiptCheckResult(
+            action="pending",
+            receipt_status=None,
+            confirmations=0,
+            block_number=None,
+            current_block=None,
+            error=None,
+        )
 
-    return int(receipt.get("status", 0)) == 1
+    try:
+        receipt_status = int(_receipt_get(receipt, "status", 0))
+    except Exception:
+        receipt_status = None
+
+    try:
+        block_number_raw = _receipt_get(receipt, "blockNumber", None)
+        block_number = int(block_number_raw) if block_number_raw is not None else None
+    except Exception:
+        block_number = None
+
+    try:
+        current_block = int(w3.eth.block_number)
+    except Exception as exc:
+        return TxReceiptCheckResult(
+            action="pending",
+            receipt_status=receipt_status,
+            confirmations=0,
+            block_number=block_number,
+            current_block=None,
+            error=f"current_block_unavailable: {exc}",
+        )
+
+    confirmations = 0
+    if block_number is not None:
+        confirmations = max(current_block - block_number + 1, 0)
+
+    required = int(
+        min_confirmations
+        if min_confirmations is not None
+        else settings.SETTLEMENT_TRANSFER_CONFIRMATION_MIN_CONFIRMATIONS
+    )
+
+    if confirmations < required:
+        return TxReceiptCheckResult(
+            action="pending",
+            receipt_status=receipt_status,
+            confirmations=confirmations,
+            block_number=block_number,
+            current_block=current_block,
+            error=None,
+        )
+
+    if receipt_status == 1:
+        return TxReceiptCheckResult(
+            action="confirmed",
+            receipt_status=receipt_status,
+            confirmations=confirmations,
+            block_number=block_number,
+            current_block=current_block,
+            error=None,
+        )
+
+    if receipt_status == 0:
+        return TxReceiptCheckResult(
+            action="failed",
+            receipt_status=receipt_status,
+            confirmations=confirmations,
+            block_number=block_number,
+            current_block=current_block,
+            error=None,
+        )
+
+    return TxReceiptCheckResult(
+        action="pending",
+        receipt_status=receipt_status,
+        confirmations=confirmations,
+        block_number=block_number,
+        current_block=current_block,
+        error=f"unexpected_receipt_status={receipt_status}",
+    )
+
+
+def _check_tx_confirmed(w3: Web3, tx_hash: str | None) -> bool:
+    result = _get_tx_receipt_check(w3, tx_hash)
+    return result.action == "confirmed"
 
 
 def _send_usdt_transfer(
@@ -424,6 +560,417 @@ def _confirm_buy_collection(
     db.add(wallet)
     db.add(order)
     db.flush()
+
+
+def _get_batch_for_update(db: Session, *, batch_id: int) -> FundSettlementBatch:
+    batch = (
+        db.query(FundSettlementBatch)
+        .filter(FundSettlementBatch.id == batch_id)
+        .with_for_update()
+        .first()
+    )
+    if batch is None:
+        raise SettlementTransferError(f"Settlement batch not found: {batch_id}")
+    return batch
+
+
+def _get_order_for_update(db: Session, *, order_id: int | None) -> FundOrder | None:
+    if order_id is None:
+        return None
+    return (
+        db.query(FundOrder)
+        .filter(FundOrder.id == order_id)
+        .with_for_update()
+        .first()
+    )
+
+
+def _maybe_advance_batch_after_buy_confirmations(
+    db: Session,
+    *,
+    batch: FundSettlementBatch,
+) -> str:
+    buy_orders = (
+        db.query(FundOrder)
+        .filter(
+            FundOrder.settlement_batch_id == batch.id,
+            FundOrder.side == ORDER_SIDE_BUY,
+        )
+        .with_for_update()
+        .all()
+    )
+
+    if not buy_orders:
+        return str(batch.status)
+
+    all_collected = all(
+        str(order.status) == ORDER_STATUS_BUY_COLLECTED
+        for order in buy_orders
+    )
+
+    if not all_collected:
+        if batch.status not in {
+            BATCH_STATUS_GAS_CHECKING,
+            BATCH_STATUS_GAS_READY,
+            BATCH_STATUS_COLLECTING_BUY_USDT,
+        }:
+            return str(batch.status)
+
+        batch.status = BATCH_STATUS_COLLECTING_BUY_USDT
+        batch.updated_at = utcnow()
+        db.add(batch)
+        db.flush()
+        return str(batch.status)
+
+    return _update_terminal_batch_status(db, batch=batch)
+
+
+def _release_reserved_for_failed_collection(
+    *,
+    wallet: UserWallet,
+    amount_usdt: Decimal,
+) -> Decimal:
+    reserved_before = _dec(wallet.usdt_reserved)
+    release_amount = min(reserved_before, amount_usdt)
+    wallet.usdt_reserved = reserved_before - release_amount
+    return release_amount
+
+
+def _apply_confirmed_sent_transfer(
+    db: Session,
+    *,
+    transfer: FundSettlementTransfer,
+    receipt_check: TxReceiptCheckResult,
+) -> SettlementTransferConfirmationResult:
+    now = utcnow()
+    batch = _get_batch_for_update(db, batch_id=int(transfer.batch_id))
+
+    order = _get_order_for_update(db, order_id=transfer.order_id)
+    order_status: str | None = str(order.status) if order is not None else None
+
+    transfer.status = TRANSFER_STATUS_CONFIRMED
+    transfer.confirmed_at = transfer.confirmed_at or now
+    transfer.updated_at = now
+    transfer.error = None
+    db.add(transfer)
+
+    if transfer.transfer_type == TRANSFER_TYPE_USER_BUY_USDT_TO_SETTLEMENT:
+        if order is None:
+            raise SettlementTransferError(
+                f"Cannot confirm buy collection: order_id missing for transfer_id={transfer.id}"
+            )
+
+        if order.status != ORDER_STATUS_BUY_COLLECTED:
+            wallet = _get_active_user_wallet_for_update(db, user_id=int(order.user_id))
+            amount_usdt = _dec(transfer.amount_usdt or order.amount_usdt)
+
+            _confirm_buy_collection(
+                db=db,
+                order=order,
+                wallet=wallet,
+                amount_usdt=amount_usdt,
+            )
+
+            order_status = ORDER_STATUS_BUY_COLLECTED
+        else:
+            order_status = ORDER_STATUS_BUY_COLLECTED
+
+        batch_status = _maybe_advance_batch_after_buy_confirmations(db, batch=batch)
+
+    elif transfer.transfer_type == TRANSFER_TYPE_USER_WALLET_GAS_TOPUP:
+        batch_status = str(batch.status)
+
+    else:
+        batch_status = str(batch.status)
+
+    db.flush()
+
+    return SettlementTransferConfirmationResult(
+        transfer_id=int(transfer.id),
+        batch_id=int(transfer.batch_id),
+        order_id=int(transfer.order_id) if transfer.order_id is not None else None,
+        transfer_type=str(transfer.transfer_type),
+        tx_hash=transfer.tx_hash,
+        action="confirmed",
+        receipt_status=receipt_check.receipt_status,
+        confirmations=receipt_check.confirmations,
+        batch_status=batch_status,
+        order_status=order_status,
+        message="sent transfer confirmed from on-chain receipt",
+    )
+
+
+def _apply_failed_sent_transfer(
+    db: Session,
+    *,
+    transfer: FundSettlementTransfer,
+    receipt_check: TxReceiptCheckResult,
+) -> SettlementTransferConfirmationResult:
+    now = utcnow()
+    batch = _get_batch_for_update(db, batch_id=int(transfer.batch_id))
+    order = _get_order_for_update(db, order_id=transfer.order_id)
+
+    error = (
+        "sent settlement transfer failed on-chain "
+        f"transfer_id={transfer.id} tx_hash={transfer.tx_hash} "
+        f"receipt_status={receipt_check.receipt_status} confirmations={receipt_check.confirmations}"
+    )
+
+    transfer.status = TRANSFER_STATUS_FAILED_REQUIRES_REVIEW
+    transfer.updated_at = now
+    transfer.error = error
+    db.add(transfer)
+
+    order_status: str | None = None
+
+    if order is not None:
+        order_status = ORDER_STATUS_FAILED_REQUIRES_REVIEW
+
+        if order.status != ORDER_STATUS_BUY_COLLECTED:
+            try:
+                wallet = _get_active_user_wallet_for_update(db, user_id=int(order.user_id))
+                amount_usdt = _dec(transfer.amount_usdt or order.amount_usdt)
+                released = _release_reserved_for_failed_collection(
+                    wallet=wallet,
+                    amount_usdt=amount_usdt,
+                )
+                db.add(wallet)
+
+                order.error = (
+                    f"{error}; released_reserved_usdt={released}; "
+                    "receipt.status=0 proves the failed tx did not move USDT"
+                )
+            except Exception as exc:
+                order.error = f"{error}; reserve_release_failed={exc}"
+        else:
+            order.error = f"{error}; order already buy_collected, wallet accounting not changed"
+
+        order.status = ORDER_STATUS_FAILED_REQUIRES_REVIEW
+        db.add(order)
+
+    batch.status = BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    batch.error = error
+    batch.updated_at = now
+    db.add(batch)
+
+    try:
+        unlock_pricing_for_fund(
+            db,
+            fund_id=int(batch.fund_id),
+            batch_id=int(batch.id),
+        )
+        batch.pricing_unlocked_at = now
+        db.add(batch)
+    except Exception as exc:
+        log.warning(
+            "Pricing unlock after failed settlement transfer failed "
+            "batch_id=%s transfer_id=%s error=%s",
+            batch.id,
+            transfer.id,
+            exc,
+        )
+        batch.error = f"{error}; pricing_unlock_failed={exc}"
+        db.add(batch)
+
+    db.flush()
+
+    _send_alert(
+        "❌ Settlement sent transfer failed on-chain\n"
+        f"Batch ID: {batch.id}\n"
+        f"Order ID: {transfer.order_id}\n"
+        f"Transfer ID: {transfer.id}\n"
+        f"Tx: {transfer.tx_hash}\n"
+        f"Receipt status: {receipt_check.receipt_status}\n"
+        f"Confirmations: {receipt_check.confirmations}"
+    )
+
+    return SettlementTransferConfirmationResult(
+        transfer_id=int(transfer.id),
+        batch_id=int(transfer.batch_id),
+        order_id=int(transfer.order_id) if transfer.order_id is not None else None,
+        transfer_type=str(transfer.transfer_type),
+        tx_hash=transfer.tx_hash,
+        action="failed",
+        receipt_status=receipt_check.receipt_status,
+        confirmations=receipt_check.confirmations,
+        batch_status=str(batch.status),
+        order_status=order_status,
+        message=error,
+    )
+
+
+def confirm_sent_settlement_transfer(
+    db: Session,
+    transfer_id: int,
+    *,
+    dry_run: bool = False,
+    min_confirmations: int | None = None,
+) -> SettlementTransferConfirmationResult:
+    """
+    Confirmation-only path for an already-sent settlement transfer.
+
+    Safety:
+    - does not send BSC tx;
+    - does not call Operation Guard;
+    - does not create fund orders;
+    - does not create settlement batches;
+    - idempotent: accounting is applied only when transfer is sent and order is not buy_collected.
+    """
+    transfer = (
+        db.query(FundSettlementTransfer)
+        .filter(FundSettlementTransfer.id == int(transfer_id))
+        .with_for_update()
+        .first()
+    )
+
+    if transfer is None:
+        raise SettlementTransferError(f"Settlement transfer not found: {transfer_id}")
+
+    if transfer.status == TRANSFER_STATUS_CONFIRMED:
+        return SettlementTransferConfirmationResult(
+            transfer_id=int(transfer.id),
+            batch_id=int(transfer.batch_id),
+            order_id=int(transfer.order_id) if transfer.order_id is not None else None,
+            transfer_type=str(transfer.transfer_type),
+            tx_hash=transfer.tx_hash,
+            action="already_confirmed",
+            receipt_status=None,
+            confirmations=0,
+            batch_status=None,
+            order_status=None,
+            message="transfer already confirmed; no mutation",
+        )
+
+    if transfer.status != TRANSFER_STATUS_SENT:
+        return SettlementTransferConfirmationResult(
+            transfer_id=int(transfer.id),
+            batch_id=int(transfer.batch_id),
+            order_id=int(transfer.order_id) if transfer.order_id is not None else None,
+            transfer_type=str(transfer.transfer_type),
+            tx_hash=transfer.tx_hash,
+            action="skipped",
+            receipt_status=None,
+            confirmations=0,
+            batch_status=None,
+            order_status=None,
+            message=f"transfer status is not sent: {transfer.status}",
+        )
+
+    if not transfer.tx_hash:
+        return SettlementTransferConfirmationResult(
+            transfer_id=int(transfer.id),
+            batch_id=int(transfer.batch_id),
+            order_id=int(transfer.order_id) if transfer.order_id is not None else None,
+            transfer_type=str(transfer.transfer_type),
+            tx_hash=None,
+            action="pending",
+            receipt_status=None,
+            confirmations=0,
+            batch_status=None,
+            order_status=None,
+            message="sent transfer has no tx_hash",
+        )
+
+    w3 = get_web3()
+    receipt_check = _get_tx_receipt_check(
+        w3,
+        transfer.tx_hash,
+        min_confirmations=min_confirmations,
+    )
+
+    if receipt_check.action in {"missing", "pending", "error"}:
+        return SettlementTransferConfirmationResult(
+            transfer_id=int(transfer.id),
+            batch_id=int(transfer.batch_id),
+            order_id=int(transfer.order_id) if transfer.order_id is not None else None,
+            transfer_type=str(transfer.transfer_type),
+            tx_hash=transfer.tx_hash,
+            action="pending",
+            receipt_status=receipt_check.receipt_status,
+            confirmations=receipt_check.confirmations,
+            batch_status=None,
+            order_status=None,
+            message=receipt_check.error or "receipt pending or below confirmation threshold",
+        )
+
+    if dry_run:
+        dry_run_action = {
+            "confirmed": "dry_run_would_confirm",
+            "failed": "dry_run_would_fail",
+        }.get(receipt_check.action, f"dry_run_would_{receipt_check.action}")
+
+        return SettlementTransferConfirmationResult(
+            transfer_id=int(transfer.id),
+            batch_id=int(transfer.batch_id),
+            order_id=int(transfer.order_id) if transfer.order_id is not None else None,
+            transfer_type=str(transfer.transfer_type),
+            tx_hash=transfer.tx_hash,
+            action=dry_run_action,
+            receipt_status=receipt_check.receipt_status,
+            confirmations=receipt_check.confirmations,
+            batch_status=None,
+            order_status=None,
+            message="dry-run: no DB mutation",
+        )
+
+    if receipt_check.action == "confirmed":
+        return _apply_confirmed_sent_transfer(
+            db,
+            transfer=transfer,
+            receipt_check=receipt_check,
+        )
+
+    if receipt_check.action == "failed":
+        return _apply_failed_sent_transfer(
+            db,
+            transfer=transfer,
+            receipt_check=receipt_check,
+        )
+
+    raise SettlementTransferError(
+        f"Unsupported receipt action={receipt_check.action} transfer_id={transfer.id}"
+    )
+
+
+def confirm_sent_settlement_transfers_for_batch(
+    db: Session,
+    batch_id: int,
+    limit: int | None = None,
+    *,
+    dry_run: bool = False,
+    min_confirmations: int | None = None,
+) -> list[SettlementTransferConfirmationResult]:
+    q = (
+        db.query(FundSettlementTransfer.id)
+        .filter(
+            FundSettlementTransfer.batch_id == int(batch_id),
+            FundSettlementTransfer.status == TRANSFER_STATUS_SENT,
+            FundSettlementTransfer.tx_hash.isnot(None),
+            FundSettlementTransfer.confirmed_at.is_(None),
+            FundSettlementTransfer.transfer_type.in_(
+                [
+                    TRANSFER_TYPE_USER_BUY_USDT_TO_SETTLEMENT,
+                    TRANSFER_TYPE_USER_WALLET_GAS_TOPUP,
+                ]
+            ),
+        )
+        .order_by(FundSettlementTransfer.sent_at.asc().nullslast(), FundSettlementTransfer.id.asc())
+    )
+
+    if limit is not None:
+        q = q.limit(int(limit))
+
+    transfer_ids = [int(row[0]) for row in q.all()]
+
+    return [
+        confirm_sent_settlement_transfer(
+            db,
+            transfer_id,
+            dry_run=dry_run,
+            min_confirmations=min_confirmations,
+        )
+        for transfer_id in transfer_ids
+    ]
 
 
 def _ensure_user_wallet_gas(

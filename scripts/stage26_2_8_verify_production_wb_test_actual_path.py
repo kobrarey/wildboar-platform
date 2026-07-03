@@ -2470,6 +2470,40 @@ def run_self_test() -> int:
     )
     calls = ast_call_names(script_path)
 
+    worker_path = "workers/fund_settlement_transfer_confirmation_worker.py"
+    transfer_service_path = "app/settlement/transfer_service.py"
+
+    worker_source = read(worker_path)
+    worker_calls = ast_call_names(worker_path)
+
+    from app.settlement.transfer_service import confirm_sent_settlement_transfer
+    import workers.fund_settlement_transfer_confirmation_worker as confirmation_worker
+
+    assert_ok(
+        "STAGE26_2_12_VERIFIER_CONFIRMATION_WORKER_IMPORTABLE",
+        confirmation_worker is not None,
+    )
+    assert_ok(
+        "STAGE26_2_12_VERIFIER_CONFIRMATION_SERVICE_IMPORTABLE",
+        callable(confirm_sent_settlement_transfer),
+    )
+    assert_ok(
+        "STAGE26_2_12_VERIFIER_CONFIRMATION_WORKER_NO_USDT_SEND",
+        "_send_usdt_transfer" not in worker_calls and "_send_usdt_transfer" not in worker_source,
+    )
+    assert_ok(
+        "STAGE26_2_12_VERIFIER_CONFIRMATION_WORKER_NO_NATIVE_BNB_SEND",
+        "send_native_bnb" not in worker_calls and "send_native_bnb" not in worker_source,
+    )
+    assert_ok(
+        "STAGE26_2_12_VERIFIER_CONFIRMATION_WORKER_NO_RAW_TX_SEND",
+        "send_raw_transaction" not in worker_calls and "send_raw_transaction" not in worker_source,
+    )
+    assert_ok(
+        "STAGE26_2_12_VERIFIER_CONFIRMATION_SERVICE_HAS_PUBLIC_FUNCTION",
+        "def confirm_sent_settlement_transfer" in read(transfer_service_path),
+    )
+
     assert_ok("SELFTEST_SOURCE_NO_CLIENT_POST_CALL", "post" not in calls)
     assert_ok("SELFTEST_SOURCE_NO_FUND_ORDER_CREATE", "FundOrder" not in calls)
     assert_ok("SELFTEST_SOURCE_NO_BSC_SEND", "send_raw_transaction" not in calls)
@@ -2487,6 +2521,7 @@ def run_self_test() -> int:
     test_stage26_2_8f_production_verifier_full_earn_path()
 
     print("STAGE26_2_8A_PRODUCTION_VERIFIER_LOCAL_SAFETY_TESTS_OK")
+    print("STAGE26_2_12_PRODUCTION_VERIFIER_CONFIRMATION_PATH_OK")
     return 0
 
 
