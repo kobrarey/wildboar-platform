@@ -87,6 +87,9 @@ CONFIRMATION_PATH_MARKER = "STAGE26_2_12_PRODUCTION_VERIFIER_CONFIRMATION_PATH_O
 CONFIRMATION_PATH_ACTUAL_RUN_MARKER = (
     "STAGE26_2_12_PRODUCTION_VERIFIER_CONFIRMATION_PATH_ACTUAL_RUN_MARKER_OK"
 )
+BUY_COLLECTION_CONTINUATION_PATH_MARKER = (
+    "STAGE26_2_13_BUY_COLLECTION_CONTINUATION_PATH_OK"
+)
 
 
 class VerificationBlocked(RuntimeError):
@@ -468,28 +471,164 @@ def verify_settlement_transfer_confirmation_path(
     }
 
 
+def verify_buy_collection_continuation_path(
+    *,
+    emit_assert_ok: bool = False,
+) -> dict[str, Any]:
+    worker_path = "workers/fund_buy_collection_continuation_worker.py"
+    service_path = "app/settlement/buy_collection_continuation.py"
+    transfer_service_path = "app/settlement/transfer_service.py"
+
+    checks: dict[str, bool] = {}
+    failures: list[str] = []
+
+    def record(name: str, ok: bool, marker: str | None = None) -> None:
+        checks[name] = bool(ok)
+        if emit_assert_ok and marker is not None:
+            assert_ok(marker, bool(ok))
+        if not ok:
+            failures.append(name)
+
+    try:
+        from app.settlement.buy_collection_continuation import (
+            continue_buy_collection_for_active_batches,
+            scan_active_collecting_buy_usdt_batch_ids,
+        )
+        import workers.fund_buy_collection_continuation_worker as continuation_worker
+    except Exception as exc:
+        return {
+            "ok": False,
+            "checks": checks,
+            "reason": f"buy_collection_continuation_import_failed: {exc}",
+        }
+
+    worker_source = read(worker_path)
+    service_source = read(service_path)
+    transfer_service_source = read(transfer_service_path)
+    worker_calls = ast_call_names(worker_path)
+    service_calls = ast_call_names(service_path)
+
+    record(
+        "worker_importable",
+        continuation_worker is not None,
+        "STAGE26_2_13_VERIFIER_CONTINUATION_WORKER_IMPORTABLE",
+    )
+    record(
+        "service_continue_importable",
+        callable(continue_buy_collection_for_active_batches),
+        "STAGE26_2_13_VERIFIER_CONTINUATION_SERVICE_IMPORTABLE",
+    )
+    record(
+        "scanner_importable",
+        callable(scan_active_collecting_buy_usdt_batch_ids),
+        "STAGE26_2_13_VERIFIER_CONTINUATION_SCANNER_IMPORTABLE",
+    )
+    record(
+        "scanner_exists",
+        "def scan_active_collecting_buy_usdt_batch_ids" in service_source
+        and "BATCH_STATUS_COLLECTING_BUY_USDT" in service_source
+        and "pricing_locked_at" in service_source
+        and "pricing_unlocked_at" in service_source,
+        "STAGE26_2_13_VERIFIER_CONTINUATION_SCANNER_EXISTS",
+    )
+    record(
+        "service_calls_existing_collection_service",
+        "collect_buy_usdt_for_batch" in service_calls
+        or "collect_buy_usdt_for_batch" in service_source,
+        "STAGE26_2_13_VERIFIER_CONTINUATION_CALLS_EXISTING_SERVICE",
+    )
+    record(
+        "worker_live_gated",
+        "evaluate_live_gate" in worker_source
+        and "LIFECYCLE_WORKERS_PRODUCTION_LIVE_ENABLED" in worker_source
+        and "SETTLEMENT_ENABLED" in worker_source
+        and "SETTLEMENT_BUY_COLLECTION_ALLOW_LIVE_BSC" in worker_source
+        and "live_bsc" in worker_source,
+        "STAGE26_2_13_VERIFIER_CONTINUATION_LIVE_GATED",
+    )
+    record(
+        "worker_no_usdt_send",
+        "_send_usdt_transfer" not in worker_calls and "_send_usdt_transfer" not in worker_source,
+        "STAGE26_2_13_VERIFIER_CONTINUATION_WORKER_NO_USDT_SEND",
+    )
+    record(
+        "worker_no_native_bnb_send",
+        "send_native_bnb" not in worker_calls and "send_native_bnb" not in worker_source,
+        "STAGE26_2_13_VERIFIER_CONTINUATION_WORKER_NO_NATIVE_BNB_SEND",
+    )
+    record(
+        "worker_no_raw_tx_send",
+        "send_raw_transaction" not in worker_calls and "send_raw_transaction" not in worker_source,
+        "STAGE26_2_13_VERIFIER_CONTINUATION_WORKER_NO_RAW_TX_SEND",
+    )
+    record(
+        "worker_no_transfer_creation_logic",
+        "_create_or_update_transfer" not in worker_source
+        and "FundSettlementTransfer(" not in worker_source,
+        "STAGE26_2_13_VERIFIER_CONTINUATION_WORKER_NO_TRANSFER_CREATION_LOGIC",
+    )
+    record(
+        "worker_no_order_or_batch_creation",
+        "FundOrder(" not in worker_source
+        and "FundSettlementBatch(" not in worker_source
+        and "run_settlement_batches_once" not in worker_source,
+        "STAGE26_2_13_VERIFIER_CONTINUATION_WORKER_NO_ORDER_BATCH_CREATE",
+    )
+    record(
+        "operation_guard_still_in_transfer_service",
+        "require_bsc_buy_collection_usdt_to_settlement_guard" in transfer_service_source
+        and "_send_usdt_transfer" in transfer_service_source,
+        "STAGE26_2_13_VERIFIER_CONTINUATION_OPERATION_GUARD_NOT_BYPASSED",
+    )
+
+    return {
+        "ok": not failures,
+        "checks": checks,
+        "reason": "; ".join(failures) if failures else None,
+    }
+
+
 def emit_actual_ready_markers_after_confirmation_path(
     *,
     confirmation_path_result: dict[str, Any] | None = None,
+    buy_collection_continuation_result: dict[str, Any] | None = None,
 ) -> bool:
-    result = confirmation_path_result
+    confirmation_result = confirmation_path_result
 
-    if result is None:
+    if confirmation_result is None:
         try:
-            result = verify_settlement_transfer_confirmation_path()
+            confirmation_result = verify_settlement_transfer_confirmation_path()
         except Exception as exc:
-            result = {
+            confirmation_result = {
                 "ok": False,
                 "reason": f"confirmation_path_verification_exception: {exc}",
             }
 
-    if not result.get("ok"):
-        reason = result.get("reason") or "unknown"
+    if not confirmation_result.get("ok"):
+        reason = confirmation_result.get("reason") or "unknown"
         print(f"confirmation_path_verification_failed: {reason}")
         print(NOT_READY_MARKER)
         return False
 
+    continuation_result = buy_collection_continuation_result
+
+    if continuation_result is None:
+        try:
+            continuation_result = verify_buy_collection_continuation_path()
+        except Exception as exc:
+            continuation_result = {
+                "ok": False,
+                "reason": f"buy_collection_continuation_path_verification_exception: {exc}",
+            }
+
+    if not continuation_result.get("ok"):
+        reason = continuation_result.get("reason") or "unknown"
+        print(f"buy_collection_continuation_path_verification_failed: {reason}")
+        print(NOT_READY_MARKER)
+        return False
+
     print(CONFIRMATION_PATH_MARKER)
+    print(BUY_COLLECTION_CONTINUATION_PATH_MARKER)
     print(READY_MARKER)
     return True
 
@@ -2591,7 +2730,12 @@ def test_stage26_2_12_confirmation_path_actual_run_marker(source: str) -> None:
                 "ok": True,
                 "checks": {"forced_ok": True},
                 "reason": None,
-            }
+            },
+            buy_collection_continuation_result={
+                "ok": True,
+                "checks": {"forced_ok": True},
+                "reason": None,
+            },
         )
 
     ok_output = ok_buffer.getvalue()
@@ -2600,7 +2744,9 @@ def test_stage26_2_12_confirmation_path_actual_run_marker(source: str) -> None:
         ok is True
         and CONFIRMATION_PATH_MARKER in ok_output
         and READY_MARKER in ok_output
-        and ok_output.index(CONFIRMATION_PATH_MARKER) < ok_output.index(READY_MARKER),
+        and ok_output.index(CONFIRMATION_PATH_MARKER) < ok_output.index(READY_MARKER)
+        and BUY_COLLECTION_CONTINUATION_PATH_MARKER in ok_output
+        and ok_output.index(BUY_COLLECTION_CONTINUATION_PATH_MARKER) < ok_output.index(READY_MARKER),
     )
 
     fail_buffer = io.StringIO()
@@ -2623,6 +2769,31 @@ def test_stage26_2_12_confirmation_path_actual_run_marker(source: str) -> None:
         and CONFIRMATION_PATH_MARKER not in fail_output,
     )
 
+    continuation_fail_buffer = io.StringIO()
+    with contextlib.redirect_stdout(continuation_fail_buffer):
+        continuation_failed_ok = emit_actual_ready_markers_after_confirmation_path(
+            confirmation_path_result={
+                "ok": True,
+                "checks": {"forced_ok": True},
+                "reason": None,
+            },
+            buy_collection_continuation_result={
+                "ok": False,
+                "checks": {"forced_failure": False},
+                "reason": "forced_continuation_failure",
+            },
+        )
+
+    continuation_fail_output = continuation_fail_buffer.getvalue()
+    assert_ok(
+        "STAGE26_2_13_PRODUCTION_VERIFIER_CONTINUATION_PATH_ACTUAL_RUN_FAIL_CLOSED_OK",
+        continuation_failed_ok is False
+        and "buy_collection_continuation_path_verification_failed: forced_continuation_failure" in continuation_fail_output
+        and NOT_READY_MARKER in continuation_fail_output
+        and READY_MARKER not in continuation_fail_output
+        and BUY_COLLECTION_CONTINUATION_PATH_MARKER not in continuation_fail_output,
+    )
+
     fixture_args = argparse.Namespace(
         fund_code="wb_test",
         positive_net_usdt="10",
@@ -2642,7 +2813,8 @@ def test_stage26_2_12_confirmation_path_actual_run_marker(source: str) -> None:
         fixture_rc == 2
         and FIXTURE_ONLY_MARKER in fixture_output
         and CONFIRMATION_PATH_MARKER not in fixture_output
-        and READY_MARKER not in fixture_output,
+        and READY_MARKER not in fixture_output
+        and BUY_COLLECTION_CONTINUATION_PATH_MARKER not in fixture_output,
     )
 
 
@@ -2689,6 +2861,12 @@ def run_self_test() -> int:
         "STAGE26_2_12_VERIFIER_CONFIRMATION_PATH_SHARED_OK",
         confirmation_path["ok"] is True,
     )
+
+    continuation_path = verify_buy_collection_continuation_path(emit_assert_ok=True)
+    assert_ok(
+        "STAGE26_2_13_VERIFIER_CONTINUATION_PATH_SHARED_OK",
+        continuation_path["ok"] is True,
+    )
     test_stage26_2_12_confirmation_path_actual_run_marker(source)
 
     assert_ok("SELFTEST_SOURCE_NO_CLIENT_POST_CALL", "post" not in calls)
@@ -2709,6 +2887,7 @@ def run_self_test() -> int:
 
     print("STAGE26_2_8A_PRODUCTION_VERIFIER_LOCAL_SAFETY_TESTS_OK")
     print(CONFIRMATION_PATH_MARKER)
+    print(BUY_COLLECTION_CONTINUATION_PATH_MARKER)
     return 0
 
 
