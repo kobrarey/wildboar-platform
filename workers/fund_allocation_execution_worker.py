@@ -58,9 +58,11 @@ from app.allocation.live_earn_orders import (
     submit_bybit_earn_stake_order,
 )
 from app.allocation.live_spot_orders import (
+    BybitOrderCreateLowerLimitReject,
     LiveSpotOrderError,
     build_live_spot_market_order_plan,
     mark_live_spot_order_create_failed,
+    mark_live_spot_order_lower_limit_rejected_as_terminal_skip,
     prepare_live_spot_market_order_or_terminal_skip,
     reconcile_live_spot_market_leg_by_link_id,
     require_trade_guard_for_plan,
@@ -1305,6 +1307,61 @@ def _mark_live_spot_plan_failure_requires_review_in_own_session(
         db.close()
 
 
+def _mark_live_spot_lower_limit_skip_in_own_session(
+    *,
+    allocation_leg_id: int,
+    dry_run: bool,
+    error: str,
+    diagnostics: dict[str, Any] | None = None,
+) -> bool:
+    db = SessionLocal()
+
+    try:
+        result = mark_live_spot_order_lower_limit_rejected_as_terminal_skip(
+            db,
+            allocation_leg_id=int(allocation_leg_id),
+            error=error,
+            diagnostics=diagnostics,
+        )
+        allocation_batch_id = int(result.allocation_batch_id)
+
+        if dry_run:
+            db.rollback()
+        else:
+            db.commit()
+
+        log.info(
+            "Allocation live spot lower-limit reject terminal skip "
+            "leg_id=%s batch_id=%s status=%s action=%s reason=%s",
+            allocation_leg_id,
+            allocation_batch_id,
+            result.status,
+            result.action,
+            result.reason,
+        )
+
+        _refresh_live_batch_progress_in_own_session(
+            allocation_batch_id=allocation_batch_id,
+            dry_run=dry_run,
+        )
+
+        return True
+
+    except Exception as exc:
+        db.rollback()
+        log.exception(
+            "Allocation live spot lower-limit terminal skip failed "
+            "leg_id=%s original_error=%s mark_error=%s",
+            allocation_leg_id,
+            error,
+            exc,
+        )
+        return False
+
+    finally:
+        db.close()
+
+
 def _process_live_spot_leg_in_own_session(
     *,
     allocation_leg_id: int,
@@ -1588,6 +1645,21 @@ def _process_live_spot_leg_in_own_session(
         create_result = submit_bybit_spot_market_order(
             client,
             payload=plan.payload,
+        )
+    except BybitOrderCreateLowerLimitReject as exc:
+        return _mark_live_spot_lower_limit_skip_in_own_session(
+            allocation_leg_id=int(allocation_leg_id),
+            dry_run=dry_run,
+            error=f"spot_order_create_lower_limit_rejected: retCode=170140 lower-limit: {exc}",
+            diagnostics={
+                "source": "bybit_order_create_post",
+                "order_link_id": plan.order_link_id,
+                "symbol": plan.symbol,
+                "category": plan.category,
+                "target_usdt": str(plan.target_usdt),
+                "required_usdt": str(plan.required_usdt),
+                "bybit_order_created": False,
+            },
         )
     except Exception as exc:
         db_fail = SessionLocal()

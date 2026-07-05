@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -39,7 +40,7 @@ from app.allocation.statuses import (
     LEG_TYPE_BUY_THEN_STAKE,
     LEG_TYPE_SPOT_BUY,
 )
-from app.models import FundAllocationLeg
+from app.models import Fund, FundAllocationBatch, FundAllocationLeg
 from app.allocation.live_policy import (
     BUY_THEN_STAKE_SPOT_ONLY_REASON,
     BUY_THEN_STAKE_LIVE_POLICY_SPOT_ONLY,
@@ -59,6 +60,81 @@ SAFE_TERMINAL_SPOT_VALIDATION_STATUSES = {
 
 class LiveSpotOrderError(RuntimeError):
     pass
+
+
+class BybitOrderCreateLowerLimitReject(LiveSpotOrderError):
+    pass
+
+
+BYBIT_ORDER_CREATE_LOWER_LIMIT_RETCODE = 170140
+LOWER_LIMIT_TEXT_RE = re.compile(
+    r"lower[\s_-]*limit|order value exceeded lower limit|lower limit exceeded",
+    re.IGNORECASE,
+)
+
+
+def _iter_error_payloads(value: Any):
+    yield value
+
+    for attr in ("response", "payload", "data", "body", "error", "args"):
+        try:
+            nested = getattr(value, attr, None)
+        except Exception:
+            nested = None
+
+        if nested is None:
+            continue
+
+        if isinstance(nested, (list, tuple)):
+            for item in nested:
+                yield item
+        else:
+            yield nested
+
+
+def _extract_ret_code(value: Any) -> int | None:
+    for item in _iter_error_payloads(value):
+        if isinstance(item, dict):
+            for key in ("retCode", "ret_code", "code"):
+                if key in item:
+                    try:
+                        return int(item[key])
+                    except Exception:
+                        pass
+
+        text = str(item)
+        match = re.search(r"(?:retCode|ret_code|code)\s*[:=]\s*['\"]?(\d+)", text)
+        if match:
+            try:
+                return int(match.group(1))
+            except Exception:
+                pass
+
+    return None
+
+
+def _extract_ret_msg_text(value: Any) -> str:
+    parts: list[str] = []
+
+    for item in _iter_error_payloads(value):
+        if isinstance(item, dict):
+            for key in ("retMsg", "ret_msg", "msg", "message"):
+                if item.get(key) is not None:
+                    parts.append(str(item.get(key)))
+
+        parts.append(str(item))
+
+    return " ".join(parts)
+
+
+def is_bybit_order_create_lower_limit_reject(exc_or_response: Any) -> bool:
+    ret_code = _extract_ret_code(exc_or_response)
+    text = _extract_ret_msg_text(exc_or_response)
+
+    return (
+        ret_code == BYBIT_ORDER_CREATE_LOWER_LIMIT_RETCODE
+        and LOWER_LIMIT_TEXT_RE.search(text) is not None
+    )
 
 
 @dataclass(frozen=True)
@@ -290,6 +366,73 @@ def apply_spot_validation_terminal_skip_to_leg(
         required_usdt=target_usdt,
         instrument=_json_dict(_instrument_diagnostics(info)),
         validation=_json_dict(_validation_diagnostics(validation)),
+    )
+
+
+def mark_live_spot_order_lower_limit_rejected_as_terminal_skip(
+    db: Session,
+    *,
+    allocation_leg_id: int,
+    error: str,
+    diagnostics: dict[str, Any] | None = None,
+) -> LiveSpotOrderResult:
+    leg = _get_leg_for_update(db, allocation_leg_id=allocation_leg_id)
+
+    if leg.status == ALLOCATION_LEG_STATUS_SKIPPED_MIN_ORDER:
+        return LiveSpotOrderResult(
+            allocation_leg_id=int(leg.id),
+            allocation_batch_id=int(leg.allocation_batch_id),
+            ok=True,
+            status=leg.status,
+            order_link_id=leg.order_link_id,
+            bybit_order_id=leg.bybit_order_id,
+            action="already_terminal_lower_limit_skip",
+            reason=leg.error,
+            diagnostics=_json_dict(diagnostics or {}),
+        )
+
+    now = utcnow()
+    target_usdt = dec(leg.target_usdt)
+
+    previous_order_link_id = leg.order_link_id
+
+    leg.status = ALLOCATION_LEG_STATUS_SKIPPED_MIN_ORDER
+    leg.execution_mode = EXECUTION_MODE_SKIPPED
+    leg.residual_usdt = target_usdt
+    leg.actual_cash_used_usdt = ZERO
+    leg.filled_qty = ZERO
+    leg.filled_usdt = ZERO
+    leg.fill_ratio = ZERO
+    leg.fee_usdt = None
+    leg.bybit_order_id = None
+
+    # Critical: do not keep active idempotency reference for an order that Bybit never created.
+    leg.order_link_id = None
+
+    leg.confirmed_at = leg.confirmed_at or now
+    leg.error = error
+    leg.updated_at = now
+
+    db.add(leg)
+    db.flush()
+
+    return LiveSpotOrderResult(
+        allocation_leg_id=int(leg.id),
+        allocation_batch_id=int(leg.allocation_batch_id),
+        ok=True,
+        status=leg.status,
+        order_link_id=leg.order_link_id,
+        bybit_order_id=leg.bybit_order_id,
+        action="lower_limit_reject_terminal_skip",
+        reason=error,
+        diagnostics=_json_dict(
+            {
+                **(diagnostics or {}),
+                "previous_order_link_id": previous_order_link_id,
+                "target_usdt": target_usdt,
+                "external_post_created_order": False,
+            }
+        ),
     )
 
 
@@ -537,12 +680,154 @@ def fetch_bybit_order_by_link_id(
     return None
 
 
+def repair_live_spot_lower_limit_order_not_found_if_safe(
+    db: Session,
+    *,
+    allocation_leg_id: int,
+    client: Any,
+    fund_code: str | None = None,
+    reason: str = "lower_limit_order_not_found_repair_forward",
+) -> LiveSpotOrderResult:
+    leg = _get_leg_for_update(db, allocation_leg_id=allocation_leg_id)
+
+    fund = db.query(Fund).filter(Fund.id == int(leg.fund_id)).first()
+    if fund is None:
+        raise LiveSpotOrderError(f"Fund not found for leg_id={leg.id}")
+
+    if fund_code and str(fund.code).lower() != str(fund_code).lower():
+        raise LiveSpotOrderError(
+            f"fund_code_mismatch: expected={fund_code}, actual={fund.code}"
+        )
+
+    batch = (
+        db.query(FundAllocationBatch)
+        .filter(FundAllocationBatch.id == int(leg.allocation_batch_id))
+        .with_for_update()
+        .first()
+    )
+    if batch is None:
+        raise LiveSpotOrderError(f"Allocation batch not found: {leg.allocation_batch_id}")
+
+    if leg.status == ALLOCATION_LEG_STATUS_SKIPPED_MIN_ORDER:
+        return mark_live_spot_order_lower_limit_rejected_as_terminal_skip(
+            db,
+            allocation_leg_id=int(leg.id),
+            error=leg.error or "already_terminal_lower_limit_skip",
+            diagnostics={
+                "repair_forward": "already_terminal",
+                "allocation_batch_status": batch.status,
+            },
+        )
+
+    if str(batch.status) != "allocation_processing":
+        raise LiveSpotOrderError(
+            f"unsupported_allocation_batch_status_for_lower_limit_repair: {batch.status}"
+        )
+
+    if leg.status not in {
+        ALLOCATION_LEG_STATUS_PLANNED,
+        ALLOCATION_LEG_STATUS_MARKET_ORDER_SENT,
+    }:
+        raise LiveSpotOrderError(
+            f"unsupported_leg_status_for_lower_limit_repair: {leg.status}"
+        )
+
+    if leg.leg_type not in {LEG_TYPE_SPOT_BUY, LEG_TYPE_BUY_THEN_STAKE}:
+        raise LiveSpotOrderError(
+            f"unsupported_leg_type_for_lower_limit_repair: {leg.leg_type}"
+        )
+
+    if not leg.order_link_id:
+        raise LiveSpotOrderError("lower_limit_repair_requires_order_link_id")
+
+    if leg.bybit_order_id:
+        raise LiveSpotOrderError(
+            f"lower_limit_repair_blocked_by_existing_bybit_order_id={leg.bybit_order_id}"
+        )
+
+    category = _leg_category(leg) or "spot"
+    symbol = str(leg.symbol or "").strip().upper()
+    if not symbol:
+        raise LiveSpotOrderError("lower_limit_repair_requires_symbol")
+
+    existing_order = fetch_bybit_order_by_link_id(
+        client,
+        category=category,
+        symbol=symbol,
+        order_link_id=str(leg.order_link_id),
+    )
+    if existing_order is not None:
+        raise LiveSpotOrderError(
+            f"lower_limit_repair_blocked_order_exists_by_link_id={leg.order_link_id}"
+        )
+
+    info = get_instrument_info(
+        client,
+        category=category,
+        symbol=symbol,
+    )
+
+    target_usdt = dec(leg.target_usdt)
+    min_order_amt = dec(info.min_order_amt)
+
+    if min_order_amt <= ZERO:
+        raise LiveSpotOrderError(
+            f"lower_limit_repair_blocked_missing_min_order_amt symbol={symbol}"
+        )
+
+    if target_usdt >= min_order_amt:
+        raise LiveSpotOrderError(
+            f"lower_limit_repair_blocked_target_not_below_min_order_amt: "
+            f"target_usdt={target_usdt}, min_order_amt={min_order_amt}"
+        )
+
+    error = (
+        f"bybit_order_create_lower_limit_repair: retCode=170140 lower-limit; "
+        f"order_not_found_by_link_id; target_usdt={target_usdt}, "
+        f"min_order_amt={min_order_amt}, symbol={symbol}"
+    )
+
+    return mark_live_spot_order_lower_limit_rejected_as_terminal_skip(
+        db,
+        allocation_leg_id=int(leg.id),
+        error=error,
+        diagnostics={
+            "source": reason,
+            "fund_code": fund.code,
+            "allocation_batch_id": int(batch.id),
+            "previous_order_link_id": leg.order_link_id,
+            "symbol": symbol,
+            "category": category,
+            "target_usdt": target_usdt,
+            "min_order_amt": min_order_amt,
+            "bybit_order_lookup": "not_found",
+        },
+    )
+
+
 def submit_bybit_spot_market_order(
     client: Any,
     *,
     payload: dict[str, Any],
 ) -> dict[str, Any]:
-    response = client.post("/v5/order/create", payload)
+    try:
+        response = client.post("/v5/order/create", payload)
+    except Exception as exc:
+        if is_bybit_order_create_lower_limit_reject(exc):
+            raise BybitOrderCreateLowerLimitReject(
+                f"Bybit order create lower-limit reject: {exc}"
+            ) from exc
+
+        raise
+
+    if is_bybit_order_create_lower_limit_reject(response):
+        raise BybitOrderCreateLowerLimitReject(
+            f"Bybit order create lower-limit reject: {response}"
+        )
+
+    ret_code = response.get("retCode")
+    if ret_code not in (None, 0, "0"):
+        raise LiveSpotOrderError(f"Bybit order create failed: {response}")
 
     result = response.get("result") or {}
     if not isinstance(result, dict):

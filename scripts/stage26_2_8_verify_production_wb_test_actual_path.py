@@ -90,6 +90,9 @@ CONFIRMATION_PATH_ACTUAL_RUN_MARKER = (
 BUY_COLLECTION_CONTINUATION_PATH_MARKER = (
     "STAGE26_2_13_BUY_COLLECTION_CONTINUATION_PATH_OK"
 )
+BYBIT_LOWER_LIMIT_REJECT_HANDLING_MARKER = (
+    "STAGE26_2_14_BYBIT_LOWER_LIMIT_REJECT_HANDLING_OK"
+)
 
 
 class VerificationBlocked(RuntimeError):
@@ -588,10 +591,139 @@ def verify_buy_collection_continuation_path(
     }
 
 
+def verify_bybit_lower_limit_reject_handling_path(
+    *,
+    emit_assert_ok: bool = False,
+) -> dict[str, Any]:
+    live_spot_path = "app/allocation/live_spot_orders.py"
+    worker_path = "workers/fund_allocation_execution_worker.py"
+    repair_path = "scripts/stage26_2_14_repair_lower_limit_allocation_leg.py"
+
+    checks: dict[str, bool] = {}
+    failures: list[str] = []
+
+    def record(name: str, ok: bool, marker: str | None = None) -> None:
+        checks[name] = bool(ok)
+        if emit_assert_ok and marker is not None:
+            assert_ok(marker, bool(ok))
+        if not ok:
+            failures.append(name)
+
+    try:
+        from app.allocation.live_spot_orders import (
+            BybitOrderCreateLowerLimitReject,
+            is_bybit_order_create_lower_limit_reject,
+            mark_live_spot_order_lower_limit_rejected_as_terminal_skip,
+            repair_live_spot_lower_limit_order_not_found_if_safe,
+        )
+    except Exception as exc:
+        return {
+            "ok": False,
+            "checks": checks,
+            "reason": f"bybit_lower_limit_import_failed: {exc}",
+        }
+
+    live_spot_source = read(live_spot_path)
+    worker_source = read(worker_path)
+    repair_source = read(repair_path) if (ROOT / repair_path).exists() else ""
+
+    record(
+        "classifier_importable",
+        callable(is_bybit_order_create_lower_limit_reject),
+        "STAGE26_2_14_VERIFIER_LOWER_LIMIT_CLASSIFIER_IMPORTABLE",
+    )
+    record(
+        "exception_importable",
+        BybitOrderCreateLowerLimitReject is not None,
+        "STAGE26_2_14_VERIFIER_LOWER_LIMIT_EXCEPTION_IMPORTABLE",
+    )
+    record(
+        "terminal_skip_importable",
+        callable(mark_live_spot_order_lower_limit_rejected_as_terminal_skip),
+        "STAGE26_2_14_VERIFIER_LOWER_LIMIT_TERMINAL_SKIP_IMPORTABLE",
+    )
+    record(
+        "repair_importable",
+        callable(repair_live_spot_lower_limit_order_not_found_if_safe),
+        "STAGE26_2_14_VERIFIER_LOWER_LIMIT_REPAIR_IMPORTABLE",
+    )
+    record(
+        "classifier_detects_response_dict",
+        is_bybit_order_create_lower_limit_reject(
+            {"retCode": 170140, "retMsg": "Order value exceeded lower limit"}
+        ),
+        "STAGE26_2_14_VERIFIER_LOWER_LIMIT_CLASSIFIES_RESPONSE",
+    )
+    record(
+        "classifier_detects_exception_text",
+        is_bybit_order_create_lower_limit_reject(
+            RuntimeError("retCode=170140 retMsg=Order value exceeded lower limit")
+        ),
+        "STAGE26_2_14_VERIFIER_LOWER_LIMIT_CLASSIFIES_EXCEPTION",
+    )
+    record(
+        "classifier_rejects_other_errors",
+        not is_bybit_order_create_lower_limit_reject(
+            {"retCode": 10001, "retMsg": "generic parameter error"}
+        ),
+        "STAGE26_2_14_VERIFIER_LOWER_LIMIT_REJECTS_OTHER_ERRORS",
+    )
+    record(
+        "submit_raises_deterministic_exception",
+        "BybitOrderCreateLowerLimitReject" in live_spot_source
+        and "is_bybit_order_create_lower_limit_reject(response)" in live_spot_source,
+        "STAGE26_2_14_VERIFIER_LOWER_LIMIT_SUBMIT_CLASSIFIED",
+    )
+    record(
+        "terminal_skip_clears_order_link_id",
+        "leg.order_link_id = None" in live_spot_source
+        and "ALLOCATION_LEG_STATUS_SKIPPED_MIN_ORDER" in live_spot_source
+        and "leg.actual_cash_used_usdt = ZERO" in live_spot_source,
+        "STAGE26_2_14_VERIFIER_LOWER_LIMIT_CLEARS_ORDER_LINK",
+    )
+    record(
+        "worker_special_cases_lower_limit",
+        "except BybitOrderCreateLowerLimitReject" in worker_source
+        and "mark_live_spot_order_lower_limit_rejected_as_terminal_skip" in worker_source
+        and "return True" in worker_source,
+        "STAGE26_2_14_VERIFIER_WORKER_LOWER_LIMIT_TERMINAL_SKIP",
+    )
+    record(
+        "worker_non_lower_still_fail_closed",
+        "spot_order_create_failed_or_uncertain" in worker_source
+        and "mark_live_spot_order_create_failed" in worker_source,
+        "STAGE26_2_14_VERIFIER_NON_LOWER_LIMIT_FAIL_CLOSED",
+    )
+    record(
+        "repair_cli_exists",
+        "stage26_2_14_repair_lower_limit_allocation_leg" in repair_path
+        and "repair_live_spot_lower_limit_order_not_found_if_safe" in repair_source
+        and "--allocation-leg-id" in repair_source
+        and "--dry-run" in repair_source
+        and "--apply" in repair_source,
+        "STAGE26_2_14_VERIFIER_REPAIR_CLI_EXISTS",
+    )
+    record(
+        "repair_cli_no_post_or_bsc",
+        ".post(" not in repair_source
+        and "send_raw_transaction" not in repair_source
+        and "_send_usdt_transfer" not in repair_source
+        and "send_native_bnb" not in repair_source,
+        "STAGE26_2_14_VERIFIER_REPAIR_CLI_NO_SENDS",
+    )
+
+    return {
+        "ok": not failures,
+        "checks": checks,
+        "reason": "; ".join(failures) if failures else None,
+    }
+
+
 def emit_actual_ready_markers_after_confirmation_path(
     *,
     confirmation_path_result: dict[str, Any] | None = None,
     buy_collection_continuation_result: dict[str, Any] | None = None,
+    bybit_lower_limit_result: dict[str, Any] | None = None,
 ) -> bool:
     confirmation_result = confirmation_path_result
 
@@ -627,8 +759,26 @@ def emit_actual_ready_markers_after_confirmation_path(
         print(NOT_READY_MARKER)
         return False
 
+    lower_limit_result = bybit_lower_limit_result
+
+    if lower_limit_result is None:
+        try:
+            lower_limit_result = verify_bybit_lower_limit_reject_handling_path()
+        except Exception as exc:
+            lower_limit_result = {
+                "ok": False,
+                "reason": f"bybit_lower_limit_reject_handling_verification_exception: {exc}",
+            }
+
+    if not lower_limit_result.get("ok"):
+        reason = lower_limit_result.get("reason") or "unknown"
+        print(f"bybit_lower_limit_reject_handling_verification_failed: {reason}")
+        print(NOT_READY_MARKER)
+        return False
+
     print(CONFIRMATION_PATH_MARKER)
     print(BUY_COLLECTION_CONTINUATION_PATH_MARKER)
+    print(BYBIT_LOWER_LIMIT_REJECT_HANDLING_MARKER)
     print(READY_MARKER)
     return True
 
@@ -2736,6 +2886,11 @@ def test_stage26_2_12_confirmation_path_actual_run_marker(source: str) -> None:
                 "checks": {"forced_ok": True},
                 "reason": None,
             },
+            bybit_lower_limit_result={
+                "ok": True,
+                "checks": {"forced_ok": True},
+                "reason": None,
+            },
         )
 
     ok_output = ok_buffer.getvalue()
@@ -2746,7 +2901,9 @@ def test_stage26_2_12_confirmation_path_actual_run_marker(source: str) -> None:
         and READY_MARKER in ok_output
         and ok_output.index(CONFIRMATION_PATH_MARKER) < ok_output.index(READY_MARKER)
         and BUY_COLLECTION_CONTINUATION_PATH_MARKER in ok_output
-        and ok_output.index(BUY_COLLECTION_CONTINUATION_PATH_MARKER) < ok_output.index(READY_MARKER),
+        and ok_output.index(BUY_COLLECTION_CONTINUATION_PATH_MARKER) < ok_output.index(READY_MARKER)
+        and BYBIT_LOWER_LIMIT_REJECT_HANDLING_MARKER in ok_output
+        and ok_output.index(BYBIT_LOWER_LIMIT_REJECT_HANDLING_MARKER) < ok_output.index(READY_MARKER),
     )
 
     fail_buffer = io.StringIO()
@@ -2792,6 +2949,36 @@ def test_stage26_2_12_confirmation_path_actual_run_marker(source: str) -> None:
         and NOT_READY_MARKER in continuation_fail_output
         and READY_MARKER not in continuation_fail_output
         and BUY_COLLECTION_CONTINUATION_PATH_MARKER not in continuation_fail_output,
+    )
+
+    lower_limit_fail_buffer = io.StringIO()
+    with contextlib.redirect_stdout(lower_limit_fail_buffer):
+        lower_limit_failed_ok = emit_actual_ready_markers_after_confirmation_path(
+            confirmation_path_result={
+                "ok": True,
+                "checks": {"forced_ok": True},
+                "reason": None,
+            },
+            buy_collection_continuation_result={
+                "ok": True,
+                "checks": {"forced_ok": True},
+                "reason": None,
+            },
+            bybit_lower_limit_result={
+                "ok": False,
+                "checks": {"forced_failure": False},
+                "reason": "forced_lower_limit_failure",
+            },
+        )
+
+    lower_limit_fail_output = lower_limit_fail_buffer.getvalue()
+    assert_ok(
+        "STAGE26_2_14_PRODUCTION_VERIFIER_LOWER_LIMIT_PATH_ACTUAL_RUN_FAIL_CLOSED_OK",
+        lower_limit_failed_ok is False
+        and "bybit_lower_limit_reject_handling_verification_failed: forced_lower_limit_failure" in lower_limit_fail_output
+        and NOT_READY_MARKER in lower_limit_fail_output
+        and READY_MARKER not in lower_limit_fail_output
+        and BYBIT_LOWER_LIMIT_REJECT_HANDLING_MARKER not in lower_limit_fail_output,
     )
 
     fixture_args = argparse.Namespace(
@@ -2867,6 +3054,12 @@ def run_self_test() -> int:
         "STAGE26_2_13_VERIFIER_CONTINUATION_PATH_SHARED_OK",
         continuation_path["ok"] is True,
     )
+
+    lower_limit_path = verify_bybit_lower_limit_reject_handling_path(emit_assert_ok=True)
+    assert_ok(
+        "STAGE26_2_14_VERIFIER_LOWER_LIMIT_PATH_SHARED_OK",
+        lower_limit_path["ok"] is True,
+    )
     test_stage26_2_12_confirmation_path_actual_run_marker(source)
 
     assert_ok("SELFTEST_SOURCE_NO_CLIENT_POST_CALL", "post" not in calls)
@@ -2888,6 +3081,7 @@ def run_self_test() -> int:
     print("STAGE26_2_8A_PRODUCTION_VERIFIER_LOCAL_SAFETY_TESTS_OK")
     print(CONFIRMATION_PATH_MARKER)
     print(BUY_COLLECTION_CONTINUATION_PATH_MARKER)
+    print(BYBIT_LOWER_LIMIT_REJECT_HANDLING_MARKER)
     return 0
 
 
