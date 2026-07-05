@@ -11,10 +11,11 @@ from sqlalchemy.orm import Session
 from app.allocation.bybit_snapshot_reader import build_allocation_snapshot_from_bybit
 from app.allocation.plan_service import build_allocation_plan_for_settlement_batch
 from app.allocation.snapshot_service import build_allocation_snapshot_from_fixture_file
+from app.allocation.statuses import ALLOCATION_PLAN_MUTABLE_STATUSES
 from app.config import settings
 from app.db import SessionLocal
 from app.lifecycle import evaluate_live_gate
-from app.models import Fund, FundSettlementBatch
+from app.models import Fund, FundAllocationBatch, FundSettlementBatch
 from app.settlement.statuses import BATCH_STATUS_POSITIVE_CASH_SETTLEMENT_COMPLETED
 
 
@@ -133,12 +134,22 @@ def _find_candidate_batches(
     *,
     fund_code: str | None,
 ) -> list[FundSettlementBatch]:
+    non_mutable_allocation_exists = (
+        db.query(FundAllocationBatch.id)
+        .filter(
+            FundAllocationBatch.settlement_batch_id == FundSettlementBatch.id,
+            FundAllocationBatch.status.notin_(sorted(ALLOCATION_PLAN_MUTABLE_STATUSES)),
+        )
+        .exists()
+    )
+
     q = (
         db.query(FundSettlementBatch)
         .join(Fund, Fund.id == FundSettlementBatch.fund_id)
         .filter(
             FundSettlementBatch.status == BATCH_STATUS_POSITIVE_CASH_SETTLEMENT_COMPLETED,
             FundSettlementBatch.net_cash_usdt > 0,
+            ~non_mutable_allocation_exists,
         )
     )
 

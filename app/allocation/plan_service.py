@@ -21,6 +21,8 @@ from app.allocation.statuses import (
     ALLOCATION_BATCH_STATUS_PLAN_CREATED,
     ALLOCATION_BATCH_STATUS_PLANNED,
     ALLOCATION_BATCH_STATUS_SNAPSHOT_CREATED,
+    ALLOCATION_PLAN_MUTABLE_STATUSES,
+    ALLOCATION_PLAN_NOOP_EXISTING_STATUSES,
     ALLOCATION_LEG_STATUS_FAILED_REQUIRES_REVIEW,
     ALLOCATION_LEG_STATUS_PLANNED,
     ALLOCATION_LEG_STATUS_SKIPPED_ZERO_VALUE,
@@ -106,12 +108,7 @@ class PlannedAllocationLeg:
     error: str | None
 
 
-MUTABLE_BATCH_STATUSES = {
-    ALLOCATION_BATCH_STATUS_PLANNED,
-    ALLOCATION_BATCH_STATUS_SNAPSHOT_CREATED,
-    ALLOCATION_BATCH_STATUS_PLAN_CREATED,
-    ALLOCATION_BATCH_STATUS_FAILED_REQUIRES_REVIEW,
-}
+MUTABLE_BATCH_STATUSES = ALLOCATION_PLAN_MUTABLE_STATUSES
 
 MUTABLE_LEG_STATUSES = {
     ALLOCATION_LEG_STATUS_PLANNED,
@@ -219,6 +216,83 @@ def _get_fund_code(db: Session, *, fund_id: int) -> str:
         return str(fund_id)
 
     return fund.code
+
+
+def is_allocation_batch_plan_noop_status(status: str | None) -> bool:
+    return str(status or "") in ALLOCATION_PLAN_NOOP_EXISTING_STATUSES
+
+
+def _get_existing_allocation_batch_for_update(
+    db: Session,
+    *,
+    settlement_batch_id: int,
+) -> FundAllocationBatch | None:
+    return (
+        db.query(FundAllocationBatch)
+        .filter(FundAllocationBatch.settlement_batch_id == int(settlement_batch_id))
+        .with_for_update()
+        .first()
+    )
+
+
+def _summarize_existing_legs_by_group(
+    db: Session,
+    *,
+    allocation_batch_id: int,
+) -> tuple[int, dict[str, int]]:
+    rows = (
+        db.query(FundAllocationLeg.leg_group)
+        .filter(FundAllocationLeg.allocation_batch_id == int(allocation_batch_id))
+        .all()
+    )
+
+    out: dict[str, int] = {}
+    for row in rows:
+        group = str(row[0] or "unknown")
+        out[group] = out.get(group, 0) + 1
+
+    return len(rows), out
+
+
+def _build_existing_allocation_plan_noop_summary(
+    db: Session,
+    *,
+    settlement_batch: FundSettlementBatch,
+    allocation_batch: FundAllocationBatch,
+    snapshot: AllocationSnapshot,
+    fund_code: str,
+) -> AllocationPlanSummary:
+    legs_count, legs_by_group = _summarize_existing_legs_by_group(
+        db,
+        allocation_batch_id=int(allocation_batch.id),
+    )
+
+    warnings = [
+        (
+            "allocation_plan_noop_existing_non_mutable_status: "
+            f"{allocation_batch.status}"
+        )
+    ]
+
+    return AllocationPlanSummary(
+        allocation_batch_id=int(allocation_batch.id),
+        settlement_batch_id=int(settlement_batch.id),
+        fund_id=int(settlement_batch.fund_id),
+        fund_code=fund_code,
+        positive_net_usdt=dec(allocation_batch.positive_net_usdt)
+        or dec(settlement_batch.net_cash_usdt),
+        settlement_nav_usdt=allocation_batch.settlement_nav_usdt
+        or settlement_batch.nav_usdt,
+        snapshot_total_equity_usdt=dec(allocation_batch.snapshot_total_equity_usdt)
+        or dec(snapshot.total_equity_usdt),
+        base_nav_for_scale_usdt=dec(allocation_batch.base_nav_for_scale_usdt)
+        or dec(snapshot.total_equity_usdt),
+        scale=dec(allocation_batch.scale),
+        legs_count=legs_count,
+        legs_by_group=legs_by_group,
+        status=str(allocation_batch.status),
+        warnings=warnings,
+    )
 
 
 def _base_nav_for_scale(
@@ -484,11 +558,9 @@ def _get_or_create_allocation_batch(
     *,
     settlement_batch: FundSettlementBatch,
 ) -> FundAllocationBatch:
-    allocation_batch = (
-        db.query(FundAllocationBatch)
-        .filter(FundAllocationBatch.settlement_batch_id == settlement_batch.id)
-        .with_for_update()
-        .first()
+    allocation_batch = _get_existing_allocation_batch_for_update(
+        db,
+        settlement_batch_id=int(settlement_batch.id),
     )
 
     if allocation_batch is not None:
@@ -611,6 +683,27 @@ def build_allocation_plan_for_settlement_batch(
         )
 
     positive_net_usdt = dec(settlement_batch.net_cash_usdt)
+
+    existing_allocation_batch = _get_existing_allocation_batch_for_update(
+        db,
+        settlement_batch_id=int(settlement_batch.id),
+    )
+
+    if existing_allocation_batch is not None:
+        if is_allocation_batch_plan_noop_status(existing_allocation_batch.status):
+            return _build_existing_allocation_plan_noop_summary(
+                db,
+                settlement_batch=settlement_batch,
+                allocation_batch=existing_allocation_batch,
+                snapshot=snapshot,
+                fund_code=fund_code,
+            )
+
+        if existing_allocation_batch.status not in MUTABLE_BATCH_STATUSES:
+            raise AllocationPlanError(
+                f"Allocation batch {existing_allocation_batch.id} has unsupported "
+                f"allocation plan status: {existing_allocation_batch.status}"
+            )
 
     allocation_batch = _get_or_create_allocation_batch(
         db,

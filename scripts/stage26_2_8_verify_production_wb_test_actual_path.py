@@ -93,6 +93,9 @@ BUY_COLLECTION_CONTINUATION_PATH_MARKER = (
 BYBIT_LOWER_LIMIT_REJECT_HANDLING_MARKER = (
     "STAGE26_2_14_BYBIT_LOWER_LIMIT_REJECT_HANDLING_OK"
 )
+ALLOCATION_PLAN_IDEMPOTENCY_PATH_MARKER = (
+    "STAGE26_2_15_ALLOCATION_PLAN_IDEMPOTENCY_PATH_OK"
+)
 
 
 class VerificationBlocked(RuntimeError):
@@ -719,11 +722,152 @@ def verify_bybit_lower_limit_reject_handling_path(
     }
 
 
+def verify_allocation_plan_idempotency_path(
+    *,
+    emit_assert_ok: bool = False,
+) -> dict[str, Any]:
+    worker_path = "workers/fund_allocation_plan_worker.py"
+    service_path = "app/allocation/plan_service.py"
+    statuses_path = "app/allocation/statuses.py"
+
+    checks: dict[str, bool] = {}
+    failures: list[str] = []
+
+    def record(name: str, ok: bool, marker: str | None = None) -> None:
+        checks[name] = bool(ok)
+        if emit_assert_ok and marker is not None:
+            assert_ok(marker, bool(ok))
+        if not ok:
+            failures.append(name)
+
+    try:
+        from app.allocation.plan_service import is_allocation_batch_plan_noop_status
+        from app.allocation.statuses import (
+            ALLOCATION_BATCH_STATUS_ALLOCATION_COMPLETED,
+            ALLOCATION_BATCH_STATUS_ALLOCATION_COMPLETED_WITH_RESIDUAL_CASH,
+            ALLOCATION_BATCH_STATUS_ALLOCATION_PROCESSING,
+            ALLOCATION_PLAN_MUTABLE_STATUSES,
+            ALLOCATION_PLAN_NOOP_EXISTING_STATUSES,
+        )
+        import workers.fund_allocation_plan_worker as allocation_plan_worker
+    except Exception as exc:
+        return {
+            "ok": False,
+            "checks": checks,
+            "reason": f"allocation_plan_idempotency_import_failed: {exc}",
+        }
+
+    worker_source = read(worker_path)
+    service_source = read(service_path)
+    statuses_source = read(statuses_path)
+    worker_calls = ast_call_names(worker_path)
+    service_calls = ast_call_names(service_path)
+
+    record(
+        "worker_importable",
+        allocation_plan_worker is not None,
+        "STAGE26_2_15_VERIFIER_ALLOCATION_PLAN_WORKER_IMPORTABLE",
+    )
+    record(
+        "status_sets_defined",
+        "ALLOCATION_PLAN_MUTABLE_STATUSES" in statuses_source
+        and "ALLOCATION_PLAN_NOOP_EXISTING_STATUSES" in statuses_source
+        and "ALLOCATION_PLAN_TERMINAL_STATUSES" in statuses_source,
+        "STAGE26_2_15_VERIFIER_ALLOCATION_PLAN_STATUS_SETS_DEFINED",
+    )
+    record(
+        "noop_classifier_importable",
+        callable(is_allocation_batch_plan_noop_status),
+        "STAGE26_2_15_VERIFIER_ALLOCATION_PLAN_NOOP_CLASSIFIER_IMPORTABLE",
+    )
+    record(
+        "completed_residual_is_noop",
+        is_allocation_batch_plan_noop_status(
+            ALLOCATION_BATCH_STATUS_ALLOCATION_COMPLETED_WITH_RESIDUAL_CASH
+        ),
+        "STAGE26_2_15_VERIFIER_ALLOCATION_PLAN_COMPLETED_RESIDUAL_NOOP",
+    )
+    record(
+        "completed_is_noop",
+        is_allocation_batch_plan_noop_status(ALLOCATION_BATCH_STATUS_ALLOCATION_COMPLETED),
+        "STAGE26_2_15_VERIFIER_ALLOCATION_PLAN_COMPLETED_NOOP",
+    )
+    record(
+        "processing_is_noop",
+        is_allocation_batch_plan_noop_status(ALLOCATION_BATCH_STATUS_ALLOCATION_PROCESSING),
+        "STAGE26_2_15_VERIFIER_ALLOCATION_PLAN_PROCESSING_NOOP",
+    )
+    record(
+        "mutable_statuses_limited",
+        set(ALLOCATION_PLAN_MUTABLE_STATUSES) == {
+            "planned",
+            "snapshot_created",
+            "plan_created",
+        },
+        "STAGE26_2_15_VERIFIER_ALLOCATION_PLAN_MUTABLE_SET_LIMITED",
+    )
+    record(
+        "noop_statuses_include_required",
+        {
+            "allocation_processing",
+            "allocation_completed",
+            "allocation_completed_with_residual_cash",
+            "allocation_failed_requires_review",
+            "failed_requires_review",
+        }.issubset(set(ALLOCATION_PLAN_NOOP_EXISTING_STATUSES)),
+        "STAGE26_2_15_VERIFIER_ALLOCATION_PLAN_NOOP_SET_INCLUDES_REQUIRED",
+    )
+    record(
+        "worker_filters_existing_non_mutable_batches",
+        "FundAllocationBatch" in worker_source
+        and "ALLOCATION_PLAN_MUTABLE_STATUSES" in worker_source
+        and "notin_" in worker_source
+        and "non_mutable_allocation_exists" in worker_source,
+        "STAGE26_2_15_VERIFIER_ALLOCATION_PLAN_WORKER_FILTERS_NON_MUTABLE",
+    )
+    record(
+        "service_has_safe_noop_summary",
+        "def is_allocation_batch_plan_noop_status" in service_source
+        and "allocation_plan_noop_existing_non_mutable_status" in service_source
+        and "return _build_existing_allocation_plan_noop_summary" in service_source,
+        "STAGE26_2_15_VERIFIER_ALLOCATION_PLAN_SERVICE_NOOP_SUMMARY",
+    )
+    record(
+        "service_does_not_duplicate_allocation_batch_on_noop",
+        "_get_existing_allocation_batch_for_update" in service_source
+        and "FundAllocationBatch(" in service_source
+        and service_source.index("return _build_existing_allocation_plan_noop_summary")
+        < service_source.index("allocation_batch = _get_or_create_allocation_batch"),
+        "STAGE26_2_15_VERIFIER_ALLOCATION_PLAN_NOOP_BEFORE_CREATE",
+    )
+    record(
+        "no_bybit_or_bsc_write_paths",
+        ".post(" not in worker_source
+        and ".post(" not in service_source
+        and "send_raw_transaction" not in worker_source
+        and "send_raw_transaction" not in service_source
+        and "_send_usdt_transfer" not in worker_source
+        and "_send_usdt_transfer" not in service_source
+        and "send_native_bnb" not in worker_source
+        and "send_native_bnb" not in service_source
+        and "post" not in worker_calls
+        and "post" not in service_calls,
+        "STAGE26_2_15_VERIFIER_ALLOCATION_PLAN_NO_BYBIT_BSC_SENDS",
+    )
+
+    return {
+        "ok": not failures,
+        "checks": checks,
+        "reason": "; ".join(failures) if failures else None,
+    }
+
+
 def emit_actual_ready_markers_after_confirmation_path(
     *,
     confirmation_path_result: dict[str, Any] | None = None,
     buy_collection_continuation_result: dict[str, Any] | None = None,
     bybit_lower_limit_result: dict[str, Any] | None = None,
+    allocation_plan_idempotency_result: dict[str, Any] | None = None,
 ) -> bool:
     confirmation_result = confirmation_path_result
 
@@ -776,9 +920,27 @@ def emit_actual_ready_markers_after_confirmation_path(
         print(NOT_READY_MARKER)
         return False
 
+    allocation_plan_result = allocation_plan_idempotency_result
+
+    if allocation_plan_result is None:
+        try:
+            allocation_plan_result = verify_allocation_plan_idempotency_path()
+        except Exception as exc:
+            allocation_plan_result = {
+                "ok": False,
+                "reason": f"allocation_plan_idempotency_verification_exception: {exc}",
+            }
+
+    if not allocation_plan_result.get("ok"):
+        reason = allocation_plan_result.get("reason") or "unknown"
+        print(f"allocation_plan_idempotency_verification_failed: {reason}")
+        print(NOT_READY_MARKER)
+        return False
+
     print(CONFIRMATION_PATH_MARKER)
     print(BUY_COLLECTION_CONTINUATION_PATH_MARKER)
     print(BYBIT_LOWER_LIMIT_REJECT_HANDLING_MARKER)
+    print(ALLOCATION_PLAN_IDEMPOTENCY_PATH_MARKER)
     print(READY_MARKER)
     return True
 
@@ -2891,6 +3053,11 @@ def test_stage26_2_12_confirmation_path_actual_run_marker(source: str) -> None:
                 "checks": {"forced_ok": True},
                 "reason": None,
             },
+            allocation_plan_idempotency_result={
+                "ok": True,
+                "checks": {"forced_ok": True},
+                "reason": None,
+            },
         )
 
     ok_output = ok_buffer.getvalue()
@@ -2903,7 +3070,9 @@ def test_stage26_2_12_confirmation_path_actual_run_marker(source: str) -> None:
         and BUY_COLLECTION_CONTINUATION_PATH_MARKER in ok_output
         and ok_output.index(BUY_COLLECTION_CONTINUATION_PATH_MARKER) < ok_output.index(READY_MARKER)
         and BYBIT_LOWER_LIMIT_REJECT_HANDLING_MARKER in ok_output
-        and ok_output.index(BYBIT_LOWER_LIMIT_REJECT_HANDLING_MARKER) < ok_output.index(READY_MARKER),
+        and ok_output.index(BYBIT_LOWER_LIMIT_REJECT_HANDLING_MARKER) < ok_output.index(READY_MARKER)
+        and ALLOCATION_PLAN_IDEMPOTENCY_PATH_MARKER in ok_output
+        and ok_output.index(ALLOCATION_PLAN_IDEMPOTENCY_PATH_MARKER) < ok_output.index(READY_MARKER),
     )
 
     fail_buffer = io.StringIO()
@@ -2979,6 +3148,41 @@ def test_stage26_2_12_confirmation_path_actual_run_marker(source: str) -> None:
         and NOT_READY_MARKER in lower_limit_fail_output
         and READY_MARKER not in lower_limit_fail_output
         and BYBIT_LOWER_LIMIT_REJECT_HANDLING_MARKER not in lower_limit_fail_output,
+    )
+
+    allocation_plan_fail_buffer = io.StringIO()
+    with contextlib.redirect_stdout(allocation_plan_fail_buffer):
+        allocation_plan_failed_ok = emit_actual_ready_markers_after_confirmation_path(
+            confirmation_path_result={
+                "ok": True,
+                "checks": {"forced_ok": True},
+                "reason": None,
+            },
+            buy_collection_continuation_result={
+                "ok": True,
+                "checks": {"forced_ok": True},
+                "reason": None,
+            },
+            bybit_lower_limit_result={
+                "ok": True,
+                "checks": {"forced_ok": True},
+                "reason": None,
+            },
+            allocation_plan_idempotency_result={
+                "ok": False,
+                "checks": {"forced_failure": False},
+                "reason": "forced_allocation_plan_idempotency_failure",
+            },
+        )
+
+    allocation_plan_fail_output = allocation_plan_fail_buffer.getvalue()
+    assert_ok(
+        "STAGE26_2_15_PRODUCTION_VERIFIER_ALLOCATION_PLAN_IDEMPOTENCY_PATH_ACTUAL_RUN_FAIL_CLOSED_OK",
+        allocation_plan_failed_ok is False
+        and "allocation_plan_idempotency_verification_failed: forced_allocation_plan_idempotency_failure" in allocation_plan_fail_output
+        and NOT_READY_MARKER in allocation_plan_fail_output
+        and READY_MARKER not in allocation_plan_fail_output
+        and ALLOCATION_PLAN_IDEMPOTENCY_PATH_MARKER not in allocation_plan_fail_output,
     )
 
     fixture_args = argparse.Namespace(
@@ -3060,6 +3264,12 @@ def run_self_test() -> int:
         "STAGE26_2_14_VERIFIER_LOWER_LIMIT_PATH_SHARED_OK",
         lower_limit_path["ok"] is True,
     )
+
+    allocation_plan_path = verify_allocation_plan_idempotency_path(emit_assert_ok=True)
+    assert_ok(
+        "STAGE26_2_15_VERIFIER_ALLOCATION_PLAN_IDEMPOTENCY_PATH_SHARED_OK",
+        allocation_plan_path["ok"] is True,
+    )
     test_stage26_2_12_confirmation_path_actual_run_marker(source)
 
     assert_ok("SELFTEST_SOURCE_NO_CLIENT_POST_CALL", "post" not in calls)
@@ -3082,6 +3292,7 @@ def run_self_test() -> int:
     print(CONFIRMATION_PATH_MARKER)
     print(BUY_COLLECTION_CONTINUATION_PATH_MARKER)
     print(BYBIT_LOWER_LIMIT_REJECT_HANDLING_MARKER)
+    print(ALLOCATION_PLAN_IDEMPOTENCY_PATH_MARKER)
     return 0
 
 
