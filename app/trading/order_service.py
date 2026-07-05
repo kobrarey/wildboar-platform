@@ -19,12 +19,47 @@ from app.trading.order_gate import (
     ORDER_ENTRY_DISABLED_ERROR_KEY,
     is_order_entry_enabled_for_fund_code,
 )
+from app.settlement.statuses import (
+    ORDER_SIDE_REDEEM,
+    ORDER_STATUS_AWAITING_NEGATIVE_NET_EXECUTION,
+    ORDER_STATUS_PENDING,
+    ORDER_STATUS_PROCESSING,
+    ORDER_STATUS_SETTLING,
+)
 
 
 class TradingOrderError(ValueError):
     def __init__(self, error_key: str):
         self.error_key = error_key
         super().__init__(error_key)
+
+
+ACTIVE_REDEEM_ORDER_STATUSES = {
+    ORDER_STATUS_PENDING,
+    ORDER_STATUS_SETTLING,
+    ORDER_STATUS_AWAITING_NEGATIVE_NET_EXECUTION,
+    ORDER_STATUS_PROCESSING,
+}
+
+
+def _active_redeem_order_exists(
+    db: Session,
+    *,
+    user_id: int,
+    fund_id: int,
+) -> bool:
+    return (
+        db.query(FundOrder.id)
+        .filter(
+            FundOrder.user_id == int(user_id),
+            FundOrder.fund_id == int(fund_id),
+            FundOrder.side == ORDER_SIDE_REDEEM,
+            FundOrder.status.in_(sorted(ACTIVE_REDEEM_ORDER_STATUSES)),
+        )
+        .with_for_update()
+        .first()
+        is not None
+    )
 
 
 def utcnow() -> datetime:
@@ -298,6 +333,7 @@ def create_redeem_order(
     shares: Any,
     *,
     lang: str = "en",
+    commit: bool = True,
 ) -> dict:
     """
     Create pending redeem order and reserve user's fund shares.
@@ -325,6 +361,13 @@ def create_redeem_order(
             fund_id=fund.id,
         )
 
+        if _active_redeem_order_exists(
+            db,
+            user_id=int(user.id),
+            fund_id=int(fund.id),
+        ):
+            raise TradingOrderError("active_redeem_order_exists")
+
         available = get_available_shares(position)
         if shares_dec > available:
             raise TradingOrderError("insufficient_shares")
@@ -346,7 +389,12 @@ def create_redeem_order(
 
         db.add(position)
         db.add(order)
-        db.commit()
+
+        if commit:
+            db.commit()
+        else:
+            db.flush()
+
         db.refresh(order)
         db.refresh(position)
 
