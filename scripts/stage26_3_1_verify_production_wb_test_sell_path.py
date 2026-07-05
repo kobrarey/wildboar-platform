@@ -795,29 +795,88 @@ def selftest_negative_modules_import() -> None:
 def selftest_live_gates_fail_closed() -> None:
     validate_negative_live_gates_source()
 
-    from workers.fund_negative_net_targets_worker import _build_parser as targets_parser
+    from workers.fund_negative_net_targets_worker import (
+        _build_parser as targets_parser,
+    )
+    from workers.fund_negative_net_targets_worker import _validate_stage23_1_args
     from workers.fund_negative_sale_execution_worker import parse_worker_args as sale_exec_parse
     from workers.fund_negative_bybit_flow_worker import parse_worker_args as bybit_parse
     from workers.fund_negative_payout_worker import _parse_args as payout_parse
     from workers.fund_negative_finalization_worker import _parse_args as final_parse
 
-    targets_args = targets_parser().parse_args(["--live-execution"])
-    from workers.fund_negative_net_targets_worker import _validate_stage23_1_args
-    assert_ok("SELFTEST_TARGETS_GATE_BLOCKS", _validate_stage23_1_args(targets_args) is None)
+    setting_names = [
+        "LIFECYCLE_WORKERS_PRODUCTION_LIVE_ENABLED",
+        "NEGATIVE_NET_TARGETS_ALLOW_LIVE_FEE",
+        "NEGATIVE_NET_SALE_PLAN_ALLOW_LIVE_READONLY",
+        "NEGATIVE_NET_SALE_EXECUTION_ALLOW_LIVE",
+        "NEGATIVE_NET_BYBIT_FLOW_ALLOW_LIVE",
+        "NEGATIVE_NET_BYBIT_FLOW_ALLOW_LIVE_EXECUTION",
+        "NEGATIVE_NET_PAYOUT_ALLOW_LIVE",
+        "NEGATIVE_NET_PAYOUT_ALLOW_LIVE_EXECUTION",
+        "NEGATIVE_NET_FINALIZATION_ALLOW_LIVE_EXECUTION",
+    ]
+    original_values = {
+        name: getattr(settings, name)
+        for name in setting_names
+    }
 
-    sale_args = sale_exec_parse(["--live-execution"])
-    assert_ok("SELFTEST_SALE_EXEC_GATE_BLOCKS", sale_args.live_gate_allowed is False)
+    try:
+        for name in setting_names:
+            setattr(settings, name, False)
 
-    bybit_args = bybit_parse(["--live-execution"])
-    assert_ok("SELFTEST_BYBIT_GATE_BLOCKS", bybit_args.live_gate_allowed is False)
+        targets_args = targets_parser().parse_args(["--live-execution"])
+        assert_ok(
+            "SELFTEST_TARGETS_GATE_BLOCKS",
+            _validate_stage23_1_args(targets_args) is None,
+        )
 
-    payout_args = payout_parse(["--live-execution"])
-    assert_ok("SELFTEST_PAYOUT_GATE_BLOCKS", payout_args.live_gate_allowed is False)
+        sale_args = sale_exec_parse(["--live-execution"])
+        assert_ok("SELFTEST_SALE_EXEC_GATE_BLOCKS", sale_args.live_gate_allowed is False)
 
-    final_args = final_parse(["--live-execution"])
-    assert_ok("SELFTEST_FINAL_GATE_BLOCKS", final_args.live_gate_allowed is False)
+        bybit_args = bybit_parse(["--live-execution"])
+        assert_ok("SELFTEST_BYBIT_GATE_BLOCKS", bybit_args.live_gate_allowed is False)
 
-    print("STAGE26_3_1_NEGATIVE_LIVE_GATES_FAIL_CLOSED_OK")
+        payout_args = payout_parse(["--live-execution"])
+        assert_ok("SELFTEST_PAYOUT_GATE_BLOCKS", payout_args.live_gate_allowed is False)
+
+        final_args = final_parse(["--live-execution"])
+        assert_ok("SELFTEST_FINAL_GATE_BLOCKS", final_args.live_gate_allowed is False)
+
+        print("STAGE26_3_1_NEGATIVE_LIVE_GATES_FAIL_CLOSED_OK")
+
+        settings.LIFECYCLE_WORKERS_PRODUCTION_LIVE_ENABLED = True
+        settings.NEGATIVE_NET_TARGETS_ALLOW_LIVE_FEE = True
+
+        static_fee_args = targets_parser().parse_args(
+            [
+                "--live-execution",
+                "--static-bybit-withdrawal-fee-usdt",
+                "1",
+            ]
+        )
+        static_fee = _validate_stage23_1_args(static_fee_args)
+
+        targets_source = read(SOURCE_PATHS["targets_worker"])
+        assert_ok(
+            "SELFTEST_TARGETS_STATIC_FEE_RETURNS_DECIMAL",
+            static_fee == Decimal("1"),
+        )
+        assert_ok(
+            "SELFTEST_TARGETS_STATIC_FEE_NO_BYBIT_CLIENT",
+            "BybitV5Client" not in targets_source,
+        )
+        assert_ok(
+            "SELFTEST_TARGETS_STATIC_FEE_NO_BSC_TX",
+            "send_raw_transaction" not in targets_source
+            and "_send_usdt_transfer" not in targets_source
+            and "send_native_bnb" not in targets_source,
+        )
+
+        print("STAGE26_3_1_NEGATIVE_TARGETS_STATIC_FEE_ALLOWED_OK")
+
+    finally:
+        for name, value in original_values.items():
+            setattr(settings, name, value)
 
 
 def selftest_operation_guard_coverage() -> None:
