@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.models import Fund, FundOrder, FundSettlementBatch
@@ -22,13 +23,17 @@ from app.settlement.statuses import (
     BATCH_STATUS_AWAITING_NEGATIVE_NET_EXECUTION,
     BATCH_STATUS_FAILED_REQUIRES_REVIEW,
     BATCH_STATUS_NEGATIVE_NET_TARGETS_CALCULATED,
+    ORDER_SIDE_REDEEM,
+    ORDER_STATUS_AWAITING_NEGATIVE_NET_EXECUTION,
+    ORDER_STATUS_PENDING,
+    ORDER_STATUS_PROCESSING,
 )
 
 
-ORDER_SIDE_REDEEM = "redeem"
 REDEEM_ORDER_TARGET_STATUSES = {
-    "pending",
-    "processing",
+    ORDER_STATUS_PENDING,
+    ORDER_STATUS_PROCESSING,
+    ORDER_STATUS_AWAITING_NEGATIVE_NET_EXECUTION,
 }
 
 
@@ -207,6 +212,35 @@ def _load_redeem_orders_for_update(
     )
 
 
+def _redeem_order_lookup_diagnostics(
+    db: Session,
+    *,
+    settlement_batch_id: int,
+) -> dict[str, Any]:
+    rows = (
+        db.query(FundOrder.status, func.count(FundOrder.id))
+        .filter(
+            FundOrder.settlement_batch_id == int(settlement_batch_id),
+            FundOrder.side == ORDER_SIDE_REDEEM,
+        )
+        .group_by(FundOrder.status)
+        .order_by(FundOrder.status.asc())
+        .all()
+    )
+
+    statuses_found = {
+        str(status): int(count)
+        for status, count in rows
+    }
+
+    return {
+        "settlement_batch_id": int(settlement_batch_id),
+        "allowed_statuses": sorted(REDEEM_ORDER_TARGET_STATUSES),
+        "redeem_order_count_ignoring_status": sum(statuses_found.values()),
+        "redeem_order_statuses_found": statuses_found,
+    }
+
+
 def _apply_fee_result_to_order(
     *,
     order: FundOrder,
@@ -346,8 +380,20 @@ def calculate_and_store_negative_net_targets(
         )
 
         if not redeem_orders:
+            lookup_diagnostics = _redeem_order_lookup_diagnostics(
+                db,
+                settlement_batch_id=int(batch.id),
+            )
             raise NegativeNetTargetError(
-                f"No redeem orders found for negative-net batch: batch_id={batch.id}"
+                (
+                    "No redeem orders found for negative-net batch: "
+                    f"batch_id={batch.id}, "
+                    f"allowed_statuses={lookup_diagnostics['allowed_statuses']}, "
+                    "redeem_order_count_ignoring_status="
+                    f"{lookup_diagnostics['redeem_order_count_ignoring_status']}, "
+                    "redeem_order_statuses_found="
+                    f"{lookup_diagnostics['redeem_order_statuses_found']}"
+                )
             )
 
         order_fee_results: list[RedeemOrderFeeResult] = []
