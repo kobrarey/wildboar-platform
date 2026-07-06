@@ -16,6 +16,14 @@ from app.bybit.order_execution import (
     create_market_sell_order,
     query_order_by_link_id,
 )
+from app.bybit.earn import (
+    BybitEarnError,
+    BybitEarnOrder,
+    place_flexible_saving_redeem_order,
+    query_earn_order_by_link_id,
+    resolve_flexible_saving_product_id,
+    total_flexible_saving_amount,
+)
 from app.config import settings
 from app.models import (
     Fund,
@@ -24,7 +32,10 @@ from app.models import (
     FundSettlementBatch,
 )
 from app.settlement.negative_sale_snapshot import dec
-from app.operation_guard.hooks import require_bybit_negative_sale_order_guard
+from app.operation_guard.hooks import (
+    require_bybit_earn_redeem_guard,
+    require_bybit_negative_sale_order_guard,
+)
 from app.settlement.statuses import (
     BATCH_STATUS_FAILED_REQUIRES_REVIEW,
     BATCH_STATUS_NEGATIVE_NET_SALE_EXECUTED,
@@ -51,6 +62,7 @@ from app.settlement.statuses import (
     SALE_LEG_STATUS_SKIPPED_LIQUIDITY_GUARD,
     SALE_LEG_STATUS_SKIPPED_MARGIN_GUARD,
     SALE_LEG_STATUS_SLICED_IOC_MOCKED,
+    SALE_LEG_STATUS_USDT_EARN_REDEEMED,
     SALE_LEG_STATUS_USDT_EARN_REDEEM_MOCKED,
 )
 
@@ -177,6 +189,15 @@ def deterministic_negative_sale_order_link_id(
     leg_index: int,
 ) -> str:
     return f"wb-neg-sale-{int(sale_batch_id)}-{int(leg_id)}-{int(leg_index)}"
+
+
+def deterministic_negative_sale_earn_redeem_link_id(
+    *,
+    sale_batch_id: int,
+    leg_id: int,
+    leg_index: int,
+) -> str:
+    return f"wb-neg-earn-{int(sale_batch_id)}-{int(leg_id)}-{int(leg_index)}"
 
 
 def bybit_order_success_status(status: str | None) -> bool:
@@ -442,15 +463,20 @@ def live_sale_cash_delta(results: list[dict[str, Any]]) -> Decimal:
 def build_live_execution_json(
     *,
     live_results: list[dict[str, Any]],
+    earn_redeem_results: list[dict[str, Any]],
+    initial_earn_redeemed_usdt: Decimal,
 ) -> dict[str, Any]:
     return {
         "mock_only": False,
-        "stage": "25.1",
+        "stage": "26.3.4",
+        "initial_earn_redeem": earn_redeem_results,
         "initial_sale_legs": live_results,
         "extra_sale": None,
+        "initial_earn_redeemed_usdt": str(initial_earn_redeemed_usdt),
         "additional_earn_redeemed_usdt": "0",
         "safety": {
             "real_bybit_order_calls": True,
+            "real_bybit_earn_redeem_calls": bool(earn_redeem_results),
             "operation_guard_required": True,
             "no_bybit_transfers_or_withdrawals": True,
             "no_bsc_transfers": True,
@@ -463,9 +489,9 @@ def build_live_sale_reconciliation_values(
     *,
     required_master_usdt: Decimal,
     initial_cash_usdt: Decimal,
+    initial_earn_redeemed_usdt: Decimal,
     live_results: list[dict[str, Any]],
 ) -> dict[str, Decimal]:
-    initial_earn_redeemed_usdt = ZERO
     initial_sale_executed_usdt = live_sale_cash_delta(live_results)
 
     available_after_initial_sales = (
@@ -512,17 +538,22 @@ def apply_live_sale_reconciliation_to_batch(
     settlement_batch: FundSettlementBatch,
     required_master_usdt: Decimal,
     initial_cash_usdt: Decimal,
+    initial_earn_redeemed_usdt: Decimal,
     live_results: list[dict[str, Any]],
+    earn_redeem_results: list[dict[str, Any]],
     now: datetime,
 ) -> dict[str, Any]:
     values = build_live_sale_reconciliation_values(
         required_master_usdt=required_master_usdt,
         initial_cash_usdt=initial_cash_usdt,
+        initial_earn_redeemed_usdt=initial_earn_redeemed_usdt,
         live_results=live_results,
     )
 
     execution_json = build_live_execution_json(
         live_results=live_results,
+        earn_redeem_results=earn_redeem_results,
+        initial_earn_redeemed_usdt=initial_earn_redeemed_usdt,
     )
 
     reconciliation_json = build_reconciliation_json(
@@ -661,6 +692,7 @@ def build_negative_sale_live_result(
             "mock_only": False,
             "live_bybit_order_calls": True,
             "operation_guard_required": True,
+            "initial_earn_redeemed_usdt": str(values["initial_earn_redeemed_usdt"]),
             "initial_sale_executed_usdt": str(values["initial_sale_executed_usdt"]),
             "shortage_after_initial_sales_usdt": str(
                 values["shortage_after_initial_sales"]
@@ -697,6 +729,15 @@ def execute_negative_sale_plan_live(
     required_master_usdt = _max_zero(dec(sale_batch.required_master_usdt))
     initial_cash_usdt = cash_available_from_cash_like_legs(legs)
 
+    initial_earn_redeemed_usdt, earn_redeem_results = execute_initial_usdt_earn_redeem_live(
+        db,
+        client=client,
+        sale_batch=sale_batch,
+        settlement_batch=settlement_batch,
+        legs=legs,
+        now=now,
+    )
+
     live_results = execute_initial_sale_legs_live(
         db,
         client=client,
@@ -711,7 +752,9 @@ def execute_negative_sale_plan_live(
         settlement_batch=settlement_batch,
         required_master_usdt=required_master_usdt,
         initial_cash_usdt=initial_cash_usdt,
+        initial_earn_redeemed_usdt=initial_earn_redeemed_usdt,
         live_results=live_results,
+        earn_redeem_results=earn_redeem_results,
         now=now,
     )
 
@@ -1052,6 +1095,7 @@ EXECUTED_LEG_FINAL_STATUSES = {
     SALE_LEG_STATUS_PARTIAL_FILLED_ACCEPTED,
     SALE_LEG_STATUS_PARTIAL_FILLED_BELOW_THRESHOLD,
     SALE_LEG_STATUS_RESIDUALIZED,
+    SALE_LEG_STATUS_USDT_EARN_REDEEMED,
     SALE_LEG_STATUS_USDT_EARN_REDEEM_MOCKED,
     SALE_LEG_STATUS_EXTRA_SALE_MOCKED,
 }
@@ -1193,6 +1237,273 @@ def mock_initial_usdt_earn_redeem(
     leg.updated_at = now
 
     return redeemed
+
+
+def _earn_order_success(order: BybitEarnOrder | None) -> bool:
+    return str(order.status or "").strip() == "Success"
+
+
+def _earn_order_pending(order: BybitEarnOrder | None) -> bool:
+    return str(order.status or "").strip() == "Pending"
+
+
+def _earn_order_failed(order: BybitEarnOrder | None) -> bool:
+    return str(order.status or "").strip() == "Fail"
+
+
+def apply_live_usdt_earn_redeem_to_leg(
+    *,
+    leg: FundNegativeSaleLeg,
+    order: BybitEarnOrder,
+    redeemed_usdt: Decimal,
+    order_link_id: str,
+    now: datetime,
+) -> dict[str, Any]:
+    planned_buffer = _max_zero(dec(leg.target_cash_usdt))
+
+    leg.actual_execution_mode = "live_usdt_earn_redeem"
+    leg.execution_round = "initial"
+    leg.deterministic_key = order_link_id
+
+    leg.order_link_id = order_link_id
+    leg.bybit_order_id = order.order_id
+    leg.bybit_strategy_id = None
+
+    leg.planned_suborders = None
+    leg.executed_suborders = 1
+    leg.suborders_json = None
+
+    leg.filled_qty = redeemed_usdt
+    leg.filled_usdt = redeemed_usdt
+    leg.avg_fill_price = Decimal("1")
+    leg.fill_ratio = (
+        min(redeemed_usdt / planned_buffer, ONE)
+        if planned_buffer > ZERO
+        else ZERO
+    )
+    leg.unfilled_usdt = _max_zero(planned_buffer - redeemed_usdt)
+    leg.fee_usdt = ZERO
+    leg.cash_delta_usdt = redeemed_usdt
+
+    leg.mock_execution_json = {
+        "mock_only": False,
+        "type": "live_usdt_earn_redeem",
+        "execution_round": "initial",
+        "planned_buffer_usdt": str(planned_buffer),
+        "redeemed_usdt": str(redeemed_usdt),
+        "order_id": order.order_id,
+        "order_link_id": order_link_id,
+        "order_status": order.status,
+        "product_id": order.product_id,
+        "coin": order.coin,
+        "operation_guard_required": True,
+        "no_trades": True,
+        "no_bsc_transfers": True,
+    }
+
+    leg.sent_at = now
+    leg.confirmed_at = now
+    leg.failed_at = None
+    leg.execution_error = None
+    leg.status = SALE_LEG_STATUS_USDT_EARN_REDEEMED
+    leg.updated_at = now
+
+    return {
+        "leg_id": int(leg.id),
+        "leg_index": int(leg.leg_index),
+        "type": "live_usdt_earn_redeem",
+        "target_cash_usdt": str(planned_buffer),
+        "redeemed_usdt": str(redeemed_usdt),
+        "cash_delta_usdt": str(redeemed_usdt),
+        "order_id": order.order_id,
+        "order_link_id": order_link_id,
+        "order_status": order.status,
+        "status": SALE_LEG_STATUS_USDT_EARN_REDEEMED,
+    }
+
+
+def execute_live_usdt_earn_redeem_guarded(
+    db: Session,
+    *,
+    client: BybitV5Client,
+    sale_batch: FundNegativeSaleBatch,
+    settlement_batch: FundSettlementBatch,
+    leg: FundNegativeSaleLeg,
+    now: datetime,
+) -> tuple[Decimal, dict[str, Any] | None]:
+    if leg.leg_type != "usdt_earn_buffer":
+        return ZERO, None
+
+    if leg.status == SALE_LEG_STATUS_USDT_EARN_REDEEMED:
+        existing_delta = _max_zero(dec(leg.cash_delta_usdt))
+        return existing_delta, {
+            "leg_id": int(leg.id),
+            "leg_index": int(leg.leg_index),
+            "type": "live_usdt_earn_redeem",
+            "idempotent": True,
+            "cash_delta_usdt": str(existing_delta),
+            "status": leg.status,
+            "order_id": leg.bybit_order_id,
+            "order_link_id": leg.order_link_id,
+        }
+
+    if leg.status != SALE_LEG_STATUS_BUFFER_AVAILABLE:
+        return ZERO, None
+
+    amount = _max_zero(dec(leg.target_cash_usdt))
+    if amount <= ZERO:
+        return ZERO, None
+
+    product_id = resolve_flexible_saving_product_id(
+        client,
+        coin="USDT",
+    )
+
+    redeemable = total_flexible_saving_amount(
+        client,
+        coin="USDT",
+        product_id=product_id,
+    )
+
+    if redeemable < amount:
+        raise NegativeSaleExecutionError(
+            "live_usdt_earn_redeemable_below_required: "
+            f"leg_id={leg.id}, product_id={product_id}, "
+            f"redeemable={redeemable}, required={amount}"
+        )
+
+    order_link_id = deterministic_negative_sale_earn_redeem_link_id(
+        sale_batch_id=int(sale_batch.id),
+        leg_id=int(leg.id),
+        leg_index=int(leg.leg_index),
+    )
+
+    existing = query_earn_order_by_link_id(
+        client,
+        order_link_id=order_link_id,
+        category="FlexibleSaving",
+        product_id=product_id,
+    )
+
+    if existing is not None:
+        if _earn_order_success(existing):
+            redeemed = min(amount, _max_zero(existing.amount))
+            return redeemed, apply_live_usdt_earn_redeem_to_leg(
+                leg=leg,
+                order=existing,
+                redeemed_usdt=redeemed,
+                order_link_id=order_link_id,
+                now=now,
+            )
+
+        if _earn_order_pending(existing):
+            raise NegativeSaleExecutionError(
+                "live_usdt_earn_redeem_pending_fail_closed: "
+                f"leg_id={leg.id}, order_link_id={order_link_id}, "
+                f"order_id={existing.order_id}"
+            )
+
+        if _earn_order_failed(existing):
+            raise NegativeSaleExecutionError(
+                "live_usdt_earn_redeem_failed: "
+                f"leg_id={leg.id}, order_link_id={order_link_id}, "
+                f"order_id={existing.order_id}"
+            )
+
+        raise NegativeSaleExecutionError(
+            "live_usdt_earn_redeem_unknown_existing_status: "
+            f"leg_id={leg.id}, order_link_id={order_link_id}, "
+            f"status={existing.status}"
+        )
+
+    require_bybit_earn_redeem_guard(
+        db,
+        fund_id=int(sale_batch.fund_id),
+        settlement_batch_id=int(settlement_batch.id),
+        amount_usdt=amount,
+        request_id=order_link_id,
+        metadata={
+            "sale_batch_id": int(sale_batch.id),
+            "sale_leg_id": int(leg.id),
+            "leg_index": int(leg.leg_index),
+            "coin": "USDT",
+            "product_id": product_id,
+            "account_type": "FUND",
+            "operation": "negative_sale_usdt_earn_redeem",
+        },
+    )
+
+    placed = place_flexible_saving_redeem_order(
+        client,
+        amount=amount,
+        product_id=product_id,
+        order_link_id=order_link_id,
+        coin="USDT",
+        account_type="FUND",
+    )
+
+    confirmed = query_earn_order_by_link_id(
+        client,
+        order_link_id=order_link_id,
+        category="FlexibleSaving",
+        product_id=product_id,
+    )
+
+    if confirmed is None:
+        raise NegativeSaleExecutionError(
+            "live_usdt_earn_redeem_uncertain_no_history_fail_closed: "
+            f"leg_id={leg.id}, order_link_id={order_link_id}, "
+            f"placed_order_id={placed.order_id}"
+        )
+
+    if not _earn_order_success(confirmed):
+        raise NegativeSaleExecutionError(
+            "live_usdt_earn_redeem_uncertain_not_success_fail_closed: "
+            f"leg_id={leg.id}, order_link_id={order_link_id}, "
+            f"order_id={confirmed.order_id}, status={confirmed.status}"
+        )
+
+    redeemed = min(amount, _max_zero(confirmed.amount))
+    return redeemed, apply_live_usdt_earn_redeem_to_leg(
+        leg=leg,
+        order=confirmed,
+        redeemed_usdt=redeemed,
+        order_link_id=order_link_id,
+        now=now,
+    )
+
+
+def execute_initial_usdt_earn_redeem_live(
+    db: Session,
+    *,
+    client: BybitV5Client,
+    sale_batch: FundNegativeSaleBatch,
+    settlement_batch: FundSettlementBatch,
+    legs: list[FundNegativeSaleLeg],
+    now: datetime,
+) -> tuple[Decimal, list[dict[str, Any]]]:
+    results: list[dict[str, Any]] = []
+    total = ZERO
+
+    for leg in legs:
+        if leg.leg_type != "usdt_earn_buffer":
+            continue
+
+        redeemed, result = execute_live_usdt_earn_redeem_guarded(
+            db,
+            client=client,
+            sale_batch=sale_batch,
+            settlement_batch=settlement_batch,
+            leg=leg,
+            now=now,
+        )
+        total += redeemed
+
+        if result is not None:
+            results.append(result)
+
+    return total, results
+
 
 def cash_available_from_cash_like_legs(
     legs: list[FundNegativeSaleLeg],

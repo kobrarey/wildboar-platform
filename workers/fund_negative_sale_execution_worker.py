@@ -1,16 +1,17 @@
 from __future__ import annotations
 
 import argparse
-import os
 import time
 from pathlib import Path
 from typing import Sequence
+
+from cryptography.fernet import Fernet
 
 from app.bybit.client import BybitV5Client
 from app.config import settings
 from app.db import SessionLocal
 from app.lifecycle import evaluate_live_gate
-from app.models import Fund, FundNegativeSaleBatch, FundSettlementBatch
+from app.models import Fund, FundBybitAccount, FundNegativeSaleBatch, FundSettlementBatch
 from app.settlement.negative_sale_execution import (
     execute_negative_sale_plan_live,
     execute_negative_sale_plan_mock,
@@ -83,16 +84,37 @@ def _candidate_query(db, *, fund_code: str | None = None):
     return query.order_by(FundNegativeSaleBatch.id.asc()).with_for_update(skip_locked=True)
 
 
-def _build_trading_bybit_client() -> BybitV5Client:
-    api_key = (os.getenv("BYBIT_MASTER_API_KEY") or "").strip()
-    api_secret = (os.getenv("BYBIT_MASTER_API_SECRET") or "").strip()
+def _decrypt_bybit_secret(value: str) -> str:
+    key = (settings.BYBIT_API_ENC_KEY or "").strip()
+    if not key or key in {"CHANGE_ME", "CHANGE_ME_TO_FERNET_KEY"}:
+        raise RuntimeError("BYBIT_API_ENC_KEY is not set for fund Bybit API credentials")
 
-    if not api_key or not api_secret:
-        raise RuntimeError(
-            "BYBIT_MASTER_API_KEY / BYBIT_MASTER_API_SECRET are required "
-            "for live negative-net sale execution. Use a restricted master API key "
-            "with server IP whitelist."
+    if not value:
+        raise RuntimeError("Encrypted Bybit credential is empty")
+
+    return Fernet(key.encode("utf-8")).decrypt(value.encode("utf-8")).decode("utf-8")
+
+
+def _build_fund_trading_bybit_client(db, *, fund_id: int) -> BybitV5Client:
+    account = (
+        db.query(FundBybitAccount)
+        .filter(
+            FundBybitAccount.fund_id == int(fund_id),
+            FundBybitAccount.coin == "USDT",
+            FundBybitAccount.is_active == True,
+            FundBybitAccount.api_key_is_active == True,
         )
+        .first()
+    )
+
+    if account is None:
+        raise RuntimeError(
+            "NEGATIVE_SALE_EXECUTION_BYBIT_CLIENT_SCOPE_NOT_READY: "
+            f"active fund Bybit API credentials not found for fund_id={fund_id}"
+        )
+
+    api_key = _decrypt_bybit_secret(account.api_key_encrypted or "")
+    api_secret = _decrypt_bybit_secret(account.api_secret_encrypted or "")
 
     return BybitV5Client(
         api_key=api_key,
@@ -141,7 +163,10 @@ def process_one_live_batch(*, fund_code: str | None = None) -> bool:
             db.rollback()
             return False
 
-        client = _build_trading_bybit_client()
+        client = _build_fund_trading_bybit_client(
+            db,
+            fund_id=int(sale_batch.fund_id),
+        )
 
         result = execute_negative_sale_plan_live(
             db,
