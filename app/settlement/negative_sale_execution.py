@@ -17,12 +17,12 @@ from app.bybit.order_execution import (
     query_order_by_link_id,
 )
 from app.bybit.earn import (
-    BybitEarnError,
     BybitEarnOrder,
+    format_bybit_earn_amount,
     place_flexible_saving_redeem_order,
     query_earn_order_by_link_id,
-    resolve_flexible_saving_product_id,
-    total_flexible_saving_amount,
+    resolve_flexible_saving_product,
+    total_flexible_saving_available_amount,
 )
 from app.config import settings
 from app.models import (
@@ -735,6 +735,7 @@ def execute_negative_sale_plan_live(
         sale_batch=sale_batch,
         settlement_batch=settlement_batch,
         legs=legs,
+        initial_cash_usdt=initial_cash_usdt,
         now=now,
     )
 
@@ -1251,6 +1252,21 @@ def _earn_order_failed(order: BybitEarnOrder | None) -> bool:
     return str(order.status or "").strip() == "Fail"
 
 
+def compute_needed_from_earn(
+    *,
+    required_master_usdt: Decimal,
+    already_realized_cash_usdt: Decimal,
+    target_cash_usdt: Decimal,
+    available_amount: Decimal,
+) -> Decimal:
+    shortage = _max_zero(required_master_usdt - already_realized_cash_usdt)
+    return min(
+        shortage,
+        _max_zero(target_cash_usdt),
+        _max_zero(available_amount),
+    )
+
+
 def apply_live_usdt_earn_redeem_to_leg(
     *,
     leg: FundNegativeSaleLeg,
@@ -1329,6 +1345,7 @@ def execute_live_usdt_earn_redeem_guarded(
     sale_batch: FundNegativeSaleBatch,
     settlement_batch: FundSettlementBatch,
     leg: FundNegativeSaleLeg,
+    already_realized_cash_usdt: Decimal,
     now: datetime,
 ) -> tuple[Decimal, dict[str, Any] | None]:
     if leg.leg_type != "usdt_earn_buffer":
@@ -1350,26 +1367,58 @@ def execute_live_usdt_earn_redeem_guarded(
     if leg.status != SALE_LEG_STATUS_BUFFER_AVAILABLE:
         return ZERO, None
 
-    amount = _max_zero(dec(leg.target_cash_usdt))
-    if amount <= ZERO:
+    target_cash_usdt = _max_zero(dec(leg.target_cash_usdt))
+    if target_cash_usdt <= ZERO:
         return ZERO, None
 
-    product_id = resolve_flexible_saving_product_id(
+    product = resolve_flexible_saving_product(
         client,
         coin="USDT",
     )
+    product_id = product.product_id
+    product_precision = product.precision
+    if product_precision is None:
+        raise NegativeSaleExecutionError(
+            "live_usdt_earn_product_precision_missing: "
+            f"leg_id={leg.id}, product_id={product_id}, raw={product.raw}"
+        )
 
-    redeemable = total_flexible_saving_amount(
+    available_amount = total_flexible_saving_available_amount(
         client,
         coin="USDT",
         product_id=product_id,
     )
 
-    if redeemable < amount:
+    needed_from_earn = compute_needed_from_earn(
+        required_master_usdt=_max_zero(dec(sale_batch.required_master_usdt)),
+        already_realized_cash_usdt=_max_zero(dec(already_realized_cash_usdt)),
+        target_cash_usdt=target_cash_usdt,
+        available_amount=available_amount,
+    )
+
+    if needed_from_earn <= ZERO:
+        return ZERO, None
+
+    amount_str = format_bybit_earn_amount(
+        needed_from_earn,
+        precision=int(product_precision),
+        rounding="up",
+    )
+    amount = Decimal(amount_str)
+
+    if amount <= ZERO:
         raise NegativeSaleExecutionError(
-            "live_usdt_earn_redeemable_below_required: "
+            "live_usdt_earn_redeem_rounded_amount_not_positive: "
+            f"leg_id={leg.id}, needed_from_earn={needed_from_earn}, "
+            f"amount_str={amount_str}, precision={product_precision}"
+        )
+
+    if amount > available_amount:
+        raise NegativeSaleExecutionError(
+            "live_usdt_earn_redeem_rounded_amount_exceeds_available: "
             f"leg_id={leg.id}, product_id={product_id}, "
-            f"redeemable={redeemable}, required={amount}"
+            f"availableAmount={available_amount}, needed_from_earn={needed_from_earn}, "
+            f"rounded_amount={amount}, precision={product_precision}"
         )
 
     order_link_id = deterministic_negative_sale_earn_redeem_link_id(
@@ -1377,6 +1426,12 @@ def execute_live_usdt_earn_redeem_guarded(
         leg_id=int(leg.id),
         leg_index=int(leg.leg_index),
     )
+
+    if len(order_link_id) > 36:
+        raise NegativeSaleExecutionError(
+            "live_usdt_earn_redeem_order_link_id_too_long: "
+            f"leg_id={leg.id}, len={len(order_link_id)}, order_link_id={order_link_id}"
+        )
 
     existing = query_earn_order_by_link_id(
         client,
@@ -1430,16 +1485,26 @@ def execute_live_usdt_earn_redeem_guarded(
             "product_id": product_id,
             "account_type": "FUND",
             "operation": "negative_sale_usdt_earn_redeem",
+            "product_precision": int(product_precision),
+            "amount_str": amount_str,
+            "availableAmount": str(available_amount),
+            "target_cash_usdt": str(target_cash_usdt),
+            "needed_from_earn": str(needed_from_earn),
         },
     )
 
     placed = place_flexible_saving_redeem_order(
         client,
         amount=amount,
+        amount_str=amount_str,
         product_id=product_id,
         order_link_id=order_link_id,
         coin="USDT",
         account_type="FUND",
+        product_precision=int(product_precision),
+        available_amount=available_amount,
+        target_cash_usdt=target_cash_usdt,
+        needed_from_earn=needed_from_earn,
     )
 
     confirmed = query_earn_order_by_link_id(
@@ -1480,6 +1545,7 @@ def execute_initial_usdt_earn_redeem_live(
     sale_batch: FundNegativeSaleBatch,
     settlement_batch: FundSettlementBatch,
     legs: list[FundNegativeSaleLeg],
+    initial_cash_usdt: Decimal,
     now: datetime,
 ) -> tuple[Decimal, list[dict[str, Any]]]:
     results: list[dict[str, Any]] = []
@@ -1495,6 +1561,7 @@ def execute_initial_usdt_earn_redeem_live(
             sale_batch=sale_batch,
             settlement_batch=settlement_batch,
             leg=leg,
+            already_realized_cash_usdt=initial_cash_usdt + total,
             now=now,
         )
         total += redeemed

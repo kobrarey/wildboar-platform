@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from decimal import Decimal
+from decimal import Decimal, ROUND_DOWN, ROUND_UP
+import logging
 from typing import Any
 
 from app.bybit.client import BybitV5Client
 
+log = logging.getLogger("app.bybit.earn")
 
 class BybitEarnError(RuntimeError):
     pass
@@ -29,6 +31,8 @@ class BybitEarnPosition:
     coin: str
     product_id: str
     amount: Decimal
+    available_amount: Decimal
+    freeze_details: Any
     position_id: str | None
     status: str | None
     raw: dict[str, Any]
@@ -62,6 +66,46 @@ def _int_or_none(value: Any) -> int | None:
         return int(value)
     except Exception:
         return None
+
+
+def format_bybit_earn_amount(
+    amount: Decimal,
+    precision: int,
+    rounding: str,
+) -> str:
+    if precision is None:
+        raise BybitEarnError("Earn product precision is missing")
+
+    precision = int(precision)
+    if precision < 0:
+        raise BybitEarnError(f"Earn product precision must be non-negative: {precision}")
+
+    amount = _dec(amount)
+    if amount <= Decimal("0"):
+        raise BybitEarnError(f"Earn amount must be positive: {amount}")
+
+    rounding_mode = {
+        "up": ROUND_UP,
+        "down": ROUND_DOWN,
+    }.get(str(rounding).strip().lower())
+
+    if rounding_mode is None:
+        raise BybitEarnError(f"Unsupported Earn amount rounding mode: {rounding}")
+
+    quantum = Decimal("1").scaleb(-precision)
+    rounded = amount.quantize(quantum, rounding=rounding_mode)
+
+    text = format(rounded, "f")
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+
+    if text in {"", "-0"}:
+        text = "0"
+
+    if "E" in text.upper():
+        raise BybitEarnError(f"Formatted Earn amount uses scientific notation: {text}")
+
+    return text
 
 
 def list_earn_products(
@@ -108,11 +152,11 @@ def list_earn_products(
     return products
 
 
-def resolve_flexible_saving_product_id(
+def resolve_flexible_saving_product(
     client: BybitV5Client,
     *,
     coin: str = "USDT",
-) -> str:
+) -> BybitEarnProduct:
     products = list_earn_products(
         client,
         category="FlexibleSaving",
@@ -133,7 +177,25 @@ def resolve_flexible_saving_product_id(
             f"Available FlexibleSaving Earn product not found for coin={coin}"
         )
 
-    return available[0].product_id
+    product = available[0]
+    if product.precision is None:
+        raise BybitEarnError(
+            "FlexibleSaving Earn product precision is missing: "
+            f"coin={coin}, product_id={product.product_id}, raw={product.raw}"
+        )
+
+    return product
+
+
+def resolve_flexible_saving_product_id(
+    client: BybitV5Client,
+    *,
+    coin: str = "USDT",
+) -> str:
+    return resolve_flexible_saving_product(
+        client,
+        coin=coin,
+    ).product_id
 
 
 def get_earn_positions(
@@ -172,6 +234,8 @@ def get_earn_positions(
                 coin=row_coin,
                 product_id=row_product_id,
                 amount=_dec(row.get("amount")),
+                available_amount=_dec(row.get("availableAmount")),
+                freeze_details=row.get("freezeDetails"),
                 position_id=(
                     str(row.get("id"))
                     if row.get("id") not in {None, ""}
@@ -202,6 +266,26 @@ def total_flexible_saving_amount(
             coin=coin,
             product_id=product_id,
         )),
+        Decimal("0"),
+    )
+
+
+def total_flexible_saving_available_amount(
+    client: BybitV5Client,
+    *,
+    coin: str = "USDT",
+    product_id: str | None = None,
+) -> Decimal:
+    return sum(
+        (
+            item.available_amount
+            for item in get_earn_positions(
+                client,
+                category="FlexibleSaving",
+                coin=coin,
+                product_id=product_id,
+            )
+        ),
         Decimal("0"),
     )
 
@@ -269,13 +353,52 @@ def place_flexible_saving_redeem_order(
     client: BybitV5Client,
     *,
     amount: Decimal,
+    amount_str: str,
     product_id: str,
     order_link_id: str,
     coin: str = "USDT",
     account_type: str = "FUND",
+    product_precision: int,
+    available_amount: Decimal,
+    target_cash_usdt: Decimal,
+    needed_from_earn: Decimal,
 ) -> BybitEarnOrder:
     if amount <= Decimal("0"):
         raise BybitEarnError(f"Earn redeem amount must be positive: {amount}")
+
+    amount_str = str(amount_str or "").strip()
+    if not amount_str:
+        raise BybitEarnError("Formatted Earn redeem amount is empty")
+
+    if "E" in amount_str.upper():
+        raise BybitEarnError(
+            f"Formatted Earn redeem amount uses scientific notation: {amount_str}"
+        )
+
+    if len(str(order_link_id)) > 36:
+        raise BybitEarnError(
+            f"Earn redeem orderLinkId is longer than 36 chars: {len(str(order_link_id))}"
+        )
+
+    payload_summary = {
+        "endpoint": "/v5/earn/place-order",
+        "category": "FlexibleSaving",
+        "orderType": "Redeem",
+        "accountType": account_type,
+        "coin": coin,
+        "productId": product_id,
+        "orderLinkId_len": len(str(order_link_id)),
+        "amount": amount_str,
+        "product_precision": int(product_precision),
+        "availableAmount": str(available_amount),
+        "target_cash_usdt": str(target_cash_usdt),
+        "needed_from_earn": str(needed_from_earn),
+    }
+
+    log.info(
+        "Bybit Earn redeem payload summary: %s",
+        payload_summary,
+    )
 
     payload = client.post(
         "/v5/earn/place-order",
@@ -283,7 +406,7 @@ def place_flexible_saving_redeem_order(
             "category": "FlexibleSaving",
             "orderType": "Redeem",
             "accountType": account_type,
-            "amount": str(amount),
+            "amount": amount_str,
             "coin": coin,
             "productId": product_id,
             "orderLinkId": order_link_id,
