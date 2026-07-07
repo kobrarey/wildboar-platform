@@ -2,12 +2,12 @@
 -- PostgreSQL database dump
 --
 
-\restrict ktvh4a5ObgTDXSCWSSiv2WawX2wq8TSzf7FT0q5rDH6zJhV2ws8XzW1bLUuAiQS
+\restrict Il1xRCburZwwMMJEhITezTH3ZVFjkuQATbpJ2cDzJ2UeW8x9YO0qTW48BgG0e7x
 
 -- Dumped from database version 16.11
 -- Dumped by pg_dump version 16.11
 
--- Started on 2026-06-26 19:00:27
+-- Started on 2026-07-07 15:48:37
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -1149,7 +1149,7 @@ CREATE TABLE public.fund_operation_guard_events (
     mode_snapshot character varying(32),
     metadata_json jsonb,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT fund_operation_guard_events_action_type_check CHECK (((action_type)::text = ANY ((ARRAY['bybit_universal_transfer'::character varying, 'bybit_master_withdrawal'::character varying, 'bsc_redeem_payout'::character varying, 'bsc_settlement_gas_topup'::character varying, 'bsc_positive_net_to_bybit'::character varying, 'bsc_buy_collection_gas_topup'::character varying, 'bsc_buy_collection_usdt_to_settlement'::character varying, 'bybit_negative_sale_order'::character varying, 'bybit_allocation_trade_order'::character varying, 'bybit_allocation_strategy_order'::character varying, 'bybit_allocation_earn_order'::character varying, 'bybit_allocation_transfer'::character varying])::text[]))),
+    CONSTRAINT fund_operation_guard_events_action_type_check CHECK (((action_type)::text = ANY ((ARRAY['bybit_universal_transfer'::character varying, 'bybit_master_withdrawal'::character varying, 'bsc_redeem_payout'::character varying, 'bsc_settlement_gas_topup'::character varying, 'bsc_positive_net_to_bybit'::character varying, 'bsc_buy_collection_gas_topup'::character varying, 'bsc_buy_collection_usdt_to_settlement'::character varying, 'bybit_negative_sale_order'::character varying, 'bybit_earn_redeem'::character varying, 'bybit_allocation_trade_order'::character varying, 'bybit_allocation_strategy_order'::character varying, 'bybit_allocation_earn_order'::character varying, 'bybit_allocation_transfer'::character varying])::text[]))),
     CONSTRAINT fund_operation_guard_events_decision_check CHECK (((decision)::text = ANY ((ARRAY['allowed'::character varying, 'blocked'::character varying, 'error'::character varying])::text[]))),
     CONSTRAINT fund_operation_guard_events_mode_snapshot_check CHECK (((mode_snapshot IS NULL) OR ((mode_snapshot)::text = ANY ((ARRAY['blocked'::character varying, 'live_allowed'::character varying])::text[])))),
     CONSTRAINT fund_operation_guard_events_scope_type_check CHECK (((scope_type)::text = ANY ((ARRAY['global'::character varying, 'fund'::character varying])::text[])))
@@ -1204,7 +1204,7 @@ CREATE TABLE public.fund_operation_guard_overrides (
     result_json jsonb,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT fund_operation_guard_overrides_action_type_check CHECK (((action_type)::text = ANY ((ARRAY['bybit_universal_transfer'::character varying, 'bybit_master_withdrawal'::character varying, 'bsc_redeem_payout'::character varying, 'bsc_settlement_gas_topup'::character varying, 'bsc_positive_net_to_bybit'::character varying, 'bsc_buy_collection_gas_topup'::character varying, 'bsc_buy_collection_usdt_to_settlement'::character varying, 'bybit_negative_sale_order'::character varying, 'bybit_allocation_trade_order'::character varying, 'bybit_allocation_strategy_order'::character varying, 'bybit_allocation_earn_order'::character varying, 'bybit_allocation_transfer'::character varying])::text[]))),
+    CONSTRAINT fund_operation_guard_overrides_action_type_check CHECK (((action_type)::text = ANY ((ARRAY['bybit_universal_transfer'::character varying, 'bybit_master_withdrawal'::character varying, 'bsc_redeem_payout'::character varying, 'bsc_settlement_gas_topup'::character varying, 'bsc_positive_net_to_bybit'::character varying, 'bsc_buy_collection_gas_topup'::character varying, 'bsc_buy_collection_usdt_to_settlement'::character varying, 'bybit_negative_sale_order'::character varying, 'bybit_earn_redeem'::character varying, 'bybit_allocation_trade_order'::character varying, 'bybit_allocation_strategy_order'::character varying, 'bybit_allocation_earn_order'::character varying, 'bybit_allocation_transfer'::character varying])::text[]))),
     CONSTRAINT fund_operation_guard_overrides_expiry_check CHECK ((expires_at > starts_at)),
     CONSTRAINT fund_operation_guard_overrides_scope_type_check CHECK (((scope_type)::text = ANY ((ARRAY['global'::character varying, 'fund'::character varying])::text[]))),
     CONSTRAINT fund_operation_guard_overrides_status_check CHECK (((status)::text = ANY ((ARRAY['active'::character varying, 'used'::character varying, 'expired'::character varying, 'revoked'::character varying])::text[])))
@@ -1249,7 +1249,7 @@ CREATE TABLE public.fund_operation_guard_state (
     updated_by_user_id bigint,
     created_at timestamp with time zone DEFAULT now() NOT NULL,
     updated_at timestamp with time zone DEFAULT now() NOT NULL,
-    CONSTRAINT fund_operation_guard_state_action_type_check CHECK (((action_type)::text = ANY ((ARRAY['bybit_universal_transfer'::character varying, 'bybit_master_withdrawal'::character varying, 'bsc_redeem_payout'::character varying, 'bsc_settlement_gas_topup'::character varying, 'bsc_positive_net_to_bybit'::character varying, 'bsc_buy_collection_gas_topup'::character varying, 'bsc_buy_collection_usdt_to_settlement'::character varying, 'bybit_negative_sale_order'::character varying, 'bybit_allocation_trade_order'::character varying, 'bybit_allocation_strategy_order'::character varying, 'bybit_allocation_earn_order'::character varying, 'bybit_allocation_transfer'::character varying])::text[]))),
+    CONSTRAINT fund_operation_guard_state_action_type_check CHECK (((action_type)::text = ANY ((ARRAY['bybit_universal_transfer'::character varying, 'bybit_master_withdrawal'::character varying, 'bsc_redeem_payout'::character varying, 'bsc_settlement_gas_topup'::character varying, 'bsc_positive_net_to_bybit'::character varying, 'bsc_buy_collection_gas_topup'::character varying, 'bsc_buy_collection_usdt_to_settlement'::character varying, 'bybit_negative_sale_order'::character varying, 'bybit_earn_redeem'::character varying, 'bybit_allocation_trade_order'::character varying, 'bybit_allocation_strategy_order'::character varying, 'bybit_allocation_earn_order'::character varying, 'bybit_allocation_transfer'::character varying])::text[]))),
     CONSTRAINT fund_operation_guard_state_mode_check CHECK (((mode)::text = ANY ((ARRAY['blocked'::character varying, 'live_allowed'::character varying])::text[]))),
     CONSTRAINT fund_operation_guard_state_scope_type_check CHECK (((scope_type)::text = ANY ((ARRAY['global'::character varying, 'fund'::character varying])::text[])))
 );
@@ -4766,11 +4766,11 @@ ALTER TABLE ONLY public.withdraw_sessions
     ADD CONSTRAINT withdraw_sessions_wallet_id_fkey FOREIGN KEY (wallet_id) REFERENCES public.user_wallets(id) ON DELETE CASCADE;
 
 
--- Completed on 2026-06-26 19:00:27
+-- Completed on 2026-07-07 15:48:37
 
 --
 -- PostgreSQL database dump complete
 --
 
-\unrestrict ktvh4a5ObgTDXSCWSSiv2WawX2wq8TSzf7FT0q5rDH6zJhV2ws8XzW1bLUuAiQS
+\unrestrict Il1xRCburZwwMMJEhITezTH3ZVFjkuQATbpJ2cDzJ2UeW8x9YO0qTW48BgG0e7x
 
