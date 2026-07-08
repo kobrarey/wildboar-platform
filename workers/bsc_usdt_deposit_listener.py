@@ -26,7 +26,7 @@ from sqlalchemy.dialects.postgresql import insert
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import UserWallet, WalletTransfer
+from app.models import FundWallet, UserWallet, WalletTransfer
 
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -96,6 +96,44 @@ def load_wallet_map() -> dict[str, tuple[int, int]]:
         return m
     finally:
         db.close()
+
+
+def load_active_platform_settlement_wallet_addresses() -> set[str]:
+    """Lowercase active BSC platform settlement wallet addresses."""
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(FundWallet.address)
+            .filter(FundWallet.blockchain == "BSC")
+            .filter(FundWallet.wallet_type == "settlement")
+            .filter(FundWallet.is_active.is_(True))
+            .all()
+        )
+
+        addresses: set[str] = set()
+        for (address,) in rows:
+            if address:
+                addresses.add(str(address).lower())
+
+        return addresses
+    finally:
+        db.close()
+
+
+def is_internal_platform_payout_transfer(
+    *,
+    from_address: str | None,
+    to_address: str | None,
+    wallet_map: dict[str, tuple[int, int]],
+    platform_settlement_wallet_addresses: set[str],
+) -> bool:
+    if not from_address or not to_address:
+        return False
+
+    return (
+        from_address.lower() in platform_settlement_wallet_addresses
+        and to_address.lower() in wallet_map
+    )
 
 
 def get_cursor(db, name: str) -> tuple[int, int] | None:
@@ -250,6 +288,7 @@ def db_insert_transfer(
 async def handle_log(
     log: dict,
     wallet_map: dict[str, tuple[int, int]],
+    platform_settlement_wallet_addresses: set[str],
     rpc_session: aiohttp.ClientSession,
     block_time_cache: dict[int, datetime],
     *,
@@ -290,6 +329,28 @@ async def handle_log(
     amount_int = _hex_to_int(log.get("data") or "0x0")
     amount = Decimal(amount_int) / (Decimal(10) ** Decimal(settings.BSC_USDT_DECIMALS))
 
+    if is_internal_platform_payout_transfer(
+        from_address=from_addr_raw,
+        to_address=to_addr_raw,
+        wallet_map=wallet_map,
+        platform_settlement_wallet_addresses=platform_settlement_wallet_addresses,
+    ):
+        if update_cursor_flag:
+            await asyncio.to_thread(db_upsert_cursor, CURSOR_NAME, block_number, log_index)
+
+        logging.info(
+            (
+                "Internal payout transfer ignored by deposit listener: "
+                "tx=%s li=%s from=%s to=%s amount=%s"
+            ),
+            tx_hash,
+            log_index,
+            from_addr_raw,
+            to_addr_raw,
+            str(amount),
+        )
+        return
+
     tx_time = block_time_cache.get(block_number)
     if tx_time is None:
         try:
@@ -319,7 +380,11 @@ async def handle_log(
     logging.info("Deposit detected: user_id=%s wallet_id=%s tx=%s li=%s amount=%s", user_id, wallet_id, tx_hash, log_index, str(amount))
 
 
-async def subscribe_chunk(addresses: list[str], wallet_map: dict[str, tuple[int, int]]):
+async def subscribe_chunk(
+    addresses: list[str],
+    wallet_map: dict[str, tuple[int, int]],
+    platform_settlement_wallet_addresses: set[str],
+):
     if not settings.BSC_WS_URL:
         raise RuntimeError("BSC_WS_URL is not set")
 
@@ -358,10 +423,20 @@ async def subscribe_chunk(addresses: list[str], wallet_map: dict[str, tuple[int,
                     continue
                 lg = (event.get("params") or {}).get("result")
                 if isinstance(lg, dict):
-                    await handle_log(lg, wallet_map, rpc_session, block_time_cache, update_cursor_flag=True)
+                    await handle_log(
+                        lg,
+                        wallet_map,
+                        platform_settlement_wallet_addresses,
+                        rpc_session,
+                        block_time_cache,
+                        update_cursor_flag=True,
+                    )
 
 
-async def backfill_on_start(wallet_map: dict[str, tuple[int, int]]):
+async def backfill_on_start(
+    wallet_map: dict[str, tuple[int, int]],
+    platform_settlement_wallet_addresses: set[str],
+):
     if not getattr(settings, "BSC_BACKFILL_ON_START", True):
         logging.info("Backfill on start disabled.")
         return
@@ -427,7 +502,14 @@ async def backfill_on_start(wallet_map: dict[str, tuple[int, int]]):
             logs_all.sort(key=lambda x: (_hex_to_int(x.get("blockNumber", "0x0")), _hex_to_int(x.get("logIndex", "0x0"))))
 
             for lg in logs_all:
-                await handle_log(lg, wallet_map, rpc_session, block_time_cache, update_cursor_flag=False)
+                await handle_log(
+                    lg,
+                    wallet_map,
+                    platform_settlement_wallet_addresses,
+                    rpc_session,
+                    block_time_cache,
+                    update_cursor_flag=False,
+                )
 
             await asyncio.to_thread(db_upsert_cursor, CURSOR_NAME, end, 0)
             logging.info("Backfill chunk done: %d..%d (logs=%d)", start, end, len(logs_all))
@@ -439,27 +521,43 @@ async def main():
     reload_sec = int(getattr(settings, "BSC_WALLET_MAP_RELOAD_SEC", 60))
 
     wallet_map = load_wallet_map()
+    platform_settlement_wallet_addresses = load_active_platform_settlement_wallet_addresses()
     last_addrs = set(wallet_map.keys())
+    last_settlement_addrs = set(platform_settlement_wallet_addresses)
 
     # one-time backfill on startup
-    await backfill_on_start(wallet_map)
+    await backfill_on_start(wallet_map, platform_settlement_wallet_addresses)
 
     while True:
         if not last_addrs:
             logging.warning("No BSC wallets found in DB. Waiting for wallets...")
             await asyncio.sleep(reload_sec)
             wallet_map = load_wallet_map()
+            platform_settlement_wallet_addresses = load_active_platform_settlement_wallet_addresses()
             last_addrs = set(wallet_map.keys())
+            last_settlement_addrs = set(platform_settlement_wallet_addresses)
             continue
 
         addresses = list(last_addrs)
         chunks = _chunk(addresses, 1000)
 
-        tasks = [asyncio.create_task(subscribe_chunk(ch, wallet_map)) for ch in chunks if ch]
+        tasks = [
+            asyncio.create_task(
+                subscribe_chunk(
+                    ch,
+                    wallet_map,
+                    platform_settlement_wallet_addresses,
+                )
+            )
+            for ch in chunks
+            if ch
+        ]
         if not tasks:
             await asyncio.sleep(reload_sec)
             wallet_map = load_wallet_map()
+            platform_settlement_wallet_addresses = load_active_platform_settlement_wallet_addresses()
             last_addrs = set(wallet_map.keys())
+            last_settlement_addrs = set(platform_settlement_wallet_addresses)
             continue
 
         try:
@@ -472,16 +570,28 @@ async def main():
                         raise exc
 
                 new_map = load_wallet_map()
+                new_settlement_addrs = load_active_platform_settlement_wallet_addresses()
                 new_addrs = set(new_map.keys())
 
-                if new_addrs != last_addrs:
-                    logging.info("Wallet list changed: %d -> %d addresses. Reloading subscriptions...", len(last_addrs), len(new_addrs))
+                if new_addrs != last_addrs or new_settlement_addrs != last_settlement_addrs:
+                    logging.info(
+                        (
+                            "Wallet list changed: user addresses %d -> %d, "
+                            "settlement addresses %d -> %d. Reloading subscriptions..."
+                        ),
+                        len(last_addrs),
+                        len(new_addrs),
+                        len(last_settlement_addrs),
+                        len(new_settlement_addrs),
+                    )
                     for t in tasks:
                         t.cancel()
                     await asyncio.gather(*tasks, return_exceptions=True)
 
                     wallet_map = new_map
+                    platform_settlement_wallet_addresses = new_settlement_addrs
                     last_addrs = new_addrs
+                    last_settlement_addrs = new_settlement_addrs
                     break
         finally:
             pass

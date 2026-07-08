@@ -11,6 +11,9 @@ from app.bybit.asset_flows import (
     BybitWithdrawalResult,
     create_master_withdrawal,
     create_universal_transfer,
+    format_bybit_asset_amount,
+    query_account_coin_balance,
+    query_coin_info,
     query_master_withdrawal,
     query_universal_transfer,
 )
@@ -67,6 +70,12 @@ NEGATIVE_NET_UNIVERSAL_TRANSFER_NAMESPACE = uuid.UUID(
     "8f7f7418-7ef0-4efb-9ccb-2b779d3d0f61"
 )
 
+NEGATIVE_NET_WITHDRAWAL_REQUEST_NAMESPACE = uuid.UUID(
+    "75bce24d-3880-4d30-b7f7-ccf7cc8e0a19"
+)
+
+NEGATIVE_NET_UNIVERSAL_TRANSFER_AMOUNT_PRECISION = 6
+
 BYBIT_SUCCESS_STATUSES = {"SUCCESS", "COMPLETED", "COMPLETE"}
 BYBIT_PENDING_STATUSES = {
     "PENDING",
@@ -89,6 +98,42 @@ def _is_bybit_pending(value: str | None) -> bool:
     return _bybit_status(value) in BYBIT_PENDING_STATUSES
 
 
+WITHDRAWAL_SUCCESS_STATUSES = {
+    "SUCCESS",
+    "BLOCKCHAINCONFIRMED",
+    "COMPLETED",
+    "COMPLETE",
+}
+
+WITHDRAWAL_PENDING_STATUSES = {
+    "",
+    "SECURITYCHECK",
+    "PENDING",
+    "MOREINFORMATIONREQUIRED",
+    "PROCESSING",
+    "REVIEWING",
+}
+
+WITHDRAWAL_FAILED_STATUSES = {
+    "REJECT",
+    "FAIL",
+    "CANCELBYUSER",
+    "FAILED",
+}
+
+
+def _is_withdrawal_success_like(value: str | None) -> bool:
+    return _bybit_status(value) in WITHDRAWAL_SUCCESS_STATUSES
+
+
+def _is_withdrawal_pending_like(value: str | None) -> bool:
+    return _bybit_status(value) in WITHDRAWAL_PENDING_STATUSES
+
+
+def _is_withdrawal_failed_like(value: str | None) -> bool:
+    return _bybit_status(value) in WITHDRAWAL_FAILED_STATUSES
+
+
 def _q10(value: Decimal) -> Decimal:
     return dec(value).quantize(Decimal("0.0000000001"))
 
@@ -109,13 +154,21 @@ def deterministic_universal_transfer_id(
     *,
     settlement_batch_id: int,
     fund_id: int,
-    required_master_usdt: Decimal,
+    universal_transfer_amount_usdt: Decimal,
+    from_member_id: str,
+    to_member_id: str,
+    from_account_type: str,
+    to_account_type: str,
 ) -> str:
     seed = (
         "wildboar:negative-net-universal-transfer:"
         f"settlement_batch_id={int(settlement_batch_id)}:"
         f"fund_id={int(fund_id)}:"
-        f"required_master_usdt={_q10(required_master_usdt)}"
+        f"universal_transfer_amount_usdt={_q10(universal_transfer_amount_usdt)}:"
+        f"from_member_id={str(from_member_id).strip()}:"
+        f"to_member_id={str(to_member_id).strip()}:"
+        f"from_account_type={str(from_account_type).strip().upper()}:"
+        f"to_account_type={str(to_account_type).strip().upper()}"
     )
     return str(uuid.uuid5(NEGATIVE_NET_UNIVERSAL_TRANSFER_NAMESPACE, seed))
 
@@ -126,13 +179,134 @@ def deterministic_withdrawal_request_id(
     fund_id: int,
     settlement_wallet_address: str,
     withdrawal_request_amount_usdt: Decimal,
+    coin: str,
+    chain: str,
 ) -> str:
-    return (
-        f"neg-net-withdraw:"
-        f"{int(settlement_batch_id)}:"
-        f"{int(fund_id)}:"
-        f"{settlement_wallet_address}:"
-        f"{_q10(withdrawal_request_amount_usdt)}"
+    seed = (
+        "wildboar:negative-net-withdrawal:"
+        f"settlement_batch_id={int(settlement_batch_id)}:"
+        f"fund_id={int(fund_id)}:"
+        f"settlement_wallet_address={str(settlement_wallet_address).strip().lower()}:"
+        f"withdrawal_request_amount_usdt={_q10(withdrawal_request_amount_usdt)}:"
+        f"coin={str(coin).strip().upper()}:"
+        f"chain={str(chain).strip().upper()}"
+    )
+    return "wbng" + uuid.uuid5(
+        NEGATIVE_NET_WITHDRAWAL_REQUEST_NAMESPACE,
+        seed,
+    ).hex[:28]
+
+
+def universal_transfer_actual_amount(
+    *,
+    required_master_usdt: Decimal,
+    precision: int = NEGATIVE_NET_UNIVERSAL_TRANSFER_AMOUNT_PRECISION,
+) -> tuple[str, Decimal]:
+    raw_required = _positive(
+        required_master_usdt,
+        field_name="required_master_usdt",
+    )
+    amount_str = format_bybit_asset_amount(
+        raw_required,
+        precision=int(precision),
+        rounding="up",
+    )
+    actual = dec(amount_str)
+    quantum = Decimal("1").scaleb(-int(precision))
+
+    if actual < raw_required:
+        raise NegativeBybitFlowError(
+            "Universal Transfer actual amount must cover required_master_usdt"
+        )
+
+    if actual - raw_required > quantum:
+        raise NegativeBybitFlowError(
+            "Universal Transfer rounded surplus exceeds one precision quantum"
+        )
+
+    return amount_str, actual
+
+
+def withdrawal_actual_amount(
+    *,
+    withdrawal_request_amount_usdt: Decimal,
+    precision: int,
+) -> tuple[str, Decimal]:
+    raw_amount = _positive(
+        withdrawal_request_amount_usdt,
+        field_name="withdrawal_request_amount_usdt",
+    )
+    amount_str = format_bybit_asset_amount(
+        raw_amount,
+        precision=int(precision),
+        rounding="down",
+    )
+    actual = dec(amount_str)
+
+    if actual <= ZERO:
+        raise NegativeBybitFlowError("Withdrawal actual amount must be positive")
+
+    if actual > raw_amount:
+        raise NegativeBybitFlowError("Withdrawal actual amount must not overpay user")
+
+    return amount_str, actual
+
+
+def choose_universal_transfer_account_route(
+    client: BybitV5Client,
+    *,
+    coin: str,
+    amount_usdt: Decimal,
+    from_member_id: str,
+    to_member_id: str,
+) -> dict[str, Any]:
+    candidates = [
+        ("FUND", "FUND"),
+        ("UNIFIED", "UNIFIED"),
+    ]
+    checked: list[dict[str, Any]] = []
+
+    for from_account_type, to_account_type in candidates:
+        balance = query_account_coin_balance(
+            client,
+            account_type=from_account_type,
+            coin=coin,
+            member_id=from_member_id,
+            to_member_id=to_member_id,
+            to_account_type=to_account_type,
+            with_transfer_safe_amount=True,
+            with_ltv_transfer_safe_amount=True,
+        )
+
+        item = {
+            "from_account_type": from_account_type,
+            "to_account_type": to_account_type,
+            "walletBalance": str(balance.wallet_balance),
+            "transferBalance": str(balance.transfer_balance),
+            "transferSafeAmount": (
+                str(balance.transfer_safe_amount)
+                if balance.transfer_safe_amount is not None
+                else None
+            ),
+            "ltvTransferSafeAmount": (
+                str(balance.ltv_transfer_safe_amount)
+                if balance.ltv_transfer_safe_amount is not None
+                else None
+            ),
+        }
+        checked.append(item)
+
+        if balance.transfer_balance >= amount_usdt:
+            return {
+                "from_account_type": from_account_type,
+                "to_account_type": to_account_type,
+                "selected_transfer_balance": balance.transfer_balance,
+                "checked": checked,
+            }
+
+    raise NegativeBybitFlowError(
+        "No Universal Transfer account route has sufficient transferBalance: "
+        f"required={amount_usdt}, checked={checked}"
     )
 
 
@@ -993,16 +1167,67 @@ def execute_negative_bybit_flow_live(
 
         settlement_wallet_address = str(wallet.address)
 
+        from_sub_uid = str(fund_sub_uid).strip()
+        to_master_uid = str(master_uid).strip()
+
+        if not from_sub_uid:
+            raise NegativeBybitFlowError("fund_sub_uid is required for live Universal Transfer")
+
+        if not to_master_uid:
+            raise NegativeBybitFlowError("master_uid is required for live Universal Transfer")
+
+        universal_transfer_amount_str, universal_transfer_amount_actual = (
+            universal_transfer_actual_amount(
+                required_master_usdt=amounts["required_master_usdt"],
+            )
+        )
+
+        route = choose_universal_transfer_account_route(
+            bybit_client,
+            coin=coin,
+            amount_usdt=universal_transfer_amount_actual,
+            from_member_id=from_sub_uid,
+            to_member_id=to_master_uid,
+        )
+
         transfer_id = deterministic_universal_transfer_id(
             settlement_batch_id=int(settlement_batch.id),
             fund_id=int(fund.id),
-            required_master_usdt=amounts["required_master_usdt"],
+            universal_transfer_amount_usdt=universal_transfer_amount_actual,
+            from_member_id=from_sub_uid,
+            to_member_id=to_master_uid,
+            from_account_type=route["from_account_type"],
+            to_account_type=route["to_account_type"],
         )
+
+        coin_info = query_coin_info(
+            bybit_client,
+            coin=coin,
+            chain=chain,
+        )
+
+        if str(coin_info.chain_withdraw or "").strip() != "1":
+            raise NegativeBybitFlowError("BSC USDT withdrawal is disabled by Bybit coin info")
+
+        if coin_info.withdraw_min > amounts["withdrawal_request_amount_usdt"]:
+            raise NegativeBybitFlowError(
+                "Withdrawal amount is below Bybit withdrawMin: "
+                f"withdrawMin={coin_info.withdraw_min}, "
+                f"amount={amounts['withdrawal_request_amount_usdt']}"
+            )
+
+        withdrawal_amount_str, withdrawal_amount_actual = withdrawal_actual_amount(
+            withdrawal_request_amount_usdt=amounts["withdrawal_request_amount_usdt"],
+            precision=int(coin_info.min_accuracy),
+        )
+
         request_id = deterministic_withdrawal_request_id(
             settlement_batch_id=int(settlement_batch.id),
             fund_id=int(fund.id),
             settlement_wallet_address=settlement_wallet_address,
-            withdrawal_request_amount_usdt=amounts["withdrawal_request_amount_usdt"],
+            withdrawal_request_amount_usdt=withdrawal_amount_actual,
+            coin=coin,
+            chain=chain,
         )
 
         if flow.status == BYBIT_FLOW_STATUS_COMPLETED:
@@ -1062,18 +1287,12 @@ def execute_negative_bybit_flow_live(
         flow.retained_fees_usdt = amounts["total_partial_month_fee_usdt"]
         flow.settlement_wallet_id = int(wallet.id)
         flow.settlement_wallet_address = settlement_wallet_address
-        flow.from_sub_uid = str(fund_sub_uid).strip()
-        flow.to_master_uid = str(master_uid).strip()
-        flow.from_account_type = "UNIFIED"
-        flow.to_account_type = "UNIFIED"
+        flow.from_sub_uid = from_sub_uid
+        flow.to_master_uid = to_master_uid
+        flow.from_account_type = route["from_account_type"]
+        flow.to_account_type = route["to_account_type"]
         flow.universal_transfer_id = transfer_id
         flow.withdrawal_request_id = request_id
-
-        if not flow.from_sub_uid:
-            raise NegativeBybitFlowError("fund_sub_uid is required for live Universal Transfer")
-
-        if not flow.to_master_uid:
-            raise NegativeBybitFlowError("master_uid is required for live Universal Transfer")
 
         flow.preflight_passed = True
         flow.preflight_error = None
@@ -1087,6 +1306,19 @@ def execute_negative_bybit_flow_live(
                 "from_sub_uid": flow.from_sub_uid,
                 "to_master_uid": flow.to_master_uid,
                 "fee_type": settings.NEGATIVE_NET_WITHDRAWAL_FEE_TYPE,
+                "universal_transfer_required_raw": str(amounts["required_master_usdt"]),
+                "universal_transfer_amount_str": universal_transfer_amount_str,
+                "universal_transfer_amount_actual": str(universal_transfer_amount_actual),
+                "universal_transfer_amount_precision": NEGATIVE_NET_UNIVERSAL_TRANSFER_AMOUNT_PRECISION,
+                "universal_transfer_route": route,
+                "withdrawal_request_amount_raw": str(amounts["withdrawal_request_amount_usdt"]),
+                "withdrawal_amount_str": withdrawal_amount_str,
+                "withdrawal_amount_actual": str(withdrawal_amount_actual),
+                "withdrawal_amount_precision": int(coin_info.min_accuracy),
+                "withdrawal_account_type": "FUND",
+                "withdrawal_force_chain": 1,
+                "withdrawal_chain_withdraw": coin_info.chain_withdraw,
+                "withdrawal_min": str(coin_info.withdraw_min),
             }
         )
         flow.status = BYBIT_FLOW_STATUS_PREFLIGHT_PASSED
@@ -1129,7 +1361,7 @@ def execute_negative_bybit_flow_live(
                     db,
                     fund_id=int(fund.id),
                     settlement_batch_id=int(settlement_batch.id),
-                    amount_usdt=amounts["required_master_usdt"],
+                    amount_usdt=universal_transfer_amount_actual,
                     request_id=transfer_id,
                     metadata={
                         "source": "negative_bybit_flow_live",
@@ -1137,6 +1369,12 @@ def execute_negative_bybit_flow_live(
                         "from_sub_uid": flow.from_sub_uid,
                         "to_master_uid": flow.to_master_uid,
                         "coin": coin,
+                        "from_account_type": flow.from_account_type,
+                        "to_account_type": flow.to_account_type,
+                        "required_master_usdt_raw": str(amounts["required_master_usdt"]),
+                        "universal_transfer_amount_str": universal_transfer_amount_str,
+                        "universal_transfer_amount_actual": str(universal_transfer_amount_actual),
+                        "universal_transfer_amount_precision": NEGATIVE_NET_UNIVERSAL_TRANSFER_AMOUNT_PRECISION,
                     },
                 )
             except OperationGuardBlockedError as exc:
@@ -1155,7 +1393,8 @@ def execute_negative_bybit_flow_live(
                 bybit_client,
                 transfer_id=transfer_id,
                 coin=coin,
-                amount_usdt=amounts["required_master_usdt"],
+                amount_usdt=universal_transfer_amount_actual,
+                amount_str=universal_transfer_amount_str,
                 from_member_id=flow.from_sub_uid,
                 to_member_id=flow.to_master_uid,
                 from_account_type=flow.from_account_type,
@@ -1163,7 +1402,7 @@ def execute_negative_bybit_flow_live(
             )
 
             flow.universal_transfer_status = created_transfer.status
-            flow.universal_transfer_amount_usdt = amounts["required_master_usdt"]
+            flow.universal_transfer_amount_usdt = created_transfer.amount_usdt
             flow.universal_transfer_coin = coin
             flow.universal_transfer_created_at = now
             flow.universal_transfer_mock_json = _json_dict(
@@ -1255,11 +1494,16 @@ def execute_negative_bybit_flow_live(
         if transfer_record.coin != coin:
             raise NegativeBybitFlowError("Universal Transfer coin mismatch")
 
-        if not _same_decimal(transfer_record.amount_usdt, amounts["required_master_usdt"]):
+        if not _same_decimal(transfer_record.amount_usdt, universal_transfer_amount_actual):
             raise NegativeBybitFlowError("Universal Transfer amount mismatch")
 
+        if transfer_record.amount_usdt < amounts["required_master_usdt"]:
+            raise NegativeBybitFlowError(
+                "Universal Transfer amount does not cover required_master_usdt"
+            )
+
         flow.universal_transfer_status = transfer_record.status
-        flow.universal_transfer_amount_usdt = amounts["required_master_usdt"]
+        flow.universal_transfer_amount_usdt = universal_transfer_amount_actual
         flow.universal_transfer_coin = coin
         flow.universal_transfer_confirmed_at = now
         flow.universal_transfer_reconciliation_json = _json_dict(
@@ -1268,6 +1512,11 @@ def execute_negative_bybit_flow_live(
                 "ok": True,
                 "transferId": transfer_id,
                 "record": transfer_record.raw,
+                "required_master_usdt_raw": str(amounts["required_master_usdt"]),
+                "universal_transfer_amount_actual": str(universal_transfer_amount_actual),
+                "universal_transfer_amount_str": universal_transfer_amount_str,
+                "from_account_type": flow.from_account_type,
+                "to_account_type": flow.to_account_type,
             }
         )
         flow.status = BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED
@@ -1306,7 +1555,7 @@ def execute_negative_bybit_flow_live(
                     db,
                     fund_id=int(fund.id),
                     settlement_batch_id=int(settlement_batch.id),
-                    amount_usdt=amounts["withdrawal_request_amount_usdt"],
+                    amount_usdt=withdrawal_amount_actual,
                     request_id=request_id,
                     metadata={
                         "source": "negative_bybit_flow_live",
@@ -1314,6 +1563,12 @@ def execute_negative_bybit_flow_live(
                         "coin": coin,
                         "chain": chain,
                         "address": settlement_wallet_address,
+                        "amount_str": withdrawal_amount_str,
+                        "amount_actual": str(withdrawal_amount_actual),
+                        "amount_raw": str(amounts["withdrawal_request_amount_usdt"]),
+                        "amount_precision": int(coin_info.min_accuracy),
+                        "account_type": "FUND",
+                        "forceChain": 1,
                     },
                 )
             except OperationGuardBlockedError as exc:
@@ -1334,13 +1589,18 @@ def execute_negative_bybit_flow_live(
                 coin=coin,
                 chain=chain,
                 address=settlement_wallet_address,
-                amount_usdt=amounts["withdrawal_request_amount_usdt"],
+                amount_usdt=withdrawal_amount_actual,
+                amount_str=withdrawal_amount_str,
+                amount_precision=int(coin_info.min_accuracy),
                 fee_type=int(settings.NEGATIVE_NET_WITHDRAWAL_FEE_TYPE),
+                account_type="FUND",
+                timestamp_ms=int(now.timestamp() * 1000),
+                force_chain=1,
             )
 
             flow.withdrawal_id = created_withdrawal.withdrawal_id
             flow.withdrawal_status = created_withdrawal.status
-            flow.withdrawal_amount_usdt = amounts["withdrawal_request_amount_usdt"]
+            flow.withdrawal_amount_usdt = created_withdrawal.amount_usdt
             flow.withdrawal_fee_usdt = amounts["bybit_withdrawal_fee_usdt"]
             flow.withdrawal_coin = coin
             flow.withdrawal_chain = chain
@@ -1391,15 +1651,40 @@ def execute_negative_bybit_flow_live(
                     },
                 )
 
-        if not _is_bybit_success(withdrawal_record.status):
-            if _is_bybit_pending(withdrawal_record.status):
+        if _is_withdrawal_failed_like(withdrawal_record.status):
+            return _set_failed(
+                flow=flow,
+                settlement_batch=settlement_batch,
+                fund=fund,
+                status_before=status_before,
+                settlement_status_before=settlement_status_before,
+                error=f"Withdrawal failed status: {withdrawal_record.status}",
+                now=now,
+                diagnostics={"request_id": request_id, "status": withdrawal_record.status},
+            )
+
+        if not _is_withdrawal_success_like(withdrawal_record.status):
+            if _is_withdrawal_pending_like(withdrawal_record.status) or not withdrawal_record.tx_hash:
+                flow.withdrawal_id = withdrawal_record.withdrawal_id or flow.withdrawal_id
                 flow.withdrawal_status = withdrawal_record.status
+                flow.withdrawal_amount_usdt = withdrawal_amount_actual
+                flow.withdrawal_fee_usdt = amounts["bybit_withdrawal_fee_usdt"]
+                flow.withdrawal_coin = coin
+                flow.withdrawal_chain = chain
+                flow.withdrawal_address = settlement_wallet_address
                 flow.withdrawal_record_json = _json_dict(
-                    {"live": True, "record": withdrawal_record.raw}
+                    {
+                        "live": True,
+                        "record": withdrawal_record.raw,
+                        "pending": "withdrawal_pending_or_unknown_no_tx_hash",
+                        "no_duplicate_resend": True,
+                    }
                 )
                 flow.updated_at = now
+
                 settlement_batch.status = BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_PENDING
                 settlement_batch.updated_at = now
+
                 db.add(flow)
                 db.add(settlement_batch)
                 db.flush()
@@ -1420,8 +1705,9 @@ def execute_negative_bybit_flow_live(
                     settlement_wallet_address=settlement_wallet_address,
                     diagnostics={
                         "live": True,
-                        "pending": "withdrawal_pending",
+                        "pending": "withdrawal_pending_or_unknown_no_tx_hash",
                         "status": withdrawal_record.status,
+                        "no_duplicate_resend": True,
                     },
                 )
 
@@ -1447,25 +1733,62 @@ def execute_negative_bybit_flow_live(
 
         if not _same_decimal(
             withdrawal_record.amount_usdt,
-            amounts["withdrawal_request_amount_usdt"],
+            withdrawal_amount_actual,
         ):
             raise NegativeBybitFlowError("Withdrawal amount mismatch")
 
         if not withdrawal_record.tx_hash:
-            return _set_failed(
-                flow=flow,
-                settlement_batch=settlement_batch,
-                fund=fund,
+            flow.withdrawal_id = withdrawal_record.withdrawal_id or flow.withdrawal_id
+            flow.withdrawal_status = withdrawal_record.status
+            flow.withdrawal_amount_usdt = withdrawal_amount_actual
+            flow.withdrawal_fee_usdt = amounts["bybit_withdrawal_fee_usdt"]
+            flow.withdrawal_coin = coin
+            flow.withdrawal_chain = chain
+            flow.withdrawal_address = settlement_wallet_address
+            flow.withdrawal_record_json = _json_dict(
+                {
+                    "live": True,
+                    "record": withdrawal_record.raw,
+                    "pending": "withdrawal_success_like_missing_tx_hash",
+                    "no_duplicate_resend": True,
+                }
+            )
+            flow.updated_at = now
+
+            settlement_batch.status = BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING
+            settlement_batch.updated_at = now
+
+            db.add(flow)
+            db.add(settlement_batch)
+            db.flush()
+
+            return NegativeBybitFlowResult(
+                ok=False,
+                flow_id=int(flow.id),
+                settlement_batch_id=int(settlement_batch.id),
+                sale_batch_id=int(sale_batch.id),
+                fund_id=int(fund.id),
+                fund_code=str(fund.code),
                 status_before=status_before,
+                status_after=flow.status,
                 settlement_status_before=settlement_status_before,
-                error="Withdrawal succeeded but tx_hash is missing",
-                now=now,
-                diagnostics={"request_id": request_id},
+                settlement_status_after=settlement_batch.status,
+                universal_transfer_id=transfer_id,
+                withdrawal_request_id=request_id,
+                settlement_wallet_address=settlement_wallet_address,
+                diagnostics={
+                    "live": True,
+                    "pending": "withdrawal_success_like_missing_tx_hash",
+                    "status": withdrawal_record.status,
+                    "no_duplicate_resend": True,
+                    "no_bsc_payout": True,
+                    "no_accounting_finalization": True,
+                },
             )
 
         flow.withdrawal_id = withdrawal_record.withdrawal_id or flow.withdrawal_id
         flow.withdrawal_status = withdrawal_record.status
-        flow.withdrawal_amount_usdt = amounts["withdrawal_request_amount_usdt"]
+        flow.withdrawal_amount_usdt = withdrawal_amount_actual
         flow.withdrawal_fee_usdt = amounts["bybit_withdrawal_fee_usdt"]
         flow.withdrawal_coin = coin
         flow.withdrawal_chain = chain
@@ -1488,6 +1811,8 @@ def execute_negative_bybit_flow_live(
                 "matched_chain": True,
                 "matched_amount": True,
                 "matched_address": True,
+                "withdrawal_amount_actual": str(withdrawal_amount_actual),
+                "withdrawal_amount_raw": str(amounts["withdrawal_request_amount_usdt"]),
             }
         )
         flow.status = BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILED
@@ -1526,7 +1851,7 @@ def execute_negative_bybit_flow_live(
             )
 
         flow.settlement_wallet_receipt_status = "CONFIRMED"
-        flow.settlement_wallet_received_usdt = amounts["withdrawal_request_amount_usdt"]
+        flow.settlement_wallet_received_usdt = withdrawal_amount_actual
         flow.settlement_wallet_receipt_tx_hash = withdrawal_record.tx_hash
         flow.settlement_wallet_receipt_confirmed_at = now
         flow.settlement_wallet_receipt_json = _json_dict(
@@ -1534,7 +1859,7 @@ def execute_negative_bybit_flow_live(
                 "live": True,
                 "status": "CONFIRMED",
                 "address": settlement_wallet_address,
-                "received_usdt": amounts["withdrawal_request_amount_usdt"],
+                "received_usdt": withdrawal_amount_actual,
                 "tx_hash": withdrawal_record.tx_hash,
                 "bsc_tx_confirmed": True,
             }
@@ -1560,6 +1885,7 @@ def execute_negative_bybit_flow_live(
                 "ok": True,
                 "required_master_usdt": amounts["required_master_usdt"],
                 "withdrawal_request_amount_usdt": amounts["withdrawal_request_amount_usdt"],
+                "withdrawal_amount_actual": withdrawal_amount_actual,
                 "bybit_withdrawal_fee_usdt": amounts["bybit_withdrawal_fee_usdt"],
                 "retained_fees_usdt": amounts["total_partial_month_fee_usdt"],
                 "settlement_wallet_address": settlement_wallet_address,

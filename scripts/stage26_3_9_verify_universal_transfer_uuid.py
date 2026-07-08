@@ -14,6 +14,16 @@ from app.settlement.negative_bybit_flow import deterministic_universal_transfer_
 
 ROOT = Path(__file__).resolve().parents[1]
 
+BATCH80_TRANSFER_ID_KWARGS = {
+    "settlement_batch_id": 80,
+    "fund_id": 9,
+    "universal_transfer_amount_usdt": Decimal("11.022249"),
+    "from_member_id": "fund-sub-uid",
+    "to_member_id": "master-uid",
+    "from_account_type": "FUND",
+    "to_account_type": "FUND",
+}
+
 
 class FakeBybitClient:
     def __init__(self) -> None:
@@ -64,11 +74,7 @@ def ast_call_names(path: str) -> set[str]:
 
 
 def test_transfer_id_uuid() -> None:
-    transfer_id = deterministic_universal_transfer_id(
-        settlement_batch_id=80,
-        fund_id=9,
-        required_master_usdt=Decimal("11.0222489345"),
-    )
+    transfer_id = deterministic_universal_transfer_id(**BATCH80_TRANSFER_ID_KWARGS)
     parsed = parse_uuid(transfer_id)
 
     assert_ok("TRANSFER_ID_IS_UUID", str(parsed) == transfer_id)
@@ -79,36 +85,58 @@ def test_transfer_id_uuid() -> None:
 
 
 def test_transfer_id_deterministic() -> None:
-    base = deterministic_universal_transfer_id(
-        settlement_batch_id=80,
-        fund_id=9,
-        required_master_usdt=Decimal("11.0222489345"),
-    )
+    base = deterministic_universal_transfer_id(**BATCH80_TRANSFER_ID_KWARGS)
     same = deterministic_universal_transfer_id(
         settlement_batch_id=80,
         fund_id=9,
-        required_master_usdt=Decimal("11.0222489345000"),
+        universal_transfer_amount_usdt=Decimal("11.0222490000"),
+        from_member_id="fund-sub-uid",
+        to_member_id="master-uid",
+        from_account_type="FUND",
+        to_account_type="FUND",
     )
     diff_batch = deterministic_universal_transfer_id(
         settlement_batch_id=81,
         fund_id=9,
-        required_master_usdt=Decimal("11.0222489345"),
+        universal_transfer_amount_usdt=Decimal("11.022249"),
+        from_member_id="fund-sub-uid",
+        to_member_id="master-uid",
+        from_account_type="FUND",
+        to_account_type="FUND",
     )
     diff_fund = deterministic_universal_transfer_id(
         settlement_batch_id=80,
         fund_id=10,
-        required_master_usdt=Decimal("11.0222489345"),
+        universal_transfer_amount_usdt=Decimal("11.022249"),
+        from_member_id="fund-sub-uid",
+        to_member_id="master-uid",
+        from_account_type="FUND",
+        to_account_type="FUND",
     )
     diff_amount = deterministic_universal_transfer_id(
         settlement_batch_id=80,
         fund_id=9,
-        required_master_usdt=Decimal("11.0222489346"),
+        universal_transfer_amount_usdt=Decimal("11.022250"),
+        from_member_id="fund-sub-uid",
+        to_member_id="master-uid",
+        from_account_type="FUND",
+        to_account_type="FUND",
+    )
+    diff_account_type = deterministic_universal_transfer_id(
+        settlement_batch_id=80,
+        fund_id=9,
+        universal_transfer_amount_usdt=Decimal("11.022249"),
+        from_member_id="fund-sub-uid",
+        to_member_id="master-uid",
+        from_account_type="UNIFIED",
+        to_account_type="UNIFIED",
     )
 
     assert_ok("TRANSFER_ID_SAME_INPUTS_SAME_UUID", base == same)
     assert_ok("TRANSFER_ID_DIFF_BATCH_DIFF_UUID", base != diff_batch)
     assert_ok("TRANSFER_ID_DIFF_FUND_DIFF_UUID", base != diff_fund)
     assert_ok("TRANSFER_ID_DIFF_AMOUNT_DIFF_UUID", base != diff_amount)
+    assert_ok("TRANSFER_ID_DIFF_ACCOUNT_TYPE_DIFF_UUID", base != diff_account_type)
 
     print("STAGE26_3_9_UNIVERSAL_TRANSFER_ID_DETERMINISTIC_OK")
 
@@ -117,7 +145,11 @@ def test_current_batch80_transfer_id_uuid() -> None:
     transfer_id = deterministic_universal_transfer_id(
         settlement_batch_id=80,
         fund_id=9,
-        required_master_usdt=Decimal("11.0222489345"),
+        universal_transfer_amount_usdt=Decimal("11.022249"),
+        from_member_id="fund-sub-uid",
+        to_member_id="master-uid",
+        from_account_type="FUND",
+        to_account_type="FUND",
     )
     parsed = parse_uuid(transfer_id)
 
@@ -148,17 +180,14 @@ def test_create_universal_transfer_rejects_non_uuid() -> None:
 
     assert_ok("NON_UUID_TRANSFER_ID_NO_POST", client.post_called is False)
 
-    valid_transfer_id = deterministic_universal_transfer_id(
-        settlement_batch_id=80,
-        fund_id=9,
-        required_master_usdt=Decimal("11.0222489345"),
-    )
+    valid_transfer_id = deterministic_universal_transfer_id(**BATCH80_TRANSFER_ID_KWARGS)
     valid_client = FakeBybitClient()
     result = create_universal_transfer(
         valid_client,  # type: ignore[arg-type]
         transfer_id=valid_transfer_id.upper(),
         coin="USDT",
-        amount_usdt=Decimal("11.0222489345"),
+        amount_usdt=Decimal("11.022249"),
+        amount_str="11.022249",
         from_member_id="fund-sub-uid",
         to_member_id="master-uid",
         from_account_type="UNIFIED",
