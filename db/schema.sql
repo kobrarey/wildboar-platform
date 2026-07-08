@@ -2,12 +2,12 @@
 -- PostgreSQL database dump
 --
 
-\restrict Il1xRCburZwwMMJEhITezTH3ZVFjkuQATbpJ2cDzJ2UeW8x9YO0qTW48BgG0e7x
+\restrict VLavWBxRictXGIxCzsnbYBrBAOgswZ5xHvvB0kqhi7sSdKeQUTZcxB2E3iTPEDK
 
 -- Dumped from database version 16.11
 -- Dumped by pg_dump version 16.11
 
--- Started on 2026-07-07 15:48:37
+-- Started on 2026-07-08 13:04:21
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -1102,7 +1102,7 @@ CREATE TABLE public.fund_negative_sale_legs (
     confirmed_at timestamp with time zone,
     failed_at timestamp with time zone,
     execution_error text,
-    CONSTRAINT fund_negative_sale_legs_status_check CHECK (((status)::text = ANY ((ARRAY['planned'::character varying, 'cash_available'::character varying, 'buffer_available'::character varying, 'skipped_zero_value'::character varying, 'skipped_not_eligible'::character varying, 'skipped_min_order'::character varying, 'skipped_symbol_not_trading'::character varying, 'skipped_liquidity_guard'::character varying, 'skipped_margin_guard'::character varying, 'market_order_mocked'::character varying, 'native_iceberg_mocked'::character varying, 'sliced_ioc_mocked'::character varying, 'filled'::character varying, 'partial_filled_accepted'::character varying, 'partial_filled_below_threshold'::character varying, 'residualized'::character varying, 'usdt_earn_redeem_mocked'::character varying, 'extra_sale_planned'::character varying, 'extra_sale_mocked'::character varying, 'pending_confirmation'::character varying, 'failed_requires_review'::character varying])::text[])))
+    CONSTRAINT fund_negative_sale_legs_status_check CHECK (((status)::text = ANY ((ARRAY['planned'::character varying, 'cash_available'::character varying, 'buffer_available'::character varying, 'skipped_zero_value'::character varying, 'skipped_not_eligible'::character varying, 'skipped_min_order'::character varying, 'skipped_symbol_not_trading'::character varying, 'skipped_liquidity_guard'::character varying, 'skipped_margin_guard'::character varying, 'market_order_mocked'::character varying, 'native_iceberg_mocked'::character varying, 'sliced_ioc_mocked'::character varying, 'filled'::character varying, 'partial_filled_accepted'::character varying, 'partial_filled_below_threshold'::character varying, 'residualized'::character varying, 'usdt_earn_redeem_mocked'::character varying, 'usdt_earn_redeemed'::character varying, 'extra_sale_planned'::character varying, 'extra_sale_mocked'::character varying, 'pending_confirmation'::character varying, 'failed_requires_review'::character varying])::text[])))
 );
 
 
@@ -4766,11 +4766,11 @@ ALTER TABLE ONLY public.withdraw_sessions
     ADD CONSTRAINT withdraw_sessions_wallet_id_fkey FOREIGN KEY (wallet_id) REFERENCES public.user_wallets(id) ON DELETE CASCADE;
 
 
--- Completed on 2026-07-07 15:48:37
+-- Completed on 2026-07-08 13:04:21
 
 --
 -- PostgreSQL database dump complete
 --
 
-\unrestrict Il1xRCburZwwMMJEhITezTH3ZVFjkuQATbpJ2cDzJ2UeW8x9YO0qTW48BgG0e7x
+\unrestrict VLavWBxRictXGIxCzsnbYBrBAOgswZ5xHvvB0kqhi7sSdKeQUTZcxB2E3iTPEDK
 
