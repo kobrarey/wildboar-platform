@@ -150,6 +150,31 @@ def _positive(value: Any, *, field_name: str) -> Decimal:
     return amount
 
 
+UNIVERSAL_TRANSFER_RESUME_STATUSES = {
+    BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED,
+    BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILED,
+    BYBIT_FLOW_STATUS_SETTLEMENT_WALLET_RECEIPT_CONFIRMED,
+    BYBIT_FLOW_STATUS_COMPLETED,
+}
+
+
+def _flow_has_universal_transfer_attempt(flow: FundNegativeBybitFlow) -> bool:
+    return (
+        bool(flow.universal_transfer_id)
+        or flow.universal_transfer_created_at is not None
+        or bool(flow.universal_transfer_status)
+        or str(flow.status or "") in UNIVERSAL_TRANSFER_RESUME_STATUSES
+    )
+
+
+def _flow_has_withdrawal_attempt(flow: FundNegativeBybitFlow) -> bool:
+    return (
+        flow.withdrawal_created_at is not None
+        or bool(flow.withdrawal_status)
+        or bool(flow.withdrawal_id)
+    )
+
+
 def deterministic_universal_transfer_id(
     *,
     settlement_batch_id: int,
@@ -246,8 +271,11 @@ def withdrawal_actual_amount(
     if actual <= ZERO:
         raise NegativeBybitFlowError("Withdrawal actual amount must be positive")
 
-    if actual > raw_amount:
-        raise NegativeBybitFlowError("Withdrawal actual amount must not overpay user")
+    if actual != raw_amount:
+        raise NegativeBybitFlowError(
+            "Withdrawal amount would require rounding; explicit payout rounding policy "
+            "is not implemented"
+        )
 
     return amount_str, actual
 
@@ -308,6 +336,105 @@ def choose_universal_transfer_account_route(
         "No Universal Transfer account route has sufficient transferBalance: "
         f"required={amount_usdt}, checked={checked}"
     )
+
+
+def resolve_universal_transfer_context(
+    *,
+    flow: FundNegativeBybitFlow,
+    bybit_client: BybitV5Client,
+    settlement_batch_id: int,
+    fund_id: int,
+    required_master_usdt: Decimal,
+    from_sub_uid: str,
+    to_master_uid: str,
+    coin: str,
+) -> dict[str, Any]:
+    universal_transfer_amount_str, universal_transfer_amount_actual = (
+        universal_transfer_actual_amount(
+            required_master_usdt=required_master_usdt,
+        )
+    )
+
+    if _flow_has_universal_transfer_attempt(flow):
+        missing_fields: list[str] = []
+        if not flow.universal_transfer_id:
+            missing_fields.append("universal_transfer_id")
+        if flow.universal_transfer_amount_usdt is None:
+            missing_fields.append("universal_transfer_amount_usdt")
+        if not flow.from_account_type:
+            missing_fields.append("from_account_type")
+        if not flow.to_account_type:
+            missing_fields.append("to_account_type")
+        if not flow.from_sub_uid:
+            missing_fields.append("from_sub_uid")
+        if not flow.to_master_uid:
+            missing_fields.append("to_master_uid")
+
+        if missing_fields:
+            raise NegativeBybitFlowError(
+                "Existing Universal Transfer attempt is missing persisted fields: "
+                + ", ".join(missing_fields)
+            )
+
+        persisted_amount = dec(flow.universal_transfer_amount_usdt)
+        persisted_amount_str = format_bybit_asset_amount(
+            persisted_amount,
+            precision=NEGATIVE_NET_UNIVERSAL_TRANSFER_AMOUNT_PRECISION,
+            rounding="exact_or_down",
+        )
+
+        if persisted_amount < required_master_usdt:
+            raise NegativeBybitFlowError(
+                "Persisted Universal Transfer amount does not cover required_master_usdt"
+            )
+
+        return {
+            "resumed_from_existing_transfer": True,
+            "balance_route_selected": False,
+            "transfer_id": str(flow.universal_transfer_id).strip(),
+            "from_sub_uid": str(flow.from_sub_uid).strip(),
+            "to_master_uid": str(flow.to_master_uid).strip(),
+            "from_account_type": str(flow.from_account_type).strip().upper(),
+            "to_account_type": str(flow.to_account_type).strip().upper(),
+            "universal_transfer_amount_str": persisted_amount_str,
+            "universal_transfer_amount_actual": persisted_amount,
+            "route": {
+                "from_account_type": str(flow.from_account_type).strip().upper(),
+                "to_account_type": str(flow.to_account_type).strip().upper(),
+                "resumed_from_persisted_flow": True,
+            },
+        }
+
+    route = choose_universal_transfer_account_route(
+        bybit_client,
+        coin=coin,
+        amount_usdt=universal_transfer_amount_actual,
+        from_member_id=from_sub_uid,
+        to_member_id=to_master_uid,
+    )
+
+    transfer_id = deterministic_universal_transfer_id(
+        settlement_batch_id=int(settlement_batch_id),
+        fund_id=int(fund_id),
+        universal_transfer_amount_usdt=universal_transfer_amount_actual,
+        from_member_id=from_sub_uid,
+        to_member_id=to_master_uid,
+        from_account_type=route["from_account_type"],
+        to_account_type=route["to_account_type"],
+    )
+
+    return {
+        "resumed_from_existing_transfer": False,
+        "balance_route_selected": True,
+        "transfer_id": transfer_id,
+        "from_sub_uid": from_sub_uid,
+        "to_master_uid": to_master_uid,
+        "from_account_type": route["from_account_type"],
+        "to_account_type": route["to_account_type"],
+        "universal_transfer_amount_str": universal_transfer_amount_str,
+        "universal_transfer_amount_actual": universal_transfer_amount_actual,
+        "route": route,
+    }
 
 
 def require_stage24_bybit_universal_transfer_guard(
@@ -1176,29 +1303,27 @@ def execute_negative_bybit_flow_live(
         if not to_master_uid:
             raise NegativeBybitFlowError("master_uid is required for live Universal Transfer")
 
-        universal_transfer_amount_str, universal_transfer_amount_actual = (
-            universal_transfer_actual_amount(
-                required_master_usdt=amounts["required_master_usdt"],
-            )
-        )
-
-        route = choose_universal_transfer_account_route(
-            bybit_client,
-            coin=coin,
-            amount_usdt=universal_transfer_amount_actual,
-            from_member_id=from_sub_uid,
-            to_member_id=to_master_uid,
-        )
-
-        transfer_id = deterministic_universal_transfer_id(
+        universal_transfer_context = resolve_universal_transfer_context(
+            flow=flow,
+            bybit_client=bybit_client,
             settlement_batch_id=int(settlement_batch.id),
             fund_id=int(fund.id),
-            universal_transfer_amount_usdt=universal_transfer_amount_actual,
-            from_member_id=from_sub_uid,
-            to_member_id=to_master_uid,
-            from_account_type=route["from_account_type"],
-            to_account_type=route["to_account_type"],
+            required_master_usdt=amounts["required_master_usdt"],
+            from_sub_uid=from_sub_uid,
+            to_master_uid=to_master_uid,
+            coin=coin,
         )
+
+        from_sub_uid = universal_transfer_context["from_sub_uid"]
+        to_master_uid = universal_transfer_context["to_master_uid"]
+        route = universal_transfer_context["route"]
+        transfer_id = universal_transfer_context["transfer_id"]
+        universal_transfer_amount_str = universal_transfer_context[
+            "universal_transfer_amount_str"
+        ]
+        universal_transfer_amount_actual = universal_transfer_context[
+            "universal_transfer_amount_actual"
+        ]
 
         coin_info = query_coin_info(
             bybit_client,
@@ -1221,14 +1346,27 @@ def execute_negative_bybit_flow_live(
             precision=int(coin_info.min_accuracy),
         )
 
-        request_id = deterministic_withdrawal_request_id(
-            settlement_batch_id=int(settlement_batch.id),
-            fund_id=int(fund.id),
-            settlement_wallet_address=settlement_wallet_address,
-            withdrawal_request_amount_usdt=withdrawal_amount_actual,
-            coin=coin,
-            chain=chain,
-        )
+        if _flow_has_withdrawal_attempt(flow) and not flow.withdrawal_request_id:
+            raise NegativeBybitFlowError(
+                "Existing withdrawal attempt is missing withdrawal_request_id"
+            )
+
+        if flow.withdrawal_request_id:
+            request_id = str(flow.withdrawal_request_id).strip()
+            if flow.withdrawal_amount_usdt is not None and not _same_decimal(
+                flow.withdrawal_amount_usdt,
+                withdrawal_amount_actual,
+            ):
+                raise NegativeBybitFlowError("Existing withdrawal amount mismatch")
+        else:
+            request_id = deterministic_withdrawal_request_id(
+                settlement_batch_id=int(settlement_batch.id),
+                fund_id=int(fund.id),
+                settlement_wallet_address=settlement_wallet_address,
+                withdrawal_request_amount_usdt=withdrawal_amount_actual,
+                coin=coin,
+                chain=chain,
+            )
 
         if flow.status == BYBIT_FLOW_STATUS_COMPLETED:
             if _completed_flow_matches(
@@ -1311,6 +1449,12 @@ def execute_negative_bybit_flow_live(
                 "universal_transfer_amount_actual": str(universal_transfer_amount_actual),
                 "universal_transfer_amount_precision": NEGATIVE_NET_UNIVERSAL_TRANSFER_AMOUNT_PRECISION,
                 "universal_transfer_route": route,
+                "universal_transfer_resumed_from_existing": universal_transfer_context[
+                    "resumed_from_existing_transfer"
+                ],
+                "universal_transfer_balance_route_selected": universal_transfer_context[
+                    "balance_route_selected"
+                ],
                 "withdrawal_request_amount_raw": str(amounts["withdrawal_request_amount_usdt"]),
                 "withdrawal_amount_str": withdrawal_amount_str,
                 "withdrawal_amount_actual": str(withdrawal_amount_actual),

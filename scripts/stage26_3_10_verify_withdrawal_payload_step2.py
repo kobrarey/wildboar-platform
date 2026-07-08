@@ -128,7 +128,7 @@ def test_withdraw_amount_format() -> None:
         == "10",
     )
     assert_ok(
-        "WITHDRAW_FORMAT_NO_OVERPAY",
+        "WITHDRAW_FORMAT_DOWN_ONLY_FOR_DISPLAY",
         format_bybit_asset_amount(
             Decimal("10.123456789"),
             precision=6,
@@ -138,12 +138,22 @@ def test_withdraw_amount_format() -> None:
     )
 
     amount_str, actual = withdrawal_actual_amount(
-        withdrawal_request_amount_usdt=Decimal("10.123456789"),
+        withdrawal_request_amount_usdt=Decimal("10.0000000000"),
         precision=6,
     )
 
-    assert_ok("WITHDRAW_ACTUAL_STR_OK", amount_str == "10.123456")
-    assert_ok("WITHDRAW_ACTUAL_NO_OVERPAY", actual <= Decimal("10.123456789"))
+    assert_ok("WITHDRAW_ACTUAL_STR_OK", amount_str == "10")
+    assert_ok("WITHDRAW_ACTUAL_EXACT_NO_UNDERPAY", actual == Decimal("10.0000000000"))
+
+    try:
+        withdrawal_actual_amount(
+            withdrawal_request_amount_usdt=Decimal("10.123456789"),
+            precision=6,
+        )
+    except Exception as exc:
+        assert_ok("WITHDRAW_ROUNDING_UNDERPAY_FAILS_CLOSED", "rounding" in str(exc).lower())
+    else:
+        raise AssertionError("Withdrawal rounding underpay must fail closed")
 
     print("STAGE26_3_10_STEP2_WITHDRAW_AMOUNT_FORMAT_OK")
 
