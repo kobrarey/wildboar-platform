@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from decimal import Decimal
 from typing import Any
+import uuid
 
 from sqlalchemy.orm import Session
 
@@ -62,6 +63,10 @@ from app.settlement.statuses import (
 
 ZERO = Decimal("0")
 
+NEGATIVE_NET_UNIVERSAL_TRANSFER_NAMESPACE = uuid.UUID(
+    "8f7f7418-7ef0-4efb-9ccb-2b779d3d0f61"
+)
+
 BYBIT_SUCCESS_STATUSES = {"SUCCESS", "COMPLETED", "COMPLETE"}
 BYBIT_PENDING_STATUSES = {
     "PENDING",
@@ -106,12 +111,13 @@ def deterministic_universal_transfer_id(
     fund_id: int,
     required_master_usdt: Decimal,
 ) -> str:
-    return (
-        f"neg-net-transfer:"
-        f"{int(settlement_batch_id)}:"
-        f"{int(fund_id)}:"
-        f"{_q10(required_master_usdt)}"
+    seed = (
+        "wildboar:negative-net-universal-transfer:"
+        f"settlement_batch_id={int(settlement_batch_id)}:"
+        f"fund_id={int(fund_id)}:"
+        f"required_master_usdt={_q10(required_master_usdt)}"
     )
+    return str(uuid.uuid5(NEGATIVE_NET_UNIVERSAL_TRANSFER_NAMESPACE, seed))
 
 
 def deterministic_withdrawal_request_id(

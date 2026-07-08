@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any
+import uuid
 
 from app.bybit.client import BybitApiError, BybitV5Client
 
@@ -44,6 +45,19 @@ def _dec(value: Any) -> Decimal:
     if isinstance(value, Decimal):
         return value
     return Decimal(str(value))
+
+
+def _canonical_uuid(value: str, *, field_name: str) -> str:
+    clean = str(value or "").strip()
+    if not clean:
+        raise BybitAssetFlowError(f"{field_name} is required")
+
+    try:
+        parsed = uuid.UUID(clean)
+    except ValueError as exc:
+        raise BybitAssetFlowError(f"{field_name} must be UUID") from exc
+
+    return str(parsed)
 
 
 def _result_dict(payload: dict[str, Any]) -> dict[str, Any]:
@@ -151,12 +165,10 @@ def create_universal_transfer(
     from_account_type: str = "UNIFIED",
     to_account_type: str = "UNIFIED",
 ) -> BybitUniversalTransferResult:
-    clean_transfer_id = str(transfer_id or "").strip()
+    clean_transfer_id = _canonical_uuid(transfer_id, field_name="transfer_id")
     clean_coin = str(coin or "").strip().upper()
     amount = _dec(amount_usdt)
 
-    if not clean_transfer_id:
-        raise BybitAssetFlowError("transfer_id is required")
     if clean_coin != "USDT":
         raise BybitAssetFlowError("Only USDT universal transfer is supported")
     if amount <= 0:
