@@ -52,12 +52,14 @@ class NegativeNetOrderTargetResult:
     net_price_usdt: Decimal
     success_fee_rate: Decimal
     management_fee_rate: Decimal
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         raw = asdict(self)
         for key, value in list(raw.items()):
             if isinstance(value, Decimal):
                 raw[key] = str(value)
+        raw["diagnostics"] = _json_dict(raw["diagnostics"])
         return raw
 
 
@@ -267,6 +269,7 @@ def _apply_fee_result_to_order(
         net_price_usdt=fee_result.net_price_usdt,
         success_fee_rate=fee_result.success_fee_rate,
         management_fee_rate=fee_result.management_fee_rate,
+        diagnostics=fee_result.diagnostics,
     )
 
 

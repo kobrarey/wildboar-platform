@@ -133,8 +133,15 @@ def ensure_aware_utc(ts: datetime) -> datetime:
     return ts.astimezone(timezone.utc)
 
 
-def floor_usdt_2(value: Decimal | str | int | float | None) -> Decimal:
+PAYOUT_TRUNCATION_POLICY = "floor_to_2_decimals_after_fees"
+
+
+def truncate_usdt_to_cents_down(value: Decimal | str | int | None) -> Decimal:
     return dec(value).quantize(USDT_CENT, rounding=ROUND_FLOOR)
+
+
+def floor_usdt_2(value: Decimal | str | int | None) -> Decimal:
+    return truncate_usdt_to_cents_down(value)
 
 
 def get_success_fee_rate(fund_code: str) -> Decimal:
@@ -290,7 +297,11 @@ def calculate_redeem_order_fees(
     partial_month_fee_usdt = success_fee_usdt + management_fee_usdt
 
     total_fee_usdt = partial_month_fee_usdt
-    net_user_payout_usdt = floor_usdt_2(gross_redeem_usdt - total_fee_usdt)
+    raw_net_user_payout_usdt = gross_redeem_usdt - total_fee_usdt
+    net_user_payout_usdt = truncate_usdt_to_cents_down(raw_net_user_payout_usdt)
+    payout_truncation_remainder_usdt = (
+        raw_net_user_payout_usdt - net_user_payout_usdt
+    )
     net_price_usdt = p_t - (total_fee_usdt / n_s)
 
     return RedeemOrderFeeResult(
@@ -312,6 +323,14 @@ def calculate_redeem_order_fees(
             "month_open_price_usdt": p_b,
             "success_profit_per_share": success_profit_per_share,
             "days_in_month_period": n_d,
+            "gross_redeem_usdt": gross_redeem_usdt,
+            "success_fee_usdt": success_fee_usdt,
+            "management_fee_usdt": management_fee_usdt,
+            "total_fee_usdt": total_fee_usdt,
+            "raw_net_user_payout_usdt": raw_net_user_payout_usdt,
+            "payout_truncation_policy": PAYOUT_TRUNCATION_POLICY,
+            "payout_truncation_remainder_usdt": payout_truncation_remainder_usdt,
+            "net_user_payout_usdt": net_user_payout_usdt,
         },
     )
 
