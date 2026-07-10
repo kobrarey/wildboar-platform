@@ -3,9 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from typing import Any, Literal
+import logging
 import uuid
 
 from app.bybit.client import BybitApiError, BybitV5Client
+
+log = logging.getLogger("app.bybit.asset_flows")
 
 
 class BybitAssetFlowError(RuntimeError):
@@ -489,6 +492,21 @@ def create_universal_transfer(
         "toAccountType": str(to_account_type).strip(),
     }
 
+    log.info(
+        (
+            "Bybit Universal Transfer POST safe payload summary: "
+            "path=%s coin=%s amount=%s amount_precision=%s "
+            "from_account_type=%s to_account_type=%s transfer_id=%s"
+        ),
+        "/v5/asset/transfer/universal-transfer",
+        clean_coin,
+        clean_amount_str,
+        amount_precision if amount_precision is not None else "provided_amount_str",
+        str(from_account_type).strip().upper(),
+        str(to_account_type).strip().upper(),
+        clean_transfer_id,
+    )
+
     raw = client.post("/v5/asset/transfer/universal-transfer", payload)
     row = _result_dict(raw)
 
@@ -699,29 +717,5 @@ def cancel_master_withdrawal(
         "/v5/asset/withdraw/cancel",
         {
             "id": clean_withdrawal_id,
-        },
-    )
-
-
-def freeze_sub_uid(
-    client: BybitV5Client,
-    *,
-    subuid: int,
-    frozen: int,
-) -> dict[str, Any]:
-    clean_subuid = int(subuid)
-    clean_frozen = int(frozen)
-
-    if clean_subuid <= 0:
-        raise BybitAssetFlowError("subuid must be positive")
-
-    if clean_frozen not in (0, 1):
-        raise BybitAssetFlowError("frozen must be 0 or 1")
-
-    return client.post(
-        "/v5/user/frozen-sub-member",
-        {
-            "subuid": clean_subuid,
-            "frozen": clean_frozen,
         },
     )

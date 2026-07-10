@@ -127,19 +127,19 @@ def assert_table_statuses(schema: str, table_name: str, statuses: list[str]) -> 
 
 def test_universal_transfer_amount_format() -> None:
     assert_ok(
-        "UT_FORMAT_UP_6",
+        "UT_FORMAT_UP_2",
         format_bybit_asset_amount(
             Decimal("11.0222489345"),
-            precision=6,
+            precision=2,
             rounding="up",
         )
-        == "11.022249",
+        == "11.03",
     )
     assert_ok(
         "UT_FORMAT_STRIP_ZERO",
         format_bybit_asset_amount(
             Decimal("10.0000000000"),
-            precision=6,
+            precision=2,
             rounding="down",
         )
         == "10",
@@ -148,7 +148,7 @@ def test_universal_transfer_amount_format() -> None:
         "UT_FORMAT_SMALL",
         format_bybit_asset_amount(
             Decimal("0.1000000000"),
-            precision=6,
+            precision=2,
             rounding="up",
         )
         == "0.1",
@@ -158,7 +158,7 @@ def test_universal_transfer_amount_format() -> None:
     transfer_id = deterministic_universal_transfer_id(
         settlement_batch_id=80,
         fund_id=9,
-        universal_transfer_amount_usdt=Decimal("11.022249"),
+        universal_transfer_amount_usdt=Decimal("11.03"),
         from_member_id="fund-sub-uid",
         to_member_id="master-uid",
         from_account_type="FUND",
@@ -170,15 +170,15 @@ def test_universal_transfer_amount_format() -> None:
         transfer_id=transfer_id,
         coin="USDT",
         amount_usdt=Decimal("11.0222489345"),
-        amount_str="11.022249",
+        amount_str="11.03",
         from_member_id="fund-sub-uid",
         to_member_id="master-uid",
         from_account_type="FUND",
         to_account_type="FUND",
     )
 
-    assert_ok("UT_POST_AMOUNT_FORMATTED", client.last_payload is not None and client.last_payload.get("amount") == "11.022249")
-    assert_ok("UT_RESULT_AMOUNT_POSTED", result.amount_usdt == Decimal("11.022249"))
+    assert_ok("UT_POST_AMOUNT_FORMATTED", client.last_payload is not None and client.last_payload.get("amount") == "11.03")
+    assert_ok("UT_RESULT_AMOUNT_POSTED", result.amount_usdt == Decimal("11.03"))
 
     print("STAGE26_3_10_UNIVERSAL_TRANSFER_AMOUNT_FORMAT_OK")
 
@@ -188,9 +188,9 @@ def test_universal_transfer_rounds_up_and_covers_required() -> None:
         required_master_usdt=Decimal("11.0222489345")
     )
 
-    assert_ok("UT_BATCH80_AMOUNT_STR", amount_str == "11.022249")
+    assert_ok("UT_BATCH80_AMOUNT_STR", amount_str == "11.03")
     assert_ok("UT_ACTUAL_COVERS_REQUIRED", actual >= Decimal("11.0222489345"))
-    assert_ok("UT_SURPLUS_WITHIN_QUANTUM", actual - Decimal("11.0222489345") <= Decimal("0.000001"))
+    assert_ok("UT_SURPLUS_WITHIN_QUANTUM", actual - Decimal("11.0222489345") <= Decimal("0.01"))
 
     print("STAGE26_3_10_UNIVERSAL_TRANSFER_AMOUNT_ROUNDS_UP_AND_COVERS_REQUIRED_OK")
 
@@ -200,7 +200,7 @@ def test_universal_transfer_account_type_balance_selection() -> None:
     fund_route = choose_universal_transfer_account_route(
         fund_client,  # type: ignore[arg-type]
         coin="USDT",
-        amount_usdt=Decimal("11.022249"),
+        amount_usdt=Decimal("11.03"),
         from_member_id="fund-sub-uid",
         to_member_id="master-uid",
     )
@@ -212,7 +212,7 @@ def test_universal_transfer_account_type_balance_selection() -> None:
     fallback_route = choose_universal_transfer_account_route(
         fallback_client,  # type: ignore[arg-type]
         coin="USDT",
-        amount_usdt=Decimal("11.022249"),
+        amount_usdt=Decimal("11.03"),
         from_member_id="fund-sub-uid",
         to_member_id="master-uid",
     )
@@ -225,7 +225,7 @@ def test_universal_transfer_account_type_balance_selection() -> None:
         choose_universal_transfer_account_route(
             fail_client,  # type: ignore[arg-type]
             coin="USDT",
-            amount_usdt=Decimal("11.022249"),
+            amount_usdt=Decimal("11.03"),
             from_member_id="fund-sub-uid",
             to_member_id="master-uid",
         )
@@ -241,7 +241,7 @@ def test_universal_transfer_uuid_still_deterministic() -> None:
     base = deterministic_universal_transfer_id(
         settlement_batch_id=80,
         fund_id=9,
-        universal_transfer_amount_usdt=Decimal("11.022249"),
+        universal_transfer_amount_usdt=Decimal("11.03"),
         from_member_id="fund-sub-uid",
         to_member_id="master-uid",
         from_account_type="FUND",
@@ -250,7 +250,7 @@ def test_universal_transfer_uuid_still_deterministic() -> None:
     same = deterministic_universal_transfer_id(
         settlement_batch_id=80,
         fund_id=9,
-        universal_transfer_amount_usdt=Decimal("11.0222490000"),
+        universal_transfer_amount_usdt=Decimal("11.0300000000"),
         from_member_id="fund-sub-uid",
         to_member_id="master-uid",
         from_account_type="FUND",
@@ -259,7 +259,7 @@ def test_universal_transfer_uuid_still_deterministic() -> None:
     diff_route = deterministic_universal_transfer_id(
         settlement_batch_id=80,
         fund_id=9,
-        universal_transfer_amount_usdt=Decimal("11.022249"),
+        universal_transfer_amount_usdt=Decimal("11.03"),
         from_member_id="fund-sub-uid",
         to_member_id="master-uid",
         from_account_type="UNIFIED",

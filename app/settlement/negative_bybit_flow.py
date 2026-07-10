@@ -74,7 +74,18 @@ NEGATIVE_NET_WITHDRAWAL_REQUEST_NAMESPACE = uuid.UUID(
     "75bce24d-3880-4d30-b7f7-ccf7cc8e0a19"
 )
 
-NEGATIVE_NET_UNIVERSAL_TRANSFER_AMOUNT_PRECISION = 6
+NEGATIVE_NET_UNIVERSAL_TRANSFER_AMOUNT_PRECISION = int(
+    settings.NEGATIVE_NET_UNIVERSAL_TRANSFER_AMOUNT_PRECISION
+)
+
+
+def universal_transfer_amount_precision() -> int:
+    precision = int(settings.NEGATIVE_NET_UNIVERSAL_TRANSFER_AMOUNT_PRECISION)
+    if precision < 0:
+        raise NegativeBybitFlowError(
+            f"NEGATIVE_NET_UNIVERSAL_TRANSFER_AMOUNT_PRECISION is invalid: {precision}"
+        )
+    return precision
 
 BYBIT_SUCCESS_STATUSES = {"SUCCESS", "COMPLETED", "COMPLETE"}
 BYBIT_PENDING_STATUSES = {
@@ -225,19 +236,25 @@ def deterministic_withdrawal_request_id(
 def universal_transfer_actual_amount(
     *,
     required_master_usdt: Decimal,
-    precision: int = NEGATIVE_NET_UNIVERSAL_TRANSFER_AMOUNT_PRECISION,
+    precision: int | None = None,
 ) -> tuple[str, Decimal]:
+    clean_precision = (
+        universal_transfer_amount_precision()
+        if precision is None
+        else int(precision)
+    )
+
     raw_required = _positive(
         required_master_usdt,
         field_name="required_master_usdt",
     )
     amount_str = format_bybit_asset_amount(
         raw_required,
-        precision=int(precision),
+        precision=clean_precision,
         rounding="up",
     )
     actual = dec(amount_str)
-    quantum = Decimal("1").scaleb(-int(precision))
+    quantum = Decimal("1").scaleb(-clean_precision)
 
     if actual < raw_required:
         raise NegativeBybitFlowError(
@@ -349,9 +366,12 @@ def resolve_universal_transfer_context(
     to_master_uid: str,
     coin: str,
 ) -> dict[str, Any]:
+    configured_precision = universal_transfer_amount_precision()
+
     universal_transfer_amount_str, universal_transfer_amount_actual = (
         universal_transfer_actual_amount(
             required_master_usdt=required_master_usdt,
+            precision=configured_precision,
         )
     )
 
@@ -398,6 +418,7 @@ def resolve_universal_transfer_context(
             "to_account_type": str(flow.to_account_type).strip().upper(),
             "universal_transfer_amount_str": persisted_amount_str,
             "universal_transfer_amount_actual": persisted_amount,
+            "universal_transfer_amount_precision": configured_precision,
             "route": {
                 "from_account_type": str(flow.from_account_type).strip().upper(),
                 "to_account_type": str(flow.to_account_type).strip().upper(),
@@ -433,6 +454,7 @@ def resolve_universal_transfer_context(
         "to_account_type": route["to_account_type"],
         "universal_transfer_amount_str": universal_transfer_amount_str,
         "universal_transfer_amount_actual": universal_transfer_amount_actual,
+        "universal_transfer_amount_precision": configured_precision,
         "route": route,
     }
 
@@ -1324,6 +1346,9 @@ def execute_negative_bybit_flow_live(
         universal_transfer_amount_actual = universal_transfer_context[
             "universal_transfer_amount_actual"
         ]
+        universal_transfer_amount_precision_value = universal_transfer_context[
+            "universal_transfer_amount_precision"
+        ]
 
         coin_info = query_coin_info(
             bybit_client,
@@ -1447,7 +1472,7 @@ def execute_negative_bybit_flow_live(
                 "universal_transfer_required_raw": str(amounts["required_master_usdt"]),
                 "universal_transfer_amount_str": universal_transfer_amount_str,
                 "universal_transfer_amount_actual": str(universal_transfer_amount_actual),
-                "universal_transfer_amount_precision": NEGATIVE_NET_UNIVERSAL_TRANSFER_AMOUNT_PRECISION,
+                "universal_transfer_amount_precision": universal_transfer_amount_precision_value,
                 "universal_transfer_route": route,
                 "universal_transfer_resumed_from_existing": universal_transfer_context[
                     "resumed_from_existing_transfer"
@@ -1518,7 +1543,7 @@ def execute_negative_bybit_flow_live(
                         "required_master_usdt_raw": str(amounts["required_master_usdt"]),
                         "universal_transfer_amount_str": universal_transfer_amount_str,
                         "universal_transfer_amount_actual": str(universal_transfer_amount_actual),
-                        "universal_transfer_amount_precision": NEGATIVE_NET_UNIVERSAL_TRANSFER_AMOUNT_PRECISION,
+                        "universal_transfer_amount_precision": universal_transfer_amount_precision_value,
                     },
                 )
             except OperationGuardBlockedError as exc:
@@ -1539,6 +1564,7 @@ def execute_negative_bybit_flow_live(
                 coin=coin,
                 amount_usdt=universal_transfer_amount_actual,
                 amount_str=universal_transfer_amount_str,
+                amount_precision=universal_transfer_amount_precision_value,
                 from_member_id=flow.from_sub_uid,
                 to_member_id=flow.to_master_uid,
                 from_account_type=flow.from_account_type,

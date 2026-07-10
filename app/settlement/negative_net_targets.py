@@ -8,6 +8,9 @@ from typing import Any
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.bybit.asset_flows import query_coin_info
+from app.bybit.client import BybitV5Client
+from app.config import settings
 from app.models import Fund, FundOrder, FundSettlementBatch
 from app.settlement.negative_net_fees import (
     MonthOpenPriceMissingError,
@@ -39,6 +42,13 @@ REDEEM_ORDER_TARGET_STATUSES = {
 
 class NegativeNetTargetError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True)
+class NegativeNetWithdrawalFeeResult:
+    amount_usdt: Decimal
+    source: str
+    diagnostics: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -124,6 +134,104 @@ def _json_value(value: Any) -> Any:
 
 def _json_dict(data: dict[str, Any]) -> dict[str, Any]:
     return {str(key): _json_value(value) for key, value in data.items()}
+
+
+def resolve_negative_net_bybit_withdrawal_fee(
+    *,
+    bybit_withdrawal_fee_usdt: Decimal | str | None = None,
+    bybit_client: BybitV5Client | None = None,
+    use_live_bybit_withdrawal_fee: bool | None = None,
+    coin: str = "USDT",
+    chain: str = "BSC",
+) -> NegativeNetWithdrawalFeeResult:
+    clean_coin = str(coin or "").strip().upper()
+    clean_chain = str(chain or "").strip().upper()
+    use_live_fee = (
+        bool(settings.NEGATIVE_NET_TARGETS_ALLOW_LIVE_FEE)
+        if use_live_bybit_withdrawal_fee is None
+        else bool(use_live_bybit_withdrawal_fee)
+    )
+
+    if clean_coin != "USDT":
+        raise NegativeNetFeeError("Negative-net withdrawal fee coin must be USDT")
+    if clean_chain != "BSC":
+        raise NegativeNetFeeError("Negative-net withdrawal fee chain must be BSC")
+
+    if use_live_fee:
+        if bybit_client is None:
+            raise NegativeNetFeeError(
+                "Live negative-net withdrawal fee requires bybit_client"
+            )
+
+        coin_info = query_coin_info(
+            bybit_client,
+            coin=clean_coin,
+            chain=clean_chain,
+        )
+
+        withdraw_percentage_fee = (
+            coin_info.withdraw_percentage_fee
+            if coin_info.withdraw_percentage_fee is not None
+            else Decimal("0")
+        )
+
+        if str(coin_info.chain_withdraw or "").strip() != "1":
+            raise NegativeNetFeeError(
+                "Bybit coin info says BSC USDT withdrawal is disabled"
+            )
+
+        if withdraw_percentage_fee != Decimal("0"):
+            raise NegativeNetFeeError(
+                "Bybit withdrawPercentageFee is non-zero; explicit formula support "
+                "is not implemented"
+            )
+
+        if coin_info.withdraw_fee < Decimal("0"):
+            raise NegativeNetFeeError(
+                f"Bybit withdrawFee must be non-negative: {coin_info.withdraw_fee}"
+            )
+
+        return NegativeNetWithdrawalFeeResult(
+            amount_usdt=coin_info.withdraw_fee,
+            source="bybit_coin_info",
+            diagnostics={
+                "bybit_withdrawal_fee_source": "bybit_coin_info",
+                "bybit_withdrawal_fee_usdt": coin_info.withdraw_fee,
+                "withdrawFee": coin_info.withdraw_fee,
+                "withdrawPercentageFee": withdraw_percentage_fee,
+                "withdrawMin": coin_info.withdraw_min,
+                "minAccuracy": coin_info.min_accuracy,
+                "chainWithdraw": coin_info.chain_withdraw,
+                "coin": clean_coin,
+                "chain": clean_chain,
+            },
+        )
+
+    mock_fee = dec(
+        bybit_withdrawal_fee_usdt
+        if bybit_withdrawal_fee_usdt is not None
+        else settings.NEGATIVE_NET_MOCK_BYBIT_WITHDRAWAL_FEE_USDT
+    )
+
+    if mock_fee < Decimal("0"):
+        raise NegativeNetFeeError(
+            f"bybit_withdrawal_fee_usdt must be non-negative: {mock_fee}"
+        )
+
+    return NegativeNetWithdrawalFeeResult(
+        amount_usdt=mock_fee,
+        source="mock_config",
+        diagnostics={
+            "bybit_withdrawal_fee_source": "mock_config",
+            "bybit_withdrawal_fee_usdt": mock_fee,
+            "withdrawFee": mock_fee,
+            "withdrawPercentageFee": Decimal("0"),
+            "minAccuracy": None,
+            "chainWithdraw": None,
+            "coin": clean_coin,
+            "chain": clean_chain,
+        },
+    )
 
 
 def _lock_settlement_batch(
@@ -334,7 +442,9 @@ def calculate_and_store_negative_net_targets(
     db: Session,
     *,
     settlement_batch_id: int,
-    bybit_withdrawal_fee_usdt: Decimal | str,
+    bybit_withdrawal_fee_usdt: Decimal | str | None = None,
+    bybit_client: BybitV5Client | None = None,
+    use_live_bybit_withdrawal_fee: bool | None = None,
     now: datetime | None = None,
 ) -> NegativeNetTargetResult:
     """
@@ -350,12 +460,14 @@ def calculate_and_store_negative_net_targets(
     - no order success finalization.
     """
     now = now or utcnow()
-    bybit_fee = dec(bybit_withdrawal_fee_usdt)
-
-    if bybit_fee < Decimal("0"):
-        raise NegativeNetTargetError(
-            f"bybit_withdrawal_fee_usdt must be non-negative: {bybit_fee}"
-        )
+    fee_policy = resolve_negative_net_bybit_withdrawal_fee(
+        bybit_withdrawal_fee_usdt=bybit_withdrawal_fee_usdt,
+        bybit_client=bybit_client,
+        use_live_bybit_withdrawal_fee=use_live_bybit_withdrawal_fee,
+        coin=settings.NEGATIVE_NET_BYBIT_FLOW_COIN,
+        chain=settings.NEGATIVE_NET_BYBIT_FLOW_CHAIN,
+    )
+    bybit_fee = fee_policy.amount_usdt
 
     batch = _lock_settlement_batch(
         db,
@@ -450,7 +562,8 @@ def calculate_and_store_negative_net_targets(
             error=None,
             diagnostics={
                 "month_open": month_open.to_dict(),
-                "no_real_bybit_calls": True,
+                "bybit_withdrawal_fee": fee_policy.diagnostics,
+                "no_real_bybit_calls": not bool(use_live_bybit_withdrawal_fee),
                 "no_bsc_transfers": True,
                 "no_accounting_finalization": True,
             },

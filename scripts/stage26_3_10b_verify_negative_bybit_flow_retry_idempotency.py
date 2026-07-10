@@ -81,7 +81,7 @@ def existing_transfer_flow() -> SimpleNamespace:
         universal_transfer_id="9e11ddc1-53df-5979-b6a9-67b0e8d15b63",
         universal_transfer_created_at=datetime.now(timezone.utc),
         universal_transfer_status="SUCCESS",
-        universal_transfer_amount_usdt=Decimal("11.022249"),
+        universal_transfer_amount_usdt=Decimal("11.03"),
         from_account_type="FUND",
         to_account_type="FUND",
         from_sub_uid="persisted-fund-sub-uid",
@@ -112,7 +112,7 @@ def test_brand_new_flow_selects_balance_route() -> None:
     assert_ok("BRAND_NEW_BALANCE_ROUTE_CALLED", len(client.get_calls) >= 1)
     assert_ok("BRAND_NEW_BALANCE_ROUTE_SELECTED", context["balance_route_selected"] is True)
     assert_ok("BRAND_NEW_TRANSFER_ID_UUID", len(context["transfer_id"]) == 36)
-    assert_ok("BRAND_NEW_AMOUNT_FORMATTED", context["universal_transfer_amount_str"] == "11.022249")
+    assert_ok("BRAND_NEW_AMOUNT_FORMATTED", context["universal_transfer_amount_str"] == "11.03")
     assert_ok("BRAND_NEW_ROUTE_FUND", context["from_account_type"] == "FUND" and context["to_account_type"] == "FUND")
 
     print("STAGE26_3_10B_BRAND_NEW_FLOW_ROUTE_SELECTION_OK")

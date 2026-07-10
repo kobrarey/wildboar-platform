@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
 BATCH80_TRANSFER_ID_KWARGS = {
     "settlement_batch_id": 80,
     "fund_id": 9,
-    "universal_transfer_amount_usdt": Decimal("11.022249"),
+    "universal_transfer_amount_usdt": Decimal("11.03"),
     "from_member_id": "fund-sub-uid",
     "to_member_id": "master-uid",
     "from_account_type": "FUND",
@@ -89,7 +89,7 @@ def test_transfer_id_deterministic() -> None:
     same = deterministic_universal_transfer_id(
         settlement_batch_id=80,
         fund_id=9,
-        universal_transfer_amount_usdt=Decimal("11.0222490000"),
+        universal_transfer_amount_usdt=Decimal("11.0300000000"),
         from_member_id="fund-sub-uid",
         to_member_id="master-uid",
         from_account_type="FUND",
@@ -98,7 +98,7 @@ def test_transfer_id_deterministic() -> None:
     diff_batch = deterministic_universal_transfer_id(
         settlement_batch_id=81,
         fund_id=9,
-        universal_transfer_amount_usdt=Decimal("11.022249"),
+        universal_transfer_amount_usdt=Decimal("11.03"),
         from_member_id="fund-sub-uid",
         to_member_id="master-uid",
         from_account_type="FUND",
@@ -107,7 +107,7 @@ def test_transfer_id_deterministic() -> None:
     diff_fund = deterministic_universal_transfer_id(
         settlement_batch_id=80,
         fund_id=10,
-        universal_transfer_amount_usdt=Decimal("11.022249"),
+        universal_transfer_amount_usdt=Decimal("11.03"),
         from_member_id="fund-sub-uid",
         to_member_id="master-uid",
         from_account_type="FUND",
@@ -116,7 +116,7 @@ def test_transfer_id_deterministic() -> None:
     diff_amount = deterministic_universal_transfer_id(
         settlement_batch_id=80,
         fund_id=9,
-        universal_transfer_amount_usdt=Decimal("11.022250"),
+        universal_transfer_amount_usdt=Decimal("11.04"),
         from_member_id="fund-sub-uid",
         to_member_id="master-uid",
         from_account_type="FUND",
@@ -125,7 +125,7 @@ def test_transfer_id_deterministic() -> None:
     diff_account_type = deterministic_universal_transfer_id(
         settlement_batch_id=80,
         fund_id=9,
-        universal_transfer_amount_usdt=Decimal("11.022249"),
+        universal_transfer_amount_usdt=Decimal("11.03"),
         from_member_id="fund-sub-uid",
         to_member_id="master-uid",
         from_account_type="UNIFIED",
@@ -145,7 +145,7 @@ def test_current_batch80_transfer_id_uuid() -> None:
     transfer_id = deterministic_universal_transfer_id(
         settlement_batch_id=80,
         fund_id=9,
-        universal_transfer_amount_usdt=Decimal("11.022249"),
+        universal_transfer_amount_usdt=Decimal("11.03"),
         from_member_id="fund-sub-uid",
         to_member_id="master-uid",
         from_account_type="FUND",
@@ -186,8 +186,8 @@ def test_create_universal_transfer_rejects_non_uuid() -> None:
         valid_client,  # type: ignore[arg-type]
         transfer_id=valid_transfer_id.upper(),
         coin="USDT",
-        amount_usdt=Decimal("11.022249"),
-        amount_str="11.022249",
+        amount_usdt=Decimal("11.03"),
+        amount_str="11.03",
         from_member_id="fund-sub-uid",
         to_member_id="master-uid",
         from_account_type="UNIFIED",
