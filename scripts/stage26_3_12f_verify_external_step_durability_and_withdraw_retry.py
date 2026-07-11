@@ -47,8 +47,10 @@ def test_transfer_state_durable_before_withdrawal() -> None:
         transfer_reconciled_commit_pos > transfer_reconciled_pos,
     )
     assert_ok(
-        "TRANSFER_ROUTE_AND_IDS_PERSISTED",
+        "TRANSFER_ROUTE_IDS_AND_AMOUNTS_PERSISTED",
         "flow.universal_transfer_id = transfer_id" in source
+        and "flow.universal_transfer_amount_usdt = universal_transfer_amount_actual" in source
+        and "flow.universal_transfer_coin = coin" in source
         and "flow.withdrawal_request_id = request_id" in source
         and "flow.from_account_type = route" in source
         and "flow.to_account_type = route" in source,

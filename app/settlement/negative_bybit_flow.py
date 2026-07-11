@@ -215,6 +215,10 @@ def _withdrawal_retry_next_at(flow: FundNegativeBybitFlow) -> datetime | None:
     if not isinstance(raw, dict):
         return None
 
+    top_level_retry_at = _parse_retry_at(raw.get("next_retry_at"))
+    if top_level_retry_at is not None:
+        return top_level_retry_at
+
     retry = raw.get("withdrawal_retry")
     if not isinstance(retry, dict):
         return None
@@ -1569,7 +1573,14 @@ def execute_negative_bybit_flow_live(
         flow.from_account_type = route["from_account_type"]
         flow.to_account_type = route["to_account_type"]
         flow.universal_transfer_id = transfer_id
+        flow.universal_transfer_amount_usdt = universal_transfer_amount_actual
+        flow.universal_transfer_coin = coin
         flow.withdrawal_request_id = request_id
+        flow.withdrawal_amount_usdt = withdrawal_amount_actual
+        flow.withdrawal_fee_usdt = amounts["bybit_withdrawal_fee_usdt"]
+        flow.withdrawal_coin = coin
+        flow.withdrawal_chain = chain
+        flow.withdrawal_address = settlement_wallet_address
 
         flow.preflight_passed = True
         flow.preflight_error = None
