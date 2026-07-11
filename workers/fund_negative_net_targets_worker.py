@@ -226,6 +226,7 @@ def _run_once(
                 db,
                 settlement_batch_id=batch_id,
                 bybit_withdrawal_fee_usdt=bybit_withdrawal_fee_usdt,
+                use_live_bybit_withdrawal_fee=False,
             )
 
             if result.ok:

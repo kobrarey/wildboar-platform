@@ -146,11 +146,14 @@ def resolve_negative_net_bybit_withdrawal_fee(
 ) -> NegativeNetWithdrawalFeeResult:
     clean_coin = str(coin or "").strip().upper()
     clean_chain = str(chain or "").strip().upper()
-    use_live_fee = (
-        bool(settings.NEGATIVE_NET_TARGETS_ALLOW_LIVE_FEE)
-        if use_live_bybit_withdrawal_fee is None
-        else bool(use_live_bybit_withdrawal_fee)
-    )
+    if use_live_bybit_withdrawal_fee is True:
+        use_live_fee = True
+    elif use_live_bybit_withdrawal_fee is False:
+        use_live_fee = False
+    elif bybit_withdrawal_fee_usdt is not None:
+        use_live_fee = False
+    else:
+        use_live_fee = bool(settings.NEGATIVE_NET_TARGETS_ALLOW_LIVE_FEE)
 
     if clean_coin != "USDT":
         raise NegativeNetFeeError("Negative-net withdrawal fee coin must be USDT")
@@ -563,7 +566,7 @@ def calculate_and_store_negative_net_targets(
             diagnostics={
                 "month_open": month_open.to_dict(),
                 "bybit_withdrawal_fee": fee_policy.diagnostics,
-                "no_real_bybit_calls": not bool(use_live_bybit_withdrawal_fee),
+                "no_real_bybit_calls": fee_policy.source != "bybit_coin_info",
                 "no_bsc_transfers": True,
                 "no_accounting_finalization": True,
             },

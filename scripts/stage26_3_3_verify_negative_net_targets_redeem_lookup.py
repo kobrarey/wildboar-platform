@@ -231,6 +231,7 @@ def run_success_case(*, order_status: str, marker: str) -> None:
             db,
             settlement_batch_id=int(batch.id),
             bybit_withdrawal_fee_usdt=Decimal("1"),
+            use_live_bybit_withdrawal_fee=False,
         )
 
         assert_ok(f"{marker}_RESULT_OK", result.ok is True)

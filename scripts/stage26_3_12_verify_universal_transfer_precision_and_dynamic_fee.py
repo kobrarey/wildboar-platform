@@ -18,6 +18,7 @@ from app.settlement.negative_bybit_flow import (
     universal_transfer_amount_precision,
 )
 from app.settlement.negative_net_targets import (
+    NegativeNetFeeError,
     resolve_negative_net_bybit_withdrawal_fee,
 )
 
@@ -254,6 +255,91 @@ def test_dynamic_withdraw_fee_from_coin_info() -> None:
     print("STAGE26_3_12_DYNAMIC_WITHDRAW_FEE_FROM_COIN_INFO_OK")
 
 
+def test_explicit_static_fee_overrides_live_env() -> None:
+    old_live_fee = bool(settings.NEGATIVE_NET_TARGETS_ALLOW_LIVE_FEE)
+
+    try:
+        object.__setattr__(settings, "NEGATIVE_NET_TARGETS_ALLOW_LIVE_FEE", True)
+
+        fee = resolve_negative_net_bybit_withdrawal_fee(
+            bybit_withdrawal_fee_usdt=Decimal("1"),
+            bybit_client=None,
+            use_live_bybit_withdrawal_fee=None,
+            coin="USDT",
+            chain="BSC",
+        )
+
+        assert_ok("STATIC_FEE_AMOUNT_WITH_LIVE_ENV", fee.amount_usdt == Decimal("1"))
+        assert_ok("STATIC_FEE_SOURCE_WITH_LIVE_ENV", fee.source == "mock_config")
+        assert_ok(
+            "STATIC_FEE_DIAGNOSTICS_WITH_LIVE_ENV",
+            fee.diagnostics["bybit_withdrawal_fee_source"] == "mock_config",
+        )
+    finally:
+        object.__setattr__(
+            settings,
+            "NEGATIVE_NET_TARGETS_ALLOW_LIVE_FEE",
+            old_live_fee,
+        )
+
+    print("STAGE26_3_12D_EXPLICIT_STATIC_FEE_OVERRIDES_LIVE_ENV_OK")
+
+
+def test_static_verifier_no_bybit_client_required() -> None:
+    fee = resolve_negative_net_bybit_withdrawal_fee(
+        bybit_withdrawal_fee_usdt=Decimal("1"),
+        bybit_client=None,
+        use_live_bybit_withdrawal_fee=False,
+        coin="USDT",
+        chain="BSC",
+    )
+
+    verifier_source = read("scripts/stage26_3_3_verify_negative_net_targets_redeem_lookup.py")
+
+    assert_ok("STATIC_FEE_NO_CLIENT_AMOUNT", fee.amount_usdt == Decimal("1"))
+    assert_ok("STATIC_FEE_NO_CLIENT_SOURCE", fee.source == "mock_config")
+    assert_ok(
+        "STAGE26_3_3_STATIC_CALL_EXPLICIT_FALSE",
+        "use_live_bybit_withdrawal_fee=False" in verifier_source,
+    )
+
+    print("STAGE26_3_12D_STATIC_VERIFIER_NO_BYBIT_CLIENT_REQUIRED_OK")
+
+
+def test_target_worker_static_fee_mode() -> None:
+    worker_source = read("workers/fund_negative_net_targets_worker.py")
+
+    assert_ok(
+        "TARGET_WORKER_PASSES_EXPLICIT_STATIC_FEE_MODE",
+        "use_live_bybit_withdrawal_fee=False" in worker_source,
+    )
+    assert_ok(
+        "TARGET_WORKER_DOES_NOT_PASS_BYBIT_CLIENT",
+        "bybit_client=" not in worker_source,
+    )
+
+    print("STAGE26_3_12D_TARGET_WORKER_STATIC_FEE_MODE_OK")
+
+
+def test_explicit_live_fee_still_requires_bybit_client() -> None:
+    try:
+        resolve_negative_net_bybit_withdrawal_fee(
+            bybit_withdrawal_fee_usdt=Decimal("1"),
+            bybit_client=None,
+            use_live_bybit_withdrawal_fee=True,
+            coin="USDT",
+            chain="BSC",
+        )
+        raise AssertionError("EXPLICIT_LIVE_FEE_DID_NOT_REQUIRE_CLIENT")
+    except NegativeNetFeeError as exc:
+        assert_ok(
+            "EXPLICIT_LIVE_FEE_REQUIRES_CLIENT",
+            "requires bybit_client" in str(exc),
+        )
+
+    print("STAGE26_3_12D_EXPLICIT_LIVE_FEE_STILL_REQUIRES_BYBIT_CLIENT_OK")
+
+
 def test_fee_type_zero_policy() -> None:
     config_source = read("app/config.py")
     negative_source = read("app/settlement/negative_bybit_flow.py")
@@ -331,10 +417,15 @@ def main() -> int:
     test_universal_transfer_payload_amount_safe()
     test_no_raw_decimal_transfer_amount_post()
     test_dynamic_withdraw_fee_from_coin_info()
+    test_explicit_static_fee_overrides_live_env()
+    test_static_verifier_no_bybit_client_required()
+    test_target_worker_static_fee_mode()
+    test_explicit_live_fee_still_requires_bybit_client()
     test_fee_type_zero_policy()
     test_existing_batch80_not_recalculated()
     test_no_secret_logging()
 
+    print("STAGE26_3_12D_NEGATIVE_NET_FEE_MODE_COMPATIBILITY_OK")
     print("STAGE26_3_12_UNIVERSAL_TRANSFER_PRECISION_AND_DYNAMIC_FEE_FIX_OK")
     return 0
 
