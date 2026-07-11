@@ -17,7 +17,10 @@ from app.settlement.negative_bybit_flow import (
 )
 from app.settlement.negative_bybit_flow_mock import load_negative_bybit_flow_mock_file
 from app.settlement.statuses import (
+    BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING,
     BATCH_STATUS_NEGATIVE_NET_SALE_EXECUTED,
+    BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_PENDING,
+    BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING,
     SALE_BATCH_STATUS_SALE_EXECUTION_COMPLETED,
     SALE_BATCH_STATUS_SALE_EXECUTION_COMPLETED_WITH_EXTRA_SALE,
 )
@@ -110,7 +113,16 @@ def _candidate_query(db, *, fund_code: str | None = None):
             FundNegativeSaleBatch.settlement_batch_id == FundSettlementBatch.id,
         )
         .join(Fund, Fund.id == FundSettlementBatch.fund_id)
-        .filter(FundSettlementBatch.status == BATCH_STATUS_NEGATIVE_NET_SALE_EXECUTED)
+        .filter(
+            FundSettlementBatch.status.in_(
+                [
+                    BATCH_STATUS_NEGATIVE_NET_SALE_EXECUTED,
+                    BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING,
+                    BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_PENDING,
+                    BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING,
+                ]
+            )
+        )
         .filter(
             FundNegativeSaleBatch.status.in_(
                 [

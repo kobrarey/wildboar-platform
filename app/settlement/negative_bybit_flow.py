@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 import uuid
@@ -17,7 +18,7 @@ from app.bybit.asset_flows import (
     query_master_withdrawal,
     query_universal_transfer,
 )
-from app.bybit.client import BybitV5Client
+from app.bybit.client import BybitApiError, BybitV5Client
 from app.config import settings
 from app.models import (
     Fund,
@@ -162,6 +163,7 @@ def _positive(value: Any, *, field_name: str) -> Decimal:
 
 
 UNIVERSAL_TRANSFER_RESUME_STATUSES = {
+    BYBIT_FLOW_STATUS_PREFLIGHT_PASSED,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED,
     BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILED,
     BYBIT_FLOW_STATUS_SETTLEMENT_WALLET_RECEIPT_CONFIRMED,
@@ -183,6 +185,116 @@ def _flow_has_withdrawal_attempt(flow: FundNegativeBybitFlow) -> bool:
         flow.withdrawal_created_at is not None
         or bool(flow.withdrawal_status)
         or bool(flow.withdrawal_id)
+    )
+
+
+WITHDRAWAL_RATE_LIMIT_RETRY_SECONDS = 30
+
+
+def _is_withdrawal_rate_limit_error(exc: BaseException) -> bool:
+    text = str(exc)
+    return (
+        "/v5/asset/withdraw/create" in text
+        and "retCode=131001" in text
+        and "wait at least 10 seconds" in text.lower()
+    )
+
+
+def _parse_retry_at(value: Any) -> datetime | None:
+    if value is None or str(value).strip() == "":
+        return None
+
+    try:
+        return datetime.fromisoformat(str(value))
+    except Exception:
+        return None
+
+
+def _withdrawal_retry_next_at(flow: FundNegativeBybitFlow) -> datetime | None:
+    raw = flow.withdrawal_reconciliation_json
+    if not isinstance(raw, dict):
+        return None
+
+    retry = raw.get("withdrawal_retry")
+    if not isinstance(retry, dict):
+        return None
+
+    return _parse_retry_at(retry.get("next_retry_at"))
+
+
+def _persist_withdrawal_rate_limit_retry(
+    db: Session,
+    *,
+    flow: FundNegativeBybitFlow,
+    settlement_batch: FundSettlementBatch,
+    fund: Fund,
+    status_before: str | None,
+    settlement_status_before: str | None,
+    request_id: str,
+    transfer_id: str,
+    settlement_wallet_address: str,
+    error: BaseException,
+    now: datetime,
+) -> NegativeBybitFlowResult:
+    retry_after_seconds = WITHDRAWAL_RATE_LIMIT_RETRY_SECONDS
+    next_retry_at = now + timedelta(seconds=retry_after_seconds)
+
+    flow.status = BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED
+    flow.error = None
+    flow.withdrawal_reconciliation_json = _json_dict(
+        {
+            "live": True,
+            "ok": False,
+            "pending": "withdrawal_rate_limit_retry",
+            "retryable": True,
+            "path": "/v5/asset/withdraw/create",
+            "retCode": 131001,
+            "retMsg": "Please wait at least 10 seconds between withdrawals",
+            "requestId": request_id,
+            "transferId": transfer_id,
+            "retry_after_seconds": retry_after_seconds,
+            "next_retry_at": next_retry_at.isoformat(),
+            "raw_error": str(error),
+            "no_duplicate_universal_transfer": True,
+            "request_id_reused_on_retry": True,
+        }
+    )
+    flow.updated_at = now
+
+    settlement_batch.status = BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING
+    settlement_batch.error = None
+    settlement_batch.updated_at = now
+
+    db.add(flow)
+    db.add(settlement_batch)
+    db.flush()
+    db.commit()
+
+    return NegativeBybitFlowResult(
+        ok=False,
+        flow_id=int(flow.id),
+        settlement_batch_id=int(settlement_batch.id),
+        sale_batch_id=int(flow.sale_batch_id) if flow.sale_batch_id is not None else None,
+        fund_id=int(flow.fund_id) if flow.fund_id is not None else None,
+        fund_code=str(fund.code),
+        status_before=status_before,
+        status_after=flow.status,
+        settlement_status_before=settlement_status_before,
+        settlement_status_after=settlement_batch.status,
+        universal_transfer_id=transfer_id,
+        withdrawal_request_id=request_id,
+        settlement_wallet_address=settlement_wallet_address,
+        diagnostics={
+            "live": True,
+            "pending": "withdrawal_rate_limit_retry",
+            "retryable": True,
+            "path": "/v5/asset/withdraw/create",
+            "retCode": 131001,
+            "retry_after_seconds": retry_after_seconds,
+            "next_retry_at": next_retry_at.isoformat(),
+            "no_duplicate_universal_transfer": True,
+            "request_id_reused_on_retry": True,
+        },
     )
 
 
@@ -621,14 +733,16 @@ def _validate_sale_batch_input(
 ) -> None:
     allowed_settlement_statuses = {
         BATCH_STATUS_NEGATIVE_NET_SALE_EXECUTED,
+        BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING,
+        BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_PENDING,
+        BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING,
         BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT,
     }
     if settlement_batch.status not in allowed_settlement_statuses:
         raise NegativeBybitFlowError(
-            "Settlement batch status must be "
-            f"{BATCH_STATUS_NEGATIVE_NET_SALE_EXECUTED} or "
-            f"{BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT}, "
-            f"got {settlement_batch.status}"
+            "Settlement batch status is not allowed for negative-net Bybit flow: "
+            f"got {settlement_batch.status}, "
+            f"allowed={sorted(allowed_settlement_statuses)}"
         )
 
     if sale_batch.status not in {
@@ -1499,6 +1613,10 @@ def execute_negative_bybit_flow_live(
         db.add(flow)
         db.add(settlement_batch)
         db.flush()
+        db.commit()
+
+        # Durable boundary: flow route, transferId and withdrawal requestId are persisted
+        # before any external Bybit POST.
 
         # 1) Universal Transfer reconciliation before create:
         # deterministic transferId prevents duplicate create on rerun.
@@ -1586,6 +1704,7 @@ def execute_negative_bybit_flow_live(
             flow.updated_at = now
             db.add(flow)
             db.flush()
+            db.commit()
 
             transfer_record = query_universal_transfer(
                 bybit_client,
@@ -1691,8 +1810,16 @@ def execute_negative_bybit_flow_live(
         )
         flow.status = BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED
         flow.updated_at = now
+
+        settlement_batch.status = BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING
+        settlement_batch.updated_at = now
+
         db.add(flow)
+        db.add(settlement_batch)
         db.flush()
+        db.commit()
+
+        # Durable boundary: Universal Transfer is reconciled before withdrawal create.
 
         # 2) Master withdrawal reconciliation before create:
         # deterministic requestId prevents duplicate withdrawal on rerun.
@@ -1717,6 +1844,32 @@ def execute_negative_bybit_flow_live(
                 error="Bybit withdrawal status unknown after prior attempt; no resend",
                 now=now,
                 diagnostics={"request_id": request_id, "no_duplicate_resend": True},
+            )
+
+        retry_next_at = _withdrawal_retry_next_at(flow)
+        if withdrawal_record is None and retry_next_at is not None and now < retry_next_at:
+            return NegativeBybitFlowResult(
+                ok=False,
+                flow_id=int(flow.id),
+                settlement_batch_id=int(settlement_batch.id),
+                sale_batch_id=int(sale_batch.id),
+                fund_id=int(fund.id),
+                fund_code=str(fund.code),
+                status_before=status_before,
+                status_after=flow.status,
+                settlement_status_before=settlement_status_before,
+                settlement_status_after=settlement_batch.status,
+                universal_transfer_id=transfer_id,
+                withdrawal_request_id=request_id,
+                settlement_wallet_address=settlement_wallet_address,
+                diagnostics={
+                    "live": True,
+                    "pending": "withdrawal_rate_limit_retry_delay_not_elapsed",
+                    "retryable": True,
+                    "next_retry_at": retry_next_at.isoformat(),
+                    "request_id_reused_on_retry": True,
+                    "no_duplicate_universal_transfer": True,
+                },
             )
 
         if withdrawal_record is None:
@@ -1753,20 +1906,37 @@ def execute_negative_bybit_flow_live(
                     diagnostics={"request_id": request_id},
                 )
 
-            created_withdrawal = create_master_withdrawal(
-                bybit_client,
-                request_id=request_id,
-                coin=coin,
-                chain=chain,
-                address=settlement_wallet_address,
-                amount_usdt=withdrawal_amount_actual,
-                amount_str=withdrawal_amount_str,
-                amount_precision=int(coin_info.min_accuracy),
-                fee_type=int(settings.NEGATIVE_NET_WITHDRAWAL_FEE_TYPE),
-                account_type="FUND",
-                timestamp_ms=int(now.timestamp() * 1000),
-                force_chain=1,
-            )
+            try:
+                created_withdrawal = create_master_withdrawal(
+                    bybit_client,
+                    request_id=request_id,
+                    coin=coin,
+                    chain=chain,
+                    address=settlement_wallet_address,
+                    amount_usdt=withdrawal_amount_actual,
+                    amount_str=withdrawal_amount_str,
+                    amount_precision=int(coin_info.min_accuracy),
+                    fee_type=int(settings.NEGATIVE_NET_WITHDRAWAL_FEE_TYPE),
+                    account_type="FUND",
+                    timestamp_ms=int(now.timestamp() * 1000),
+                    force_chain=1,
+                )
+            except BybitApiError as exc:
+                if _is_withdrawal_rate_limit_error(exc):
+                    return _persist_withdrawal_rate_limit_retry(
+                        db,
+                        flow=flow,
+                        settlement_batch=settlement_batch,
+                        fund=fund,
+                        status_before=status_before,
+                        settlement_status_before=settlement_status_before,
+                        request_id=request_id,
+                        transfer_id=transfer_id,
+                        settlement_wallet_address=settlement_wallet_address,
+                        error=exc,
+                        now=now,
+                    )
+                raise
 
             flow.withdrawal_id = created_withdrawal.withdrawal_id
             flow.withdrawal_status = created_withdrawal.status
@@ -1793,6 +1963,7 @@ def execute_negative_bybit_flow_live(
             db.add(flow)
             db.add(settlement_batch)
             db.flush()
+            db.commit()
 
             withdrawal_record = query_master_withdrawal(
                 bybit_client,
@@ -2094,6 +2265,7 @@ def execute_negative_bybit_flow_live(
     except (
         NegativeBybitFlowError,
         BybitAssetFlowError,
+        BybitApiError,
     ) as exc:
         return _set_failed(
             flow=flow,
