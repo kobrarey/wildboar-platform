@@ -218,7 +218,7 @@ def test_universal_transfer_account_type_balance_selection() -> None:
     )
 
     assert_ok("UT_FALLBACK_UNIFIED_FROM", fallback_route["from_account_type"] == "UNIFIED")
-    assert_ok("UT_FALLBACK_UNIFIED_TO", fallback_route["to_account_type"] == "UNIFIED")
+    assert_ok("UT_FALLBACK_TO_FUND", fallback_route["to_account_type"] == "FUND")
 
     fail_client = FakeBalanceClient({"FUND": Decimal("1"), "UNIFIED": Decimal("2")})
     try:

@@ -162,6 +162,32 @@ def _positive(value: Any, *, field_name: str) -> Decimal:
     return amount
 
 
+def _validate_negative_net_universal_transfer_route(
+    *,
+    from_account_type: str,
+    to_account_type: str,
+) -> tuple[str, str]:
+    clean_from = str(from_account_type or "").strip().upper()
+    clean_to = str(to_account_type or "").strip().upper()
+
+    if clean_from == "UNIFIED" and clean_to == "UNIFIED":
+        raise NegativeBybitFlowError(
+            "UNIFIED -> UNIFIED is forbidden for negative-net withdrawal flow"
+        )
+
+    if clean_to != "FUND":
+        raise NegativeBybitFlowError(
+            "Negative-net Universal Transfer destination account must be master FUND"
+        )
+
+    if clean_from not in {"FUND", "UNIFIED"}:
+        raise NegativeBybitFlowError(
+            "Negative-net Universal Transfer source account must be FUND or UNIFIED"
+        )
+
+    return clean_from, clean_to
+
+
 UNIVERSAL_TRANSFER_RESUME_STATUSES = {
     BYBIT_FLOW_STATUS_PREFLIGHT_PASSED,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED,
@@ -423,7 +449,7 @@ def choose_universal_transfer_account_route(
 ) -> dict[str, Any]:
     candidates = [
         ("FUND", "FUND"),
-        ("UNIFIED", "UNIFIED"),
+        ("UNIFIED", "FUND"),
     ]
     checked: list[dict[str, Any]] = []
 
@@ -458,9 +484,16 @@ def choose_universal_transfer_account_route(
         checked.append(item)
 
         if balance.transfer_balance >= amount_usdt:
+            selected_from_account_type, selected_to_account_type = (
+                _validate_negative_net_universal_transfer_route(
+                    from_account_type=from_account_type,
+                    to_account_type=to_account_type,
+                )
+            )
+
             return {
-                "from_account_type": from_account_type,
-                "to_account_type": to_account_type,
+                "from_account_type": selected_from_account_type,
+                "to_account_type": selected_to_account_type,
                 "selected_transfer_balance": balance.transfer_balance,
                 "checked": checked,
             }
@@ -512,6 +545,13 @@ def resolve_universal_transfer_context(
                 + ", ".join(missing_fields)
             )
 
+        persisted_from_account_type, persisted_to_account_type = (
+            _validate_negative_net_universal_transfer_route(
+                from_account_type=str(flow.from_account_type),
+                to_account_type=str(flow.to_account_type),
+            )
+        )
+
         persisted_amount = dec(flow.universal_transfer_amount_usdt)
         persisted_amount_str = format_bybit_asset_amount(
             persisted_amount,
@@ -530,14 +570,14 @@ def resolve_universal_transfer_context(
             "transfer_id": str(flow.universal_transfer_id).strip(),
             "from_sub_uid": str(flow.from_sub_uid).strip(),
             "to_master_uid": str(flow.to_master_uid).strip(),
-            "from_account_type": str(flow.from_account_type).strip().upper(),
-            "to_account_type": str(flow.to_account_type).strip().upper(),
+            "from_account_type": persisted_from_account_type,
+            "to_account_type": persisted_to_account_type,
             "universal_transfer_amount_str": persisted_amount_str,
             "universal_transfer_amount_actual": persisted_amount,
             "universal_transfer_amount_precision": configured_precision,
             "route": {
-                "from_account_type": str(flow.from_account_type).strip().upper(),
-                "to_account_type": str(flow.to_account_type).strip().upper(),
+                "from_account_type": persisted_from_account_type,
+                "to_account_type": persisted_to_account_type,
                 "resumed_from_persisted_flow": True,
             },
         }

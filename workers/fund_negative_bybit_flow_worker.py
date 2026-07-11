@@ -191,6 +191,20 @@ def _get_fund_sub_uid(db, *, fund_id: int) -> str:
     return bybit_sub_uid
 
 
+def _is_rate_limit_retry_pending(result) -> bool:
+    diagnostics = result.diagnostics or {}
+    pending = str(diagnostics.get("pending") or "").strip()
+
+    return (
+        not bool(result.ok)
+        and pending
+        in {
+            "withdrawal_rate_limit_retry",
+            "withdrawal_rate_limit_retry_delay_not_elapsed",
+        }
+    )
+
+
 def process_one_batch(
     *,
     mock_path: str | Path,
@@ -282,6 +296,9 @@ def process_one_live_batch(
             "idempotent=", result.idempotent,
             "fund_code_filter=", fund_code or "",
         )
+        if _is_rate_limit_retry_pending(result):
+            return False
+
         return True
 
     except Exception:
