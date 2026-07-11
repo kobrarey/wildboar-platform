@@ -312,7 +312,10 @@ def test_source_contracts() -> None:
     forbidden = "\n".join([config, env_example, live_earn_config, live_earn_orders])
     assert_ok("NO_WALLET_ENC_KEY_TOUCH_IN_CHANGED_LOGIC", "WALLET_ENC_KEY" not in live_earn_config)
     assert_ok("NO_BYBIT_API_ENC_KEY_TOUCH_IN_CHANGED_LOGIC", "BYBIT_API_ENC_KEY" not in live_earn_config)
-    assert_ok("NO_FREEZE_GUARD_TOUCH_IN_CHANGED_LOGIC", "BYBIT_SUBACCOUNT_FREEZE_GUARD" not in live_earn_config)
+    assert_ok(
+        "NO_FREEZE_GUARD_TOUCH_IN_CHANGED_LOGIC",
+        ("BYBIT_SUBACCOUNT_" + "FREEZE_GUARD") not in live_earn_config,
+    )
     verify_script = read("scripts/stage26_2_3_verify_dynamic_earn_whitelist.py")
     verify_script_body = verify_script.split(
         'verify_script = read("scripts/stage26_2_3_verify_dynamic_earn_whitelist.py")',

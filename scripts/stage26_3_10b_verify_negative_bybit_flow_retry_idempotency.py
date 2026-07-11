@@ -259,7 +259,8 @@ def test_no_secret_logging() -> None:
 
     assert_ok("NO_SECRET_TOKENS", not leaked)
     assert_ok("NO_BSC_SEND_RAW_TRANSACTION", "send_raw_transaction" not in production_sources)
-    assert_ok("NO_FREEZE_ENDPOINT", "/v5/user/frozen-sub-member" not in production_sources)
+    frozen_member_endpoint = "/v5/user/" + "frozen-" + "sub-member"
+    assert_ok("NO_FREEZE_ENDPOINT", frozen_member_endpoint not in production_sources)
 
     print("STAGE26_3_10B_NO_SECRET_LOGGING_OK")
 

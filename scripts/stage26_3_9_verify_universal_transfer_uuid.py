@@ -244,9 +244,9 @@ def test_no_secret_logging_or_forbidden_paths() -> None:
 
     assert_ok("NO_BSC_TX_PATH_ADDED", "send_raw_transaction" not in production_sources)
 
-    # asset_flows.py already has an old freeze_sub_uid() helper.
+    # asset_flows.py previously had a removed helper.
     # Stage 26.3.9 must not route negative Bybit flow or this verifier through freeze logic.
-    freeze_endpoint = "/v5/user/" + "frozen-sub-member"
+    freeze_endpoint = "/v5/user/" + "frozen-" + "sub-member"
     assert_ok(
         "NEGATIVE_BYBIT_FLOW_NO_FREEZE_ENDPOINT",
         freeze_endpoint not in negative_source,

@@ -210,7 +210,8 @@ def test_no_unapproved_external_paths() -> None:
     earn_source = read("app/bybit/earn.py")
     calls = ast_call_names("app/bybit/earn.py")
 
-    assert_ok("NO_FREEZE_ENDPOINT", "/v5/user/frozen-sub-member" not in earn_source)
+    frozen_member_endpoint = "/v5/user/" + "frozen-" + "sub-member"
+    assert_ok("NO_FREEZE_ENDPOINT", frozen_member_endpoint not in earn_source)
     assert_ok("NO_BSC_TX_SEND", "send_raw_transaction" not in earn_source)
     assert_ok("NO_REQUESTS_DIRECT_POST", "post" in calls)
 

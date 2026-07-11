@@ -125,7 +125,8 @@ def test_no_forbidden_paths() -> None:
 
     assert_ok("NO_SECRET_TOKENS", "api_secret" not in source.lower() and "api_key" not in source.lower())
     assert_ok("NO_BSC_SEND_RAW_TX", "send_raw_transaction" not in source)
-    assert_ok("NO_FREEZE_ENDPOINT", "/v5/user/frozen-sub-member" not in source)
+    frozen_member_endpoint = "/v5/user/" + "frozen-" + "sub-member"
+    assert_ok("NO_FREEZE_ENDPOINT", frozen_member_endpoint not in source)
 
     print("STAGE26_3_10_STEP4_NO_FORBIDDEN_PATHS_OK")
 

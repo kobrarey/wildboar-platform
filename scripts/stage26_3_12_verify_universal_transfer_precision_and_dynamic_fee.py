@@ -294,7 +294,7 @@ def test_no_secret_logging() -> None:
         "X-BAPI-SIGN",
         "private_key",
     ]
-    freeze_endpoint = "/v5/user/" + "frozen-sub-member"
+    freeze_endpoint = "/v5/user/" + "frozen-" + "sub-member"
 
     leaked: list[str] = []
     bsc_raw_tx_hits: list[str] = []

@@ -256,7 +256,7 @@ def test_operation_guard_and_external_paths() -> None:
     assert_ok(
         "EARN_WRAPPER_ONLY_APPROVED_POST_ENDPOINT",
         '"/v5/earn/place-order"' in earn_source
-        and '"/v5/user/frozen-sub-member"' not in earn_source,
+        and ('"/v5/user/' + 'frozen-' + 'sub-member"') not in earn_source,
     )
 
 

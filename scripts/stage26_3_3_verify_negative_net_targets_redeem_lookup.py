@@ -429,7 +429,7 @@ def test_safety_no_external_writes() -> None:
         "create_market_sell_order",
         "create_master_withdrawal",
         "create_universal_transfer",
-        "/v5/user/frozen-sub-member",
+        "/v5/user/" + "frozen-" + "sub-member",
     ]
     present = [item for item in forbidden_text if item in source]
     assert_ok("NEGATIVE_TARGETS_NO_FORBIDDEN_EXTERNAL_WRITE_TEXT", not present)

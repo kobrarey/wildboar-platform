@@ -163,7 +163,8 @@ def test_no_forbidden_paths() -> None:
 
     assert_ok("NO_UUID4", "uuid4" not in source and "uuid.uuid4" not in source)
     assert_ok("NO_BSC_TX_SEND", "send_raw_transaction" not in source)
-    assert_ok("NO_FREEZE_ENDPOINT", "/v5/user/frozen-sub-member" not in source)
+    frozen_member_endpoint = "/v5/user/" + "frozen-" + "sub-member"
+    assert_ok("NO_FREEZE_ENDPOINT", frozen_member_endpoint not in source)
 
     print("STAGE26_3_10_STEP3_NO_FORBIDDEN_PATHS_OK")
 

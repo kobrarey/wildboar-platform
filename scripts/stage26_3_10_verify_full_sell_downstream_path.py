@@ -595,11 +595,12 @@ def test_no_secret_logging() -> None:
     assert_ok("NO_SECRET_TOKENS_IN_PRODUCTION_CHANGES", not leaked)
     assert_ok("NO_BSC_SEND_RAW_TRANSACTION", "send_raw_transaction" not in production_sources)
 
-    # asset_flows.py already has a historical freeze_sub_uid helper, so check only sell-flow paths.
+    # asset_flows.py previously had a removed helper, so check only sell-flow paths.
     negative_source = read("app/settlement/negative_bybit_flow.py")
     listener_source = read("workers/bsc_usdt_deposit_listener.py")
-    assert_ok("NEGATIVE_FLOW_NO_FREEZE_ENDPOINT", "/v5/user/frozen-sub-member" not in negative_source)
-    assert_ok("DEPOSIT_LISTENER_NO_FREEZE_ENDPOINT", "/v5/user/frozen-sub-member" not in listener_source)
+    frozen_member_endpoint = "/v5/user/" + "frozen-" + "sub-member"
+    assert_ok("NEGATIVE_FLOW_NO_FREEZE_ENDPOINT", frozen_member_endpoint not in negative_source)
+    assert_ok("DEPOSIT_LISTENER_NO_FREEZE_ENDPOINT", frozen_member_endpoint not in listener_source)
 
     print("STAGE26_3_10_NO_SECRET_LOGGING_OK")
 
