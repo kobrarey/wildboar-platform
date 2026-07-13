@@ -84,8 +84,16 @@ def _load_candidates(db, *, fund_code: str | None):
         .filter(FundNegativeBybitFlow.status == BYBIT_FLOW_STATUS_COMPLETED)
         .filter(
             or_(
-                FundSettlementBatch.status
-                == BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT,
+                and_(
+                    FundSettlementBatch.status
+                    == BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT,
+                    or_(
+                        FundNegativePayoutBatch.id.is_(None),
+                        FundNegativePayoutBatch.status.in_(
+                            sorted(LIVE_RESUMABLE_PAYOUT_BATCH_STATUSES)
+                        ),
+                    ),
+                ),
                 and_(
                     FundSettlementBatch.status
                     == BATCH_STATUS_NEGATIVE_NET_PAYOUT_PROCESSING,

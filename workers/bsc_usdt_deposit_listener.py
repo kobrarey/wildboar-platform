@@ -167,14 +167,13 @@ def internal_platform_payout_skip_reason_db(
         user_wallet_exists = (
             db.query(UserWallet.id)
             .filter(UserWallet.blockchain == "BSC")
-            .filter(UserWallet.is_active.is_(True))
             .filter(func.lower(UserWallet.address) == to_lower)
             .first()
             is not None
         )
 
         if settlement_wallet_exists and user_wallet_exists:
-            return "active_platform_settlement_wallet_to_user_wallet"
+            return "active_platform_settlement_wallet_to_registered_user_wallet"
 
     if tx_lower and from_lower and to_lower:
         known_payout_leg_exists = (
@@ -358,9 +357,10 @@ def db_insert_transfer(
             )
             .on_conflict_do_nothing(index_elements=["tx_hash", "log_index"])
         )
-        db.execute(stmt)
+        result = db.execute(stmt)
+        inserted = int(result.rowcount or 0) > 0
         db.commit()
-        return True
+        return inserted
     finally:
         db.close()
 
@@ -416,11 +416,17 @@ async def handle_log(
         platform_settlement_wallet_addresses=platform_settlement_wallet_addresses,
     ):
         if update_cursor_flag:
-            await asyncio.to_thread(db_upsert_cursor, CURSOR_NAME, block_number, log_index)
+            await asyncio.to_thread(
+                db_upsert_cursor,
+                CURSOR_NAME,
+                block_number,
+                log_index,
+            )
 
         logging.info(
             (
-                "Internal payout transfer ignored by deposit listener: "
+                "internal_platform_payout_ignored: "
+                "reason=cached_platform_settlement_wallet_to_registered_user_wallet "
                 "tx=%s li=%s from=%s to=%s amount=%s"
             ),
             tx_hash,
@@ -441,7 +447,7 @@ async def handle_log(
         if tx_time is not None:
             block_time_cache[block_number] = tx_time
 
-    await asyncio.to_thread(
+    inserted = await asyncio.to_thread(
         db_insert_transfer,
         user_id=user_id,
         wallet_id=wallet_id,
@@ -455,9 +461,38 @@ async def handle_log(
     )
 
     if update_cursor_flag:
-        await asyncio.to_thread(db_upsert_cursor, CURSOR_NAME, block_number, log_index)
+        await asyncio.to_thread(
+            db_upsert_cursor,
+            CURSOR_NAME,
+            block_number,
+            log_index,
+        )
 
-    logging.info("Deposit detected: user_id=%s wallet_id=%s tx=%s li=%s amount=%s", user_id, wallet_id, tx_hash, log_index, str(amount))
+    if not inserted:
+        logging.info(
+            (
+                "deposit_not_inserted: user_id=%s wallet_id=%s "
+                "tx=%s li=%s amount=%s"
+            ),
+            user_id,
+            wallet_id,
+            tx_hash,
+            log_index,
+            str(amount),
+        )
+        return
+
+    logging.info(
+        (
+            "Deposit detected: user_id=%s wallet_id=%s "
+            "tx=%s li=%s amount=%s"
+        ),
+        user_id,
+        wallet_id,
+        tx_hash,
+        log_index,
+        str(amount),
+    )
 
 
 async def subscribe_chunk(

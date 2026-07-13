@@ -466,7 +466,11 @@ def test_no_double_credit_risk() -> None:
     source = read("workers/bsc_usdt_deposit_listener.py")
 
     assert_ok("INTERNAL_SKIP_HELPER_PRESENT", "is_internal_platform_payout_transfer" in source)
-    assert_ok("INTERNAL_SKIP_LOG_PRESENT", "Internal payout transfer ignored by deposit listener" in source)
+    assert_ok(
+        "INTERNAL_SKIP_LOG_PRESENT",
+        "internal_platform_payout_ignored" in source
+        and "cached_platform_settlement_wallet_to_registered_user_wallet" in source,
+    )
 
     skip_block = source.split(
         "if is_internal_platform_payout_transfer(",
