@@ -85,6 +85,16 @@ from app.settlement.statuses import (
 ZERO = Decimal("0")
 
 
+LIVE_RESUMABLE_PAYOUT_BATCH_STATUSES = {
+    PAYOUT_BATCH_STATUS_CREATED,
+    PAYOUT_BATCH_STATUS_GAS_CHECK_PASSED,
+    PAYOUT_BATCH_STATUS_GAS_READY,
+    PAYOUT_BATCH_STATUS_PAYOUTS_PLANNED,
+    PAYOUT_BATCH_STATUS_GAS_TOPUP_MOCKED,
+    PAYOUT_BATCH_STATUS_PAUSED_OPERATOR_ACTION_REQUIRED,
+}
+
+
 def _q10(value: Any) -> Decimal:
     return dec(value).quantize(Decimal("0.0000000001"))
 
@@ -328,14 +338,20 @@ def _validate_bybit_flow_input(
     settlement_batch: FundSettlementBatch,
     bybit_flow: FundNegativeBybitFlow,
     allow_completed_settlement_status: bool = False,
+    allow_payout_processing_status: bool = False,
 ) -> dict[str, Decimal]:
     allowed_settlement_statuses = {BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT}
+
+    if allow_payout_processing_status:
+        allowed_settlement_statuses.add(BATCH_STATUS_NEGATIVE_NET_PAYOUT_PROCESSING)
+
     if allow_completed_settlement_status:
         allowed_settlement_statuses.add(BATCH_STATUS_NEGATIVE_NET_PAYOUTS_CONFIRMED)
 
     if settlement_batch.status not in allowed_settlement_statuses:
         raise NegativePayoutFlowError(
-            "Settlement batch status must be negative_net_cash_ready_for_payout"
+            "Settlement batch status is not allowed for negative-net payout flow: "
+            f"got {settlement_batch.status}, allowed={sorted(allowed_settlement_statuses)}"
         )
 
     if bybit_flow.status != BYBIT_FLOW_STATUS_COMPLETED:
@@ -1747,11 +1763,16 @@ def execute_negative_payout_flow_live(
     )
 
     status_before = str(existing_batch.status) if existing_batch is not None else None
+    can_resume_payout_processing = (
+        existing_batch is not None
+        and str(existing_batch.status) in LIVE_RESUMABLE_PAYOUT_BATCH_STATUSES
+    )
 
     try:
         amounts = _validate_bybit_flow_input(
             settlement_batch=settlement_batch,
             bybit_flow=bybit_flow,
+            allow_payout_processing_status=can_resume_payout_processing,
             allow_completed_settlement_status=(
                 existing_batch is not None
                 and existing_batch.status == PAYOUT_BATCH_STATUS_COMPLETED

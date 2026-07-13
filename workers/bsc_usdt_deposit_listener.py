@@ -21,12 +21,12 @@ from aiohttp import resolver
 import websockets
 from websockets import exceptions as ws_exceptions
 from eth_utils import to_checksum_address
-from sqlalchemy import text as sa_text
+from sqlalchemy import func, text as sa_text
 from sqlalchemy.dialects.postgresql import insert
 
 from app.config import settings
 from app.db import SessionLocal
-from app.models import FundWallet, UserWallet, WalletTransfer
+from app.models import FundNegativePayoutLeg, FundWallet, UserWallet, WalletTransfer
 
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -134,6 +134,63 @@ def is_internal_platform_payout_transfer(
         from_address.lower() in platform_settlement_wallet_addresses
         and to_address.lower() in wallet_map
     )
+
+
+def _normalize_address(value: str | None) -> str | None:
+    cleaned = str(value or "").strip().lower()
+    return cleaned or None
+
+
+def internal_platform_payout_skip_reason_db(
+    db,
+    *,
+    from_address: str | None,
+    to_address: str | None,
+    tx_hash: str | None,
+    amount: Decimal,
+) -> str | None:
+    from_lower = _normalize_address(from_address)
+    to_lower = _normalize_address(to_address)
+    tx_lower = str(tx_hash or "").strip().lower()
+
+    if from_lower and to_lower:
+        settlement_wallet_exists = (
+            db.query(FundWallet.id)
+            .filter(FundWallet.blockchain == "BSC")
+            .filter(FundWallet.wallet_type == "settlement")
+            .filter(FundWallet.is_active.is_(True))
+            .filter(func.lower(FundWallet.address) == from_lower)
+            .first()
+            is not None
+        )
+
+        user_wallet_exists = (
+            db.query(UserWallet.id)
+            .filter(UserWallet.blockchain == "BSC")
+            .filter(UserWallet.is_active.is_(True))
+            .filter(func.lower(UserWallet.address) == to_lower)
+            .first()
+            is not None
+        )
+
+        if settlement_wallet_exists and user_wallet_exists:
+            return "active_platform_settlement_wallet_to_user_wallet"
+
+    if tx_lower and from_lower and to_lower:
+        known_payout_leg_exists = (
+            db.query(FundNegativePayoutLeg.id)
+            .filter(func.lower(FundNegativePayoutLeg.tx_hash) == tx_lower)
+            .filter(func.lower(FundNegativePayoutLeg.from_address) == from_lower)
+            .filter(func.lower(FundNegativePayoutLeg.to_address) == to_lower)
+            .filter(FundNegativePayoutLeg.amount_usdt == amount)
+            .first()
+            is not None
+        )
+
+        if known_payout_leg_exists:
+            return "known_negative_payout_leg_tx_hash"
+
+    return None
 
 
 def get_cursor(db, name: str) -> tuple[int, int] | None:
@@ -260,6 +317,28 @@ def db_insert_transfer(
 ):
     db = SessionLocal()
     try:
+        skip_reason = internal_platform_payout_skip_reason_db(
+            db,
+            from_address=from_address,
+            to_address=to_address,
+            tx_hash=tx_hash,
+            amount=amount,
+        )
+        if skip_reason:
+            logging.info(
+                (
+                    "internal_platform_payout_ignored: reason=%s tx=%s li=%s "
+                    "from=%s to=%s amount=%s"
+                ),
+                skip_reason,
+                tx_hash,
+                log_index,
+                from_address,
+                to_address,
+                str(amount),
+            )
+            return False
+
         stmt = (
             insert(WalletTransfer)
             .values(
@@ -281,6 +360,7 @@ def db_insert_transfer(
         )
         db.execute(stmt)
         db.commit()
+        return True
     finally:
         db.close()
 

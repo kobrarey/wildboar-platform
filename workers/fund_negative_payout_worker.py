@@ -4,17 +4,21 @@ import argparse
 import time
 from typing import Sequence
 
+from sqlalchemy import and_, or_
+
 from app.config import settings
 from app.db import SessionLocal
 from app.lifecycle import evaluate_live_gate
-from app.models import Fund, FundNegativeBybitFlow, FundSettlementBatch
+from app.models import Fund, FundNegativeBybitFlow, FundNegativePayoutBatch, FundSettlementBatch
 from app.settlement.negative_payout_flow import (
+    LIVE_RESUMABLE_PAYOUT_BATCH_STATUSES,
     execute_negative_payout_flow_live,
     execute_negative_payout_flow_mock,
 )
 from app.settlement.negative_payout_flow_mock import load_negative_payout_mock_file
 from app.settlement.statuses import (
     BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT,
+    BATCH_STATUS_NEGATIVE_NET_PAYOUT_PROCESSING,
     BYBIT_FLOW_STATUS_COMPLETED,
 )
 
@@ -72,12 +76,26 @@ def _load_candidates(db, *, fund_code: str | None):
             FundNegativeBybitFlow,
             FundNegativeBybitFlow.settlement_batch_id == FundSettlementBatch.id,
         )
-        .join(Fund, Fund.id == FundSettlementBatch.fund_id)
-        .filter(
-            FundSettlementBatch.status
-            == BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT
+        .outerjoin(
+            FundNegativePayoutBatch,
+            FundNegativePayoutBatch.settlement_batch_id == FundSettlementBatch.id,
         )
+        .join(Fund, Fund.id == FundSettlementBatch.fund_id)
         .filter(FundNegativeBybitFlow.status == BYBIT_FLOW_STATUS_COMPLETED)
+        .filter(
+            or_(
+                FundSettlementBatch.status
+                == BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT,
+                and_(
+                    FundSettlementBatch.status
+                    == BATCH_STATUS_NEGATIVE_NET_PAYOUT_PROCESSING,
+                    FundNegativePayoutBatch.id.isnot(None),
+                    FundNegativePayoutBatch.status.in_(
+                        sorted(LIVE_RESUMABLE_PAYOUT_BATCH_STATUSES)
+                    ),
+                ),
+            )
+        )
         .order_by(FundSettlementBatch.id.asc())
     )
 
