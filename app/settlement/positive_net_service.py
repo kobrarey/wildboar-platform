@@ -28,6 +28,10 @@ from app.settlement.payout_service import (
     SellerPayoutError,
     process_seller_payouts_for_batch,
 )
+from app.settlement.pricing_lock import (
+    PricingLockError,
+    unlock_pricing_for_fund,
+)
 from app.settlement.statuses import (
     BATCH_STATUS_AWAITING_POSITIVE_NET_EXECUTION,
     BATCH_STATUS_FAILED_REQUIRES_REVIEW,
@@ -468,6 +472,40 @@ def process_positive_net_batch(
             error=error,
         )
 
+        pricing_unlocked = False
+
+        try:
+            state = _get_pricing_state(
+                db,
+                fund_id=int(batch.fund_id),
+            )
+
+            if (
+                state is not None
+                and state.pricing_locked
+                and state.pricing_lock_batch_id
+                == int(batch.id)
+            ):
+                unlock_pricing_for_fund(
+                    db,
+                    fund_id=int(batch.fund_id),
+                    batch_id=int(batch.id),
+                )
+                batch.pricing_unlocked_at = utcnow()
+                batch.updated_at = utcnow()
+                db.add(batch)
+                db.flush()
+                pricing_unlocked = True
+
+        except PricingLockError as unlock_exc:
+            batch.error = (
+                f"{error}; pricing unlock failed: "
+                f"{unlock_exc}"
+            )
+            batch.updated_at = utcnow()
+            db.add(batch)
+            db.flush()
+
         _send_alert(
             "❌ Positive net share accounting failed\n"
             f"Batch ID: {batch.id}\n"
@@ -498,7 +536,7 @@ def process_positive_net_batch(
                 is not None
             ),
             accounting_finalized=False,
-            pricing_unlocked=False,
+            pricing_unlocked=pricing_unlocked,
             message=(
                 "Share quantity validation failed; "
                 f"batch requires review: {error}"

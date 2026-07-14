@@ -9,13 +9,22 @@ from typing import Any, Iterable
 from sqlalchemy.orm import Session
 
 from app.config import settings
-from app.models import Fund, FundOrder, FundSettlementBatch
+from app.models import (
+    Fund,
+    FundOrder,
+    FundSettlementBatch,
+    UserFundPosition,
+)
 from app.settlement.price_service import SettlementPriceError, fix_settlement_price_for_batch
 from app.settlement.share_quantity import (
     BuyShareQuantity,
     ShareQuantityError,
     calculate_successful_buy_share_quantity,
     require_share_quantity_4dp_aligned,
+)
+from app.settlement.accounting_service import (
+    SettlementShareQuantityError,
+    validate_settlement_share_state_before_external,
 )
 from app.settlement.pricing_lock import PricingLockError, lock_pricing_for_fund, unlock_pricing_for_fund
 from app.settlement.statuses import (
@@ -197,6 +206,68 @@ def _lock_pending_orders_for_batch(
         .with_for_update(skip_locked=True)
         .all()
     )
+
+
+def _validate_pre_lock_share_state(
+    db: Session,
+    *,
+    fund: Fund,
+    orders: list[FundOrder],
+) -> None:
+    try:
+        require_share_quantity_4dp_aligned(
+            fund.shares_outstanding_current,
+            field_name="fund_shares_outstanding_current",
+        )
+
+        checked_users: set[int] = set()
+
+        for order in orders:
+            user_id = int(order.user_id)
+
+            if user_id in checked_users:
+                continue
+
+            position = (
+                db.query(UserFundPosition)
+                .filter(
+                    UserFundPosition.user_id == user_id,
+                    UserFundPosition.fund_id == int(fund.id),
+                )
+                .with_for_update()
+                .first()
+            )
+
+            if position is None:
+                if order.side == ORDER_SIDE_REDEEM:
+                    raise ShareQuantityError(
+                        f"redeem_order_{order.id}:position_not_found"
+                    )
+                checked_users.add(user_id)
+                continue
+
+            require_share_quantity_4dp_aligned(
+                position.shares,
+                field_name=(
+                    f"position_{user_id}_{fund.id}_shares"
+                ),
+            )
+            require_share_quantity_4dp_aligned(
+                getattr(
+                    position,
+                    "shares_reserved",
+                    ZERO,
+                ),
+                field_name=(
+                    f"position_{user_id}_{fund.id}"
+                    "_shares_reserved"
+                ),
+            )
+
+            checked_users.add(user_id)
+
+    except ShareQuantityError:
+        raise
 
 
 def _calculate_batch_fields(
@@ -534,6 +605,12 @@ def create_settlement_batch_for_fund(
         )
 
     try:
+        _validate_pre_lock_share_state(
+            db,
+            fund=fund,
+            orders=orders,
+        )
+
         lock_pricing_for_fund(
             db,
             fund_id=fund.id,
@@ -580,6 +657,12 @@ def create_settlement_batch_for_fund(
             batch=batch,
         )
 
+        validate_settlement_share_state_before_external(
+            db,
+            batch=batch,
+            mark_failed=True,
+        )
+
         db.add(batch)
         for order in orders:
             db.add(order)
@@ -608,7 +691,10 @@ def create_settlement_batch_for_fund(
             message="Batch created and moved to gas_checking.",
         )
 
-    except ShareQuantityError as exc:
+    except (
+        ShareQuantityError,
+        SettlementShareQuantityError,
+    ) as exc:
         error_text = str(exc)
 
         _mark_share_quantity_failed_requires_review(

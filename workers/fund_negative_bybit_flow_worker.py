@@ -16,6 +16,10 @@ from app.settlement.negative_bybit_flow import (
     execute_negative_bybit_flow_mock,
 )
 from app.settlement.negative_bybit_flow_mock import load_negative_bybit_flow_mock_file
+from app.settlement.accounting_service import (
+    SettlementShareQuantityError,
+    validate_settlement_share_state_before_external,
+)
 from app.settlement.statuses import (
     BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING,
     BATCH_STATUS_NEGATIVE_NET_SALE_EXECUTED,
@@ -265,6 +269,12 @@ def process_one_live_batch(
             db.rollback()
             return False
 
+        validate_settlement_share_state_before_external(
+            db,
+            batch=settlement_batch,
+            mark_failed=True,
+        )
+
         master_client = _build_master_bybit_client()
         master_uid = _get_master_uid()
         fund_sub_uid = _get_fund_sub_uid(
@@ -299,6 +309,18 @@ def process_one_live_batch(
         if _is_rate_limit_retry_pending(result):
             return False
 
+        return True
+
+    except SettlementShareQuantityError as exc:
+        db.commit()
+
+        print(
+            "fund_negative_bybit_flow_worker_live:",
+            "action= commit_failed_requires_review",
+            "external_action= false",
+            "error=", str(exc),
+            "fund_code_filter=", fund_code or "",
+        )
         return True
 
     except Exception:

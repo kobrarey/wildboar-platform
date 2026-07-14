@@ -24,8 +24,17 @@ from app.config import settings
 from app.db import Base
 from app.models import (
     Fund,
+    FundNegativeBybitFlow,
+    FundNegativeFinalizationBatch,
+    FundNegativePayoutBatch,
+    FundNegativePayoutLeg,
+    FundOperatorAction,
+    FundNegativeSaleBatch,
+    FundNegativeSaleLeg,
     FundOrder,
+    FundRuntimeState,
     FundSettlementBatch,
+    FundWallet,
     User,
     UserFundPosition,
     UserWallet,
@@ -33,11 +42,16 @@ from app.models import (
 from app.settlement.batch_service import _calculate_batch_fields
 from app.settlement import accounting_service
 from app.settlement import negative_finalization
+from app.settlement import negative_bybit_flow
+from app.settlement import negative_payout_flow
+from app.settlement import negative_sale_execution
+from app.settlement import positive_net_service
 from app.settlement.accounting_service import (
     SettlementAccountingError,
     SettlementShareQuantityError,
     finalize_positive_net_accounting,
     validate_positive_net_share_preflight,
+    validate_settlement_share_state_before_external,
 )
 from app.settlement.share_quantity import (
     BUY_SHARE_QUANTITY_BELOW_MINIMUM_ERROR,
@@ -65,6 +79,15 @@ TEST_TABLES = [
     User.__table__,
     Fund.__table__,
     FundSettlementBatch.__table__,
+    FundRuntimeState.__table__,
+    FundWallet.__table__,
+    FundNegativeSaleBatch.__table__,
+    FundNegativeSaleLeg.__table__,
+    FundNegativeBybitFlow.__table__,
+    FundOperatorAction.__table__,
+    FundNegativePayoutBatch.__table__,
+    FundNegativePayoutLeg.__table__,
+    FundNegativeFinalizationBatch.__table__,
     FundOrder.__table__,
     UserFundPosition.__table__,
     UserWallet.__table__,
@@ -161,8 +184,7 @@ def create_test_schema() -> tuple[
         )
 
         Base.metadata.create_all(
-            test_engine,
-            tables=TEST_TABLES,
+            bind=test_engine,
         )
 
         with test_engine.begin() as conn:
@@ -1281,6 +1303,7 @@ def test_positive_net_accounting_and_idempotency(
         db,
         suffix="positive",
     )
+
     batch = new_settlement_batch(
         db,
         fund=fund,
@@ -1288,7 +1311,28 @@ def test_positive_net_accounting_and_idempotency(
         settlement_price=D("634.25"),
         shares_before=D("1.0000"),
         planned_issue=D("0.0314"),
+        status="awaiting_positive_net_execution",
     )
+    batch.total_buy_usdt = D("20")
+    batch.total_redeem_shares = D("0")
+    batch.total_redeem_usdt = D("0")
+    batch.net_cash_usdt = D("20")
+    batch.planned_shares_to_issue = D("0.0314")
+    batch.planned_shares_to_redeem = D("0")
+    batch.planned_net_shares_change = D("0.0314")
+
+    runtime_state = FundRuntimeState(
+        fund_id=int(fund.id),
+        pricing_locked=True,
+        pricing_lock_reason="settlement",
+        pricing_lock_batch_id=int(batch.id),
+        pricing_locked_at=NOW,
+        pricing_unlocked_at=None,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    db.add(runtime_state)
+
     first_order = new_buy_order(
         db,
         user=user,
@@ -1296,6 +1340,7 @@ def test_positive_net_accounting_and_idempotency(
         batch=batch,
         amount=D("10"),
         shares=D("0.0157"),
+        status="buy_collected",
     )
     second_order = new_buy_order(
         db,
@@ -1304,22 +1349,160 @@ def test_positive_net_accounting_and_idempotency(
         batch=batch,
         amount=D("10"),
         shares=D("0.0157"),
+        status="buy_collected",
     )
     db.commit()
 
-    result = finalize_positive_net_accounting(
-        db,
-        batch_id=int(batch.id),
-        unlock_pricing=False,
-    )
-    db.commit()
+    counters = {
+        "seller_payout": 0,
+        "positive_bsc_transfer": 0,
+        "bybit_deposit": 0,
+        "internal_transfer": 0,
+    }
+
+    def fake_seller_payouts(
+        fake_db: Session,
+        *,
+        batch_id: int,
+        dry_run: bool,
+        mock_confirm: bool,
+    ) -> Any:
+        counters["seller_payout"] += 1
+
+        stored_batch = fake_db.get(
+            FundSettlementBatch,
+            int(batch_id),
+        )
+        stored_batch.seller_payouts_completed_at = NOW
+        fake_db.add(stored_batch)
+        fake_db.flush()
+
+        return SimpleNamespace(
+            seller_payouts_completed=True,
+        )
+
+    def fake_positive_transfer(
+        fake_db: Session,
+        *,
+        batch_id: int,
+        dry_run: bool,
+        mock_confirm: bool,
+    ) -> Any:
+        counters["positive_bsc_transfer"] += 1
+
+        stored_batch = fake_db.get(
+            FundSettlementBatch,
+            int(batch_id),
+        )
+        stored_batch.bybit_deposit_tx_hash = (
+            "0x" + "11" * 32
+        )
+        fake_db.add(stored_batch)
+        fake_db.flush()
+
+        return SimpleNamespace(
+            transfer_status="confirmed",
+        )
+
+    def fake_bybit_deposit(
+        fake_db: Session,
+        *,
+        batch_id: int,
+        master_client: Any,
+        mock_confirm: bool,
+    ) -> bool:
+        counters["bybit_deposit"] += 1
+
+        stored_batch = fake_db.get(
+            FundSettlementBatch,
+            int(batch_id),
+        )
+        stored_batch.bybit_deposit_confirmed_at = NOW
+        fake_db.add(stored_batch)
+        fake_db.flush()
+        return True
+
+    def fake_internal_transfer(
+        fake_db: Session,
+        *,
+        batch: FundSettlementBatch,
+        fund_client_factory: Any,
+        dry_run: bool,
+        mock_bybit: bool,
+    ) -> bool:
+        counters["internal_transfer"] += 1
+
+        batch.bybit_internal_transfer_completed_at = NOW
+        fake_db.add(batch)
+        fake_db.flush()
+        return True
+
+    with patched_attr(
+        positive_net_service,
+        "process_seller_payouts_for_batch",
+        fake_seller_payouts,
+    ), patched_attr(
+        positive_net_service,
+        "send_or_confirm_positive_net_transfer",
+        fake_positive_transfer,
+    ), patched_attr(
+        positive_net_service,
+        "confirm_bybit_deposit_for_batch",
+        fake_bybit_deposit,
+    ), patched_attr(
+        positive_net_service,
+        "_internal_transfer_ready_or_skipped",
+        fake_internal_transfer,
+    ), patched_attr(
+        positive_net_service,
+        "_send_alert",
+        lambda _text: None,
+    ):
+        result = (
+            positive_net_service.process_positive_net_batch(
+                db,
+                batch_id=int(batch.id),
+                master_client=None,
+                fund_client_factory=None,
+                dry_run=False,
+                mock_chain=False,
+                mock_bybit=False,
+                finalize_accounting=True,
+            )
+        )
+        db.commit()
+
+        counters_after_first_run = dict(counters)
+
+        repeated = (
+            positive_net_service.process_positive_net_batch(
+                db,
+                batch_id=int(batch.id),
+                master_client=None,
+                fund_client_factory=None,
+                dry_run=False,
+                mock_chain=False,
+                mock_bybit=False,
+                finalize_accounting=True,
+            )
+        )
+        db.commit()
+
     db.expire_all()
 
     stored_batch = db.get(
         FundSettlementBatch,
         int(batch.id),
     )
-    stored_fund = db.get(Fund, int(fund.id))
+    stored_fund = db.get(
+        Fund,
+        int(fund.id),
+    )
+    stored_position = get_position(
+        db,
+        user_id=int(user.id),
+        fund_id=int(fund.id),
+    )
     stored_orders = (
         db.query(FundOrder)
         .filter(
@@ -1329,32 +1512,37 @@ def test_positive_net_accounting_and_idempotency(
         .order_by(FundOrder.id.asc())
         .all()
     )
-    stored_position = get_position(
-        db,
-        user_id=int(user.id),
-        fund_id=int(fund.id),
-    )
 
     require(
-        result.buyer_shares_issued == D("0.0314"),
+        result.accounting_finalized is True,
+        "Positive full flow did not finalize accounting",
+    )
+    require(
+        result.accounting_result is not None,
+        "Positive full flow has no accounting result",
+    )
+    require(
+        result.accounting_result.buyer_shares_issued
+        == D("0.0314"),
         (
-            "Positive accounting issued unexpected "
-            f"shares: {result.buyer_shares_issued}"
+            "Positive full flow issued unexpected "
+            f"shares: "
+            f"{result.accounting_result.buyer_shares_issued}"
         ),
     )
     require(
-        [D(str(order.shares)) for order in stored_orders]
+        [
+            D(str(order.shares))
+            for order in stored_orders
+        ]
         == [D("0.0157"), D("0.0157")],
-        (
-            "Positive orders are not individually "
-            "floored to 4dp"
-        ),
+        "Positive buy orders were not floored per order",
     )
     require(
         D(str(stored_position.shares))
         == D("0.0314"),
         (
-            "Positive user position mismatch: "
+            "Positive position mismatch: "
             f"{stored_position.shares}"
         ),
     )
@@ -1362,98 +1550,74 @@ def test_positive_net_accounting_and_idempotency(
         D(str(stored_fund.shares_outstanding_current))
         == D("1.0314"),
         (
-            "Positive fund shares outstanding "
-            f"mismatch: "
+            "Positive shares outstanding mismatch: "
             f"{stored_fund.shares_outstanding_current}"
         ),
     )
     require(
-        stored_batch.accounting_finalized_at
-        is not None,
-        "Positive batch was not finalized",
-    )
-
-    snapshot = {
-        "fund_shares": D(
-            str(stored_fund.shares_outstanding_current)
-        ),
-        "position_shares": D(
-            str(stored_position.shares)
-        ),
-        "order_shares": [
-            D(str(order.shares))
-            for order in stored_orders
-        ],
-        "order_statuses": [
-            str(order.status)
-            for order in stored_orders
-        ],
-    }
-
-    try:
-        finalize_positive_net_accounting(
-            db,
-            batch_id=int(batch.id),
-            unlock_pricing=False,
-        )
-    except SettlementAccountingError:
-        db.rollback()
-    else:
-        db.rollback()
-
-    db.expire_all()
-    repeated_fund = db.get(Fund, int(fund.id))
-    repeated_position = get_position(
-        db,
-        user_id=int(user.id),
-        fund_id=int(fund.id),
-    )
-    repeated_orders = (
-        db.query(FundOrder)
-        .filter(
-            FundOrder.settlement_batch_id
-            == int(batch.id)
-        )
-        .order_by(FundOrder.id.asc())
-        .all()
-    )
-
-    require(
-        D(str(repeated_fund.shares_outstanding_current))
-        == snapshot["fund_shares"],
-        "Repeated positive accounting changed fund shares",
-    )
-    require(
-        D(str(repeated_position.shares))
-        == snapshot["position_shares"],
+        D(str(stored_batch.total_buy_usdt))
+        == D("20"),
         (
-            "Repeated positive accounting changed "
-            "user position"
+            "Complete positive buy cash was not retained: "
+            f"{stored_batch.total_buy_usdt}"
         ),
     )
     require(
-        [
-            D(str(order.shares))
-            for order in repeated_orders
-        ]
-        == snapshot["order_shares"],
+        D(str(stored_batch.net_cash_usdt))
+        == D("20"),
         (
-            "Repeated positive accounting changed "
-            "order shares"
+            "Positive net cash mismatch: "
+            f"{stored_batch.net_cash_usdt}"
         ),
     )
     require(
-        [
-            str(order.status)
-            for order in repeated_orders
-        ]
-        == snapshot["order_statuses"],
+        counters_after_first_run
+        == {
+            "seller_payout": 1,
+            "positive_bsc_transfer": 1,
+            "bybit_deposit": 1,
+            "internal_transfer": 1,
+        },
         (
-            "Repeated positive accounting changed "
-            "order statuses"
+            "Unexpected positive external boundary calls: "
+            f"{counters_after_first_run}"
         ),
+    )
+    require(
+        counters == counters_after_first_run,
+        (
+            "Idempotent positive rerun repeated external "
+            f"calls: {counters}"
+        ),
+    )
+    require(
+        repeated.accounting_finalized is True,
+        "Positive rerun did not report finalized state",
+    )
+    require(
+        repeated.accounting_result is None,
+        (
+            "Positive idempotent rerun unexpectedly "
+            "repeated accounting"
+        ),
+    )
+    require(
+        D(str(stored_position.shares))
+        == D("0.0314"),
+        "Positive rerun changed position shares",
+    )
+    require(
+        D(str(stored_fund.shares_outstanding_current))
+        == D("1.0314"),
+        "Positive rerun changed fund shares",
     )
 
+    print(
+        "STAGE26_3_12P_R1_FULL_BUY_CASH_RECONCILIATION_OK"
+    )
+    print(
+        "STAGE26_3_12P_R1_POSITIVE_FULL_FLOW_4DP_OK"
+    )
     print(
         "STAGE26_3_12P_POSITIVE_NET_BUY_SHARES_4DP_OK"
     )
@@ -1469,11 +1633,26 @@ def test_positive_net_accounting_and_idempotency(
 
     return {
         "batch_id": int(batch.id),
-        "order_shares": snapshot["order_shares"],
-        "position_shares": snapshot[
-            "position_shares"
+        "order_shares": [
+            D(str(order.shares))
+            for order in stored_orders
         ],
-        "fund_shares": snapshot["fund_shares"],
+        "position_shares": D(
+            str(stored_position.shares)
+        ),
+        "fund_shares": D(
+            str(stored_fund.shares_outstanding_current)
+        ),
+        "total_buy_usdt": D(
+            str(stored_batch.total_buy_usdt)
+        ),
+        "net_cash_usdt": D(
+            str(stored_batch.net_cash_usdt)
+        ),
+        "external_calls_first_run": (
+            counters_after_first_run
+        ),
+        "external_calls_after_rerun": dict(counters),
         "second_call_changed_state": False,
     }
 
@@ -1483,114 +1662,418 @@ def test_negative_net_buy_accounting(
 ) -> dict[str, Any]:
     fund = new_fund(
         db,
-        suffix="negative",
+        suffix="negative-mixed",
         shares_outstanding=D("1.0000"),
     )
-    user = new_user(
+
+    buy_user = new_user(
         db,
-        suffix="negative",
+        suffix="negative-buy",
     )
-    wallet = new_user_wallet(
+    redeem_user = new_user(
         db,
-        user=user,
+        suffix="negative-redeem",
+    )
+
+    buy_wallet = new_user_wallet(
+        db,
+        user=buy_user,
         balance=D("100"),
         reserved=D("10"),
     )
-    position = new_position(
+    redeem_wallet = new_user_wallet(
         db,
-        user=user,
-        fund=fund,
-        shares=D("0.0000"),
-        shares_reserved=D("0.0000"),
+        user=redeem_user,
+        balance=D("0"),
+        reserved=D("0"),
     )
-    order = new_buy_order(
+
+    redeem_position = new_position(
         db,
-        user=user,
+        user=redeem_user,
         fund=fund,
-        batch=None,
+        shares=D("0.1000"),
+        shares_reserved=D("0.0200"),
+    )
+
+    batch = new_settlement_batch(
+        db,
+        fund=fund,
+        suffix=40,
+        settlement_price=D("634.25"),
+        shares_before=D("1.0000"),
+        planned_issue=D("0.0157"),
+        planned_redeem=D("0.0200"),
+        status="negative_net_payouts_confirmed",
+    )
+    batch.total_buy_usdt = D("10")
+    batch.total_redeem_shares = D("0.0200")
+    batch.total_redeem_usdt = D("12.6850")
+    batch.net_cash_usdt = D("-2.6850")
+    batch.planned_shares_to_issue = D("0.0157")
+    batch.planned_shares_to_redeem = D("0.0200")
+    batch.planned_net_shares_change = D("-0.0043")
+    batch.total_net_user_payout_usdt = D("12.5000")
+    batch.total_partial_month_fee_usdt = D("0.1850")
+    batch.pricing_locked_at = NOW
+    batch.pricing_unlocked_at = None
+
+    runtime_state = FundRuntimeState(
+        fund_id=int(fund.id),
+        pricing_locked=True,
+        pricing_lock_reason="settlement",
+        pricing_lock_batch_id=int(batch.id),
+        pricing_locked_at=NOW,
+        pricing_unlocked_at=None,
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    db.add(runtime_state)
+
+    buy_order = new_buy_order(
+        db,
+        user=buy_user,
+        fund=fund,
+        batch=batch,
         amount=D("10"),
         shares=D("0.0157"),
         status="processing",
     )
+
+    redeem_order = FundOrder(
+        user_id=int(redeem_user.id),
+        fund_id=int(fund.id),
+        side="redeem",
+        amount_usdt=None,
+        shares=D("0.0200"),
+        price_usdt=None,
+        gross_redeem_usdt=D("12.6850"),
+        success_fee_usdt=D("0"),
+        management_fee_usdt=D("0"),
+        partial_month_fee_usdt=D("0.1850"),
+        net_user_payout_usdt=D("12.5000"),
+        net_price_usdt=D("625.0000"),
+        status="processing",
+        settlement_batch_id=int(batch.id),
+        created_at=NOW,
+    )
+    db.add(redeem_order)
     db.flush()
 
-    validation = (
-        negative_finalization._validate_buy_orders(
-            buy_orders=[order],
-            settlement_price_usdt=D("634.25"),
-        )
+    sale_batch = FundNegativeSaleBatch(
+        settlement_batch_id=int(batch.id),
+        fund_id=int(fund.id),
+        status="sale_execution_completed",
+        required_master_usdt=D("12.5000"),
+        withdrawal_request_amount_usdt=D("12.5000"),
+        total_net_user_payout_usdt=D("12.5000"),
+        total_partial_month_fee_usdt=D("0.1850"),
+        bybit_withdrawal_fee_usdt=D("0"),
+        created_at=NOW,
+        updated_at=NOW,
     )
-
-    updates = (
-        negative_finalization._apply_buy_accounting(
-            db,
-            fund_id=int(fund.id),
-            buy_orders=[order],
-            buy_positions={
-                int(order.id): position,
-            },
-            buy_wallets={
-                int(order.id): wallet,
-            },
-            computed_shares_by_order_id=(
-                validation[
-                    "computed_shares_by_order_id"
-                ]
-            ),
-            settlement_price_usdt=D("634.25"),
-            executed_at=NOW,
-        )
-    )
+    db.add(sale_batch)
     db.flush()
 
+    bybit_flow = FundNegativeBybitFlow(
+        settlement_batch_id=int(batch.id),
+        sale_batch_id=int(sale_batch.id),
+        fund_id=int(fund.id),
+        status="completed",
+        coin="USDT",
+        chain="BSC",
+        required_master_usdt=D("12.5000"),
+        withdrawal_request_amount_usdt=D("12.5000"),
+        bybit_withdrawal_fee_usdt=D("0"),
+        retained_fees_usdt=D("0.1850"),
+        settlement_wallet_received_usdt=D("12.5000"),
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    db.add(bybit_flow)
+    db.flush()
+
+    payout_batch = FundNegativePayoutBatch(
+        settlement_batch_id=int(batch.id),
+        bybit_flow_id=int(bybit_flow.id),
+        fund_id=int(fund.id),
+        status="completed",
+        coin="USDT",
+        chain="BSC",
+        expected_total_payout_usdt=D("12.5000"),
+        planned_total_payout_usdt=D("12.5000"),
+        confirmed_total_payout_usdt=D("12.5000"),
+        payout_leg_count=1,
+        confirmed_payout_leg_count=1,
+        balance_refresh_status="confirmed",
+        balance_refresh_json={
+            "confirmed": True,
+        },
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    db.add(payout_batch)
+    db.flush()
+
+    payout_leg = FundNegativePayoutLeg(
+        payout_batch_id=int(payout_batch.id),
+        settlement_batch_id=int(batch.id),
+        bybit_flow_id=int(bybit_flow.id),
+        fund_id=int(fund.id),
+        user_id=int(redeem_user.id),
+        user_wallet_id=int(redeem_wallet.id),
+        to_user_wallet_id=int(redeem_wallet.id),
+        status="balance_refreshed",
+        coin="USDT",
+        chain="BSC",
+        to_address=str(redeem_wallet.address),
+        amount_usdt=D("12.5000"),
+        order_ids_json={
+            "order_ids": [int(redeem_order.id)],
+        },
+        balance_refresh_json={
+            "confirmed": True,
+        },
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    db.add(payout_leg)
+    db.commit()
+
+    old_enabled = (
+        settings.NEGATIVE_NET_FINALIZATION_ENABLED
+    )
+    old_unlock = (
+        settings.NEGATIVE_NET_FINALIZATION_UNLOCK_PRICING
+    )
+    old_require_payout = (
+        settings
+        .NEGATIVE_NET_FINALIZATION_REQUIRE_PAYOUTS_CONFIRMED
+    )
+
+    settings.NEGATIVE_NET_FINALIZATION_ENABLED = True
+    settings.NEGATIVE_NET_FINALIZATION_UNLOCK_PRICING = True
+    settings.NEGATIVE_NET_FINALIZATION_REQUIRE_PAYOUTS_CONFIRMED = True
+
+    try:
+        result = (
+            negative_finalization
+            .finalize_negative_net_settlement(
+                db,
+                settlement_batch_id=int(batch.id),
+                now=NOW,
+            )
+        )
+        db.commit()
+
+        repeated = (
+            negative_finalization
+            .finalize_negative_net_settlement(
+                db,
+                settlement_batch_id=int(batch.id),
+                now=NOW,
+            )
+        )
+        db.commit()
+
+    finally:
+        settings.NEGATIVE_NET_FINALIZATION_ENABLED = (
+            old_enabled
+        )
+        settings.NEGATIVE_NET_FINALIZATION_UNLOCK_PRICING = (
+            old_unlock
+        )
+        settings.NEGATIVE_NET_FINALIZATION_REQUIRE_PAYOUTS_CONFIRMED = (
+            old_require_payout
+        )
+
+    db.expire_all()
+
+    stored_batch = db.get(
+        FundSettlementBatch,
+        int(batch.id),
+    )
+    stored_fund = db.get(
+        Fund,
+        int(fund.id),
+    )
+    stored_buy_order = db.get(
+        FundOrder,
+        int(buy_order.id),
+    )
+    stored_redeem_order = db.get(
+        FundOrder,
+        int(redeem_order.id),
+    )
+    stored_buy_wallet = db.get(
+        UserWallet,
+        int(buy_wallet.id),
+    )
+    stored_buy_position = get_position(
+        db,
+        user_id=int(buy_user.id),
+        fund_id=int(fund.id),
+    )
+    stored_redeem_position = get_position(
+        db,
+        user_id=int(redeem_user.id),
+        fund_id=int(fund.id),
+    )
+
     require(
-        validation["total_buy_usdt"]
-        == D("10.0000000000"),
-        "Negative accounting changed buy cash",
+        result.ok is True,
+        "Negative mixed full flow did not complete",
     )
     require(
-        validation["total_buy_shares"]
+        result.buy_order_count == 1,
+        "Negative mixed flow buy count mismatch",
+    )
+    require(
+        result.redeem_order_count == 1,
+        "Negative mixed flow redeem count mismatch",
+    )
+    require(
+        D(str(result.total_buy_usdt))
+        == D("10"),
+        (
+            "Negative mixed flow lost full buy cash: "
+            f"{result.total_buy_usdt}"
+        ),
+    )
+    require(
+        D(str(result.total_buy_shares))
         == D("0.0157"),
         (
-            "Negative validation did not calculate "
-            "4dp shares"
+            "Negative mixed flow buy shares mismatch: "
+            f"{result.total_buy_shares}"
         ),
     )
     require(
-        D(str(order.shares)) == D("0.0157"),
+        D(str(result.total_redeem_shares))
+        == D("0.0200"),
         (
-            "Negative order shares mismatch: "
-            f"{order.shares}"
+            "Negative mixed flow redeem shares mismatch: "
+            f"{result.total_redeem_shares}"
         ),
     )
     require(
-        D(str(position.shares)) == D("0.0157"),
+        D(str(stored_batch.total_buy_usdt))
+        == D("10"),
+        "Negative batch full buy cash changed",
+    )
+    require(
+        D(str(stored_batch.total_redeem_usdt))
+        == D("12.6850"),
+        "Negative batch redeem cash changed",
+    )
+    require(
+        D(str(stored_batch.net_cash_usdt))
+        == D("-2.6850"),
+        "Negative batch net cash changed",
+    )
+    require(
+        D(str(stored_buy_order.shares))
+        == D("0.0157"),
+        "Negative buy order not floored to 4dp",
+    )
+    require(
+        D(str(stored_redeem_order.shares))
+        == D("0.0200"),
+        "Negative redeem shares changed",
+    )
+    require(
+        D(str(stored_buy_position.shares))
+        == D("0.0157"),
         (
-            "Negative position shares mismatch: "
-            f"{position.shares}"
+            "Negative buy position mismatch: "
+            f"{stored_buy_position.shares}"
         ),
     )
     require(
-        D(str(wallet.usdt_reserved)) == D("0"),
+        D(str(stored_redeem_position.shares))
+        == D("0.0800"),
         (
-            "Negative wallet reserve was not released: "
-            f"{wallet.usdt_reserved}"
+            "Negative redeem position mismatch: "
+            f"{stored_redeem_position.shares}"
         ),
     )
     require(
-        len(updates) == 1,
-        "Negative accounting update audit missing",
+        D(str(stored_redeem_position.shares_reserved))
+        == D("0"),
+        (
+            "Negative redeem reserve mismatch: "
+            f"{stored_redeem_position.shares_reserved}"
+        ),
     )
-
-    db.rollback()
+    require(
+        D(str(stored_buy_wallet.usdt_reserved))
+        == D("0"),
+        (
+            "Negative buy wallet reserve mismatch: "
+            f"{stored_buy_wallet.usdt_reserved}"
+        ),
+    )
+    require(
+        D(str(stored_fund.shares_outstanding_current))
+        == D("0.9957"),
+        (
+            "Negative fund shares mismatch: "
+            f"{stored_fund.shares_outstanding_current}"
+        ),
+    )
+    require(
+        repeated.idempotent is True,
+        "Negative rerun was not idempotent",
+    )
+    require(
+        D(str(stored_buy_position.shares))
+        == D("0.0157"),
+        "Negative rerun changed buy position",
+    )
+    require(
+        D(str(stored_redeem_position.shares))
+        == D("0.0800"),
+        "Negative rerun changed redeem position",
+    )
+    require(
+        D(str(stored_fund.shares_outstanding_current))
+        == D("0.9957"),
+        "Negative rerun changed fund shares",
+    )
 
     print(
         "STAGE26_3_12P_NEGATIVE_NET_BUY_SHARES_4DP_OK"
     )
+    print(
+        "STAGE26_3_12P_R1_NEGATIVE_MIXED_FULL_FLOW_4DP_OK"
+    )
+
     return {
-        "order_shares": D("0.0157"),
-        "position_shares": D("0.0157"),
-        "full_buy_usdt": D("10"),
+        "total_buy_usdt": D(
+            str(stored_batch.total_buy_usdt)
+        ),
+        "total_redeem_usdt": D(
+            str(stored_batch.total_redeem_usdt)
+        ),
+        "net_cash_usdt": D(
+            str(stored_batch.net_cash_usdt)
+        ),
+        "buy_order_shares": D(
+            str(stored_buy_order.shares)
+        ),
+        "redeem_order_shares": D(
+            str(stored_redeem_order.shares)
+        ),
+        "buy_position_shares": D(
+            str(stored_buy_position.shares)
+        ),
+        "redeem_position_shares": D(
+            str(stored_redeem_position.shares)
+        ),
+        "fund_shares": D(
+            str(stored_fund.shares_outstanding_current)
+        ),
+        "idempotent": bool(repeated.idempotent),
     }
 
 
@@ -1824,7 +2307,545 @@ def test_historical_tail_fail_closed(
     }
 
 
+
+def test_r1_pre_external_fail_closed(
+    db: Session,
+) -> dict[str, Any]:
+    # -------------------------------------------------
+    # Positive-net: historical position tail
+    # -------------------------------------------------
+    positive_fund = new_fund(
+        db,
+        suffix="r1-positive-tail",
+        shares_outstanding=D("1.0000"),
+    )
+    positive_user = new_user(
+        db,
+        suffix="r1-positive-tail",
+    )
+    positive_position = new_position(
+        db,
+        user=positive_user,
+        fund=positive_fund,
+        shares=D("2.0000000001"),
+        shares_reserved=D("0"),
+    )
+    positive_batch = new_settlement_batch(
+        db,
+        fund=positive_fund,
+        suffix=50,
+        settlement_price=D("634.25"),
+        shares_before=D("1.0000"),
+        planned_issue=D("0.0157"),
+        status="awaiting_positive_net_execution",
+    )
+    positive_batch.total_buy_usdt = D("10")
+    positive_batch.total_redeem_shares = D("0")
+    positive_batch.total_redeem_usdt = D("0")
+    positive_batch.net_cash_usdt = D("10")
+    positive_batch.planned_shares_to_issue = D("0.0157")
+    positive_batch.planned_shares_to_redeem = D("0")
+    positive_batch.planned_net_shares_change = D("0.0157")
+
+    db.add(
+        FundRuntimeState(
+            fund_id=int(positive_fund.id),
+            pricing_locked=True,
+            pricing_lock_reason="settlement",
+            pricing_lock_batch_id=int(positive_batch.id),
+            pricing_locked_at=NOW,
+            pricing_unlocked_at=None,
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+
+    positive_order = new_buy_order(
+        db,
+        user=positive_user,
+        fund=positive_fund,
+        batch=positive_batch,
+        amount=D("10"),
+        shares=D("0.0157"),
+        status="buy_collected",
+    )
+    db.commit()
+
+    positive_tail_before = D(
+        str(positive_position.shares)
+    )
+    positive_calls = {
+        "seller_payout": 0,
+        "positive_bsc_transfer": 0,
+        "bybit_deposit": 0,
+        "internal_transfer": 0,
+    }
+
+    def positive_seller(*args: Any, **kwargs: Any) -> Any:
+        positive_calls["seller_payout"] += 1
+        return SimpleNamespace(
+            seller_payouts_completed=True,
+        )
+
+    def positive_transfer(*args: Any, **kwargs: Any) -> Any:
+        positive_calls["positive_bsc_transfer"] += 1
+        return SimpleNamespace(
+            transfer_status="confirmed",
+        )
+
+    def positive_deposit(*args: Any, **kwargs: Any) -> bool:
+        positive_calls["bybit_deposit"] += 1
+        return True
+
+    def positive_internal(*args: Any, **kwargs: Any) -> bool:
+        positive_calls["internal_transfer"] += 1
+        return True
+
+    with patched_attr(
+        positive_net_service,
+        "process_seller_payouts_for_batch",
+        positive_seller,
+    ), patched_attr(
+        positive_net_service,
+        "send_or_confirm_positive_net_transfer",
+        positive_transfer,
+    ), patched_attr(
+        positive_net_service,
+        "confirm_bybit_deposit_for_batch",
+        positive_deposit,
+    ), patched_attr(
+        positive_net_service,
+        "_internal_transfer_ready_or_skipped",
+        positive_internal,
+    ), patched_attr(
+        positive_net_service,
+        "_send_alert",
+        lambda _text: None,
+    ):
+        positive_result = (
+            positive_net_service.process_positive_net_batch(
+                db,
+                batch_id=int(positive_batch.id),
+                master_client=None,
+                fund_client_factory=None,
+                dry_run=False,
+                mock_chain=False,
+                mock_bybit=False,
+                finalize_accounting=True,
+            )
+        )
+        db.commit()
+
+    db.expire_all()
+
+    stored_positive_batch = db.get(
+        FundSettlementBatch,
+        int(positive_batch.id),
+    )
+    stored_positive_position = get_position(
+        db,
+        user_id=int(positive_user.id),
+        fund_id=int(positive_fund.id),
+    )
+
+    require(
+        positive_result.status
+        == "failed_requires_review",
+        "Positive tail did not fail closed",
+    )
+    require(
+        stored_positive_batch.status
+        == "failed_requires_review",
+        "Positive tail batch status mismatch",
+    )
+    require(
+        positive_calls
+        == {
+            "seller_payout": 0,
+            "positive_bsc_transfer": 0,
+            "bybit_deposit": 0,
+            "internal_transfer": 0,
+        },
+        (
+            "Positive external calls occurred before "
+            f"tail validation: {positive_calls}"
+        ),
+    )
+    require(
+        D(str(stored_positive_position.shares))
+        == positive_tail_before,
+        "Positive historical tail was mutated",
+    )
+
+    # -------------------------------------------------
+    # Positive-net: cash mismatch
+    # -------------------------------------------------
+    mismatch_fund = new_fund(
+        db,
+        suffix="r1-cash-mismatch",
+        shares_outstanding=D("1.0000"),
+    )
+    mismatch_user = new_user(
+        db,
+        suffix="r1-cash-mismatch",
+    )
+    mismatch_batch = new_settlement_batch(
+        db,
+        fund=mismatch_fund,
+        suffix=51,
+        settlement_price=D("634.25"),
+        shares_before=D("1.0000"),
+        planned_issue=D("0.0314"),
+        status="awaiting_positive_net_execution",
+    )
+    mismatch_batch.total_buy_usdt = D("19")
+    mismatch_batch.total_redeem_shares = D("0")
+    mismatch_batch.total_redeem_usdt = D("0")
+    mismatch_batch.net_cash_usdt = D("19")
+    mismatch_batch.planned_shares_to_issue = D("0.0314")
+    mismatch_batch.planned_shares_to_redeem = D("0")
+    mismatch_batch.planned_net_shares_change = D("0.0314")
+
+    db.add(
+        FundRuntimeState(
+            fund_id=int(mismatch_fund.id),
+            pricing_locked=True,
+            pricing_lock_reason="settlement",
+            pricing_lock_batch_id=int(mismatch_batch.id),
+            pricing_locked_at=NOW,
+            pricing_unlocked_at=None,
+            created_at=NOW,
+            updated_at=NOW,
+        )
+    )
+
+    new_buy_order(
+        db,
+        user=mismatch_user,
+        fund=mismatch_fund,
+        batch=mismatch_batch,
+        amount=D("10"),
+        shares=D("0.0157"),
+        status="buy_collected",
+    )
+    new_buy_order(
+        db,
+        user=mismatch_user,
+        fund=mismatch_fund,
+        batch=mismatch_batch,
+        amount=D("10"),
+        shares=D("0.0157"),
+        status="buy_collected",
+    )
+    db.commit()
+
+    mismatch_calls = {
+        "seller_payout": 0,
+        "positive_bsc_transfer": 0,
+        "bybit_deposit": 0,
+        "internal_transfer": 0,
+    }
+
+    def mismatch_seller(*args: Any, **kwargs: Any) -> Any:
+        mismatch_calls["seller_payout"] += 1
+        return SimpleNamespace(
+            seller_payouts_completed=True,
+        )
+
+    def mismatch_transfer(*args: Any, **kwargs: Any) -> Any:
+        mismatch_calls["positive_bsc_transfer"] += 1
+        return SimpleNamespace(
+            transfer_status="confirmed",
+        )
+
+    def mismatch_deposit(*args: Any, **kwargs: Any) -> bool:
+        mismatch_calls["bybit_deposit"] += 1
+        return True
+
+    def mismatch_internal(*args: Any, **kwargs: Any) -> bool:
+        mismatch_calls["internal_transfer"] += 1
+        return True
+
+    with patched_attr(
+        positive_net_service,
+        "process_seller_payouts_for_batch",
+        mismatch_seller,
+    ), patched_attr(
+        positive_net_service,
+        "send_or_confirm_positive_net_transfer",
+        mismatch_transfer,
+    ), patched_attr(
+        positive_net_service,
+        "confirm_bybit_deposit_for_batch",
+        mismatch_deposit,
+    ), patched_attr(
+        positive_net_service,
+        "_internal_transfer_ready_or_skipped",
+        mismatch_internal,
+    ), patched_attr(
+        positive_net_service,
+        "_send_alert",
+        lambda _text: None,
+    ):
+        mismatch_result = (
+            positive_net_service.process_positive_net_batch(
+                db,
+                batch_id=int(mismatch_batch.id),
+                master_client=None,
+                fund_client_factory=None,
+                dry_run=False,
+                mock_chain=False,
+                mock_bybit=False,
+                finalize_accounting=True,
+            )
+        )
+        db.commit()
+
+    require(
+        mismatch_result.status
+        == "failed_requires_review",
+        "Cash mismatch did not fail closed",
+    )
+    require(
+        mismatch_calls
+        == {
+            "seller_payout": 0,
+            "positive_bsc_transfer": 0,
+            "bybit_deposit": 0,
+            "internal_transfer": 0,
+        },
+        (
+            "Positive external calls occurred before "
+            f"cash reconciliation: {mismatch_calls}"
+        ),
+    )
+
+    # -------------------------------------------------
+    # Negative-net: historical position tail
+    # -------------------------------------------------
+    negative_fund = new_fund(
+        db,
+        suffix="r1-negative-tail",
+        shares_outstanding=D("1.0000"),
+    )
+    negative_user = new_user(
+        db,
+        suffix="r1-negative-tail",
+    )
+    negative_position = new_position(
+        db,
+        user=negative_user,
+        fund=negative_fund,
+        shares=D("2.0000000001"),
+        shares_reserved=D("0"),
+    )
+    negative_batch = new_settlement_batch(
+        db,
+        fund=negative_fund,
+        suffix=52,
+        settlement_price=D("634.25"),
+        shares_before=D("1.0000"),
+        planned_issue=D("0.0157"),
+        status="negative_net_sale_planned",
+    )
+    negative_batch.total_buy_usdt = D("10")
+    negative_batch.total_redeem_shares = D("0")
+    negative_batch.total_redeem_usdt = D("0")
+    negative_batch.net_cash_usdt = D("10")
+    negative_batch.planned_shares_to_issue = D("0.0157")
+    negative_batch.planned_shares_to_redeem = D("0")
+    negative_batch.planned_net_shares_change = D("0.0157")
+
+    new_buy_order(
+        db,
+        user=negative_user,
+        fund=negative_fund,
+        batch=negative_batch,
+        amount=D("10"),
+        shares=D("0.0157"),
+        status="settling",
+    )
+
+    negative_sale_batch = FundNegativeSaleBatch(
+        settlement_batch_id=int(negative_batch.id),
+        fund_id=int(negative_fund.id),
+        status="sale_plan_created",
+        required_master_usdt=D("1"),
+        withdrawal_request_amount_usdt=D("1"),
+        total_net_user_payout_usdt=D("1"),
+        total_partial_month_fee_usdt=D("0"),
+        bybit_withdrawal_fee_usdt=D("0"),
+        created_at=NOW,
+        updated_at=NOW,
+    )
+    db.add(negative_sale_batch)
+    db.commit()
+
+    negative_tail_before = D(
+        str(negative_position.shares)
+    )
+    negative_calls = {
+        "sale_order": 0,
+        "earn_redeem": 0,
+        "universal_transfer": 0,
+        "bybit_withdrawal": 0,
+        "bsc_payout": 0,
+    }
+
+    def negative_earn(*args: Any, **kwargs: Any) -> Any:
+        negative_calls["earn_redeem"] += 1
+        return D("0"), []
+
+    def negative_sale(*args: Any, **kwargs: Any) -> list[Any]:
+        negative_calls["sale_order"] += 1
+        return []
+
+    with patched_attr(
+        negative_sale_execution,
+        "execute_initial_usdt_earn_redeem_live",
+        negative_earn,
+    ), patched_attr(
+        negative_sale_execution,
+        "execute_initial_sale_legs_live",
+        negative_sale,
+    ):
+        try:
+            negative_sale_execution.execute_negative_sale_plan_live(
+                db,
+                sale_batch_id=int(negative_sale_batch.id),
+                client=object(),
+                now=NOW,
+            )
+        except SettlementShareQuantityError:
+            db.commit()
+        else:
+            raise AssertionError(
+                "Negative historical tail was accepted"
+            )
+
+    db.expire_all()
+
+    stored_negative_batch = db.get(
+        FundSettlementBatch,
+        int(negative_batch.id),
+    )
+    stored_negative_position = get_position(
+        db,
+        user_id=int(negative_user.id),
+        fund_id=int(negative_fund.id),
+    )
+
+    require(
+        stored_negative_batch.status
+        == "failed_requires_review",
+        "Negative tail batch did not fail closed",
+    )
+    require(
+        negative_calls["sale_order"] == 0,
+        "Negative sale order executed before validation",
+    )
+    require(
+        negative_calls["earn_redeem"] == 0,
+        "Negative Earn redeem executed before validation",
+    )
+    require(
+        D(str(stored_negative_position.shares))
+        == negative_tail_before,
+        "Negative historical tail was mutated",
+    )
+
+    # Проверяем расположение общего validator перед
+    # Universal Transfer, withdrawal и BSC payout.
+    bybit_source = Path(
+        "app/settlement/negative_bybit_flow.py"
+    ).read_text(encoding="utf-8")
+    bybit_start = bybit_source.index(
+        "def execute_negative_bybit_flow_live"
+    )
+    bybit_block = bybit_source[bybit_start:]
+    bybit_validate = bybit_block.index(
+        "validate_settlement_share_state_before_external("
+    )
+    universal_transfer = bybit_block.index(
+        "create_universal_transfer("
+    )
+    withdrawal = bybit_block.index(
+        "create_master_withdrawal("
+    )
+
+    require(
+        bybit_validate < universal_transfer,
+        "Negative validator is after Universal Transfer",
+    )
+    require(
+        bybit_validate < withdrawal,
+        "Negative validator is after Bybit withdrawal",
+    )
+
+    payout_source = Path(
+        "app/settlement/negative_payout_flow.py"
+    ).read_text(encoding="utf-8")
+    payout_start = payout_source.index(
+        "def execute_negative_payout_flow_live"
+    )
+    payout_end = payout_source.index(
+        "def execute_negative_payout_flow_mock",
+        payout_start,
+    )
+    payout_block = payout_source[
+        payout_start:payout_end
+    ]
+    payout_validate = payout_block.index(
+        "validate_settlement_share_state_before_external("
+    )
+    gas_boundary = payout_block.index(
+        "_ensure_live_settlement_wallet_gas("
+    )
+    payout_boundary = payout_block.index(
+        "_send_or_confirm_live_payout_leg("
+    )
+
+    require(
+        payout_validate < gas_boundary,
+        "Negative validator is after gas boundary",
+    )
+    require(
+        payout_validate < payout_boundary,
+        "Negative validator is after BSC payout boundary",
+    )
+
+    print(
+        "STAGE26_3_12P_R1_POSITIVE_PREFLIGHT_VALIDATES_POSITIONS_OK"
+    )
+    print(
+        "STAGE26_3_12P_R1_NEGATIVE_PREFLIGHT_BEFORE_EXTERNAL_ACTIONS_OK"
+    )
+    print(
+        "STAGE26_3_12P_R1_POSITIVE_EXTERNAL_CALLS_ZERO_ON_TAIL_OK"
+    )
+    print(
+        "STAGE26_3_12P_R1_NEGATIVE_EXTERNAL_CALLS_ZERO_ON_TAIL_OK"
+    )
+    print(
+        "STAGE26_3_12P_R1_HISTORICAL_TAIL_FAILS_BEFORE_EXTERNAL_OK"
+    )
+
+    return {
+        "positive_tail_calls": positive_calls,
+        "positive_cash_mismatch_calls": mismatch_calls,
+        "negative_tail_calls": negative_calls,
+        "positive_tail_unchanged": True,
+        "negative_tail_unchanged": True,
+        "cash_mismatch_failed_before_external": True,
+        "negative_bybit_boundaries_verified": True,
+        "negative_payout_boundaries_verified": True,
+    }
+
+
 def print_final_markers() -> None:
+    print(
+        "STAGE26_3_12P_R1_FOUR_DECIMAL_SHARE_ACCOUNTING_OK"
+    )
     print(
         "STAGE26_3_12P_FOUR_DECIMAL_SHARE_ACCOUNTING_OK"
     )
@@ -1846,6 +2867,7 @@ def main() -> int:
     negative_accounting = None
     zero_share_db = None
     historical_tail = None
+    r1_pre_external = None
 
     try:
         (
@@ -1894,6 +2916,9 @@ def main() -> int:
                     suffix=32,
                 )
             )
+            r1_pre_external = (
+                test_r1_pre_external_fail_closed(db)
+            )
         finally:
             db.rollback()
             db.close()
@@ -1939,6 +2964,7 @@ def main() -> int:
             "negative_accounting": negative_accounting,
             "zero_share_db": zero_share_db,
             "historical_tail": historical_tail,
+            "r1_pre_external": r1_pre_external,
             "isolated_test_schema": schema,
             "isolated_test_schema_dropped": True,
             "production_rows_touched": False,

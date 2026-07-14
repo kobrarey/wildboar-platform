@@ -43,6 +43,10 @@ from app.settlement.negative_bybit_flow_types import (
     utcnow,
 )
 from app.settlement.negative_sale_snapshot import dec
+from app.settlement.accounting_service import (
+    SettlementShareQuantityError,
+    validate_settlement_share_state_before_external,
+)
 from app.settlement.statuses import (
     BATCH_STATUS_FAILED_REQUIRES_REVIEW,
     BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT,
@@ -1444,6 +1448,32 @@ def execute_negative_bybit_flow_live(
         amounts=amounts,
     )
     status_before = str(flow.status)
+
+    try:
+        validate_settlement_share_state_before_external(
+            db,
+            batch=settlement_batch,
+            mark_failed=True,
+        )
+    except SettlementShareQuantityError as exc:
+        error = str(exc)
+
+        flow.status = (
+            BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+        )
+        flow.error = error
+        flow.updated_at = now
+
+        settlement_batch.status = (
+            BATCH_STATUS_FAILED_REQUIRES_REVIEW
+        )
+        settlement_batch.error = error
+        settlement_batch.updated_at = now
+
+        db.add(flow)
+        db.add(settlement_batch)
+        db.flush()
+        raise
 
     try:
         _validate_sale_batch_input(

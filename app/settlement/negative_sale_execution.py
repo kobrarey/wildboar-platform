@@ -32,6 +32,10 @@ from app.models import (
     FundSettlementBatch,
 )
 from app.settlement.negative_sale_snapshot import dec
+from app.settlement.accounting_service import (
+    SettlementShareQuantityError,
+    validate_settlement_share_state_before_external,
+)
 from app.operation_guard.hooks import (
     require_bybit_earn_redeem_guard,
     require_bybit_negative_sale_order_guard,
@@ -633,6 +637,32 @@ def prepare_negative_sale_live_execution(
         db,
         sale_batch_id=int(sale_batch.id),
     )
+
+    try:
+        validate_settlement_share_state_before_external(
+            db,
+            batch=settlement_batch,
+            mark_failed=True,
+        )
+    except SettlementShareQuantityError as exc:
+        error = str(exc)
+
+        sale_batch.status = (
+            SALE_BATCH_STATUS_SALE_EXECUTION_FAILED_REQUIRES_REVIEW
+        )
+        sale_batch.error = error
+        sale_batch.updated_at = now
+
+        settlement_batch.status = (
+            BATCH_STATUS_FAILED_REQUIRES_REVIEW
+        )
+        settlement_batch.error = error
+        settlement_batch.updated_at = now
+
+        db.add(sale_batch)
+        db.add(settlement_batch)
+        db.flush()
+        raise
 
     _validate_sale_execution_input(
         sale_batch=sale_batch,

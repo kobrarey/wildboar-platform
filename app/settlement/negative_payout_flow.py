@@ -40,6 +40,10 @@ from app.settlement.negative_payout_flow_types import (
     utcnow,
 )
 from app.settlement.negative_sale_snapshot import dec
+from app.settlement.accounting_service import (
+    SettlementShareQuantityError,
+    validate_settlement_share_state_before_external,
+)
 from app.settlement.statuses import (
     BATCH_STATUS_FAILED_REQUIRES_REVIEW,
     BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT,
@@ -1762,7 +1766,38 @@ def execute_negative_payout_flow_live(
         settlement_batch_id=int(settlement_batch.id),
     )
 
-    status_before = str(existing_batch.status) if existing_batch is not None else None
+    try:
+        validate_settlement_share_state_before_external(
+            db,
+            batch=settlement_batch,
+            mark_failed=True,
+        )
+    except SettlementShareQuantityError as exc:
+        error = str(exc)
+
+        if existing_batch is not None:
+            existing_batch.status = (
+                PAYOUT_BATCH_STATUS_FAILED_REQUIRES_REVIEW
+            )
+            existing_batch.error = error
+            existing_batch.updated_at = now
+            db.add(existing_batch)
+
+        settlement_batch.status = (
+            BATCH_STATUS_FAILED_REQUIRES_REVIEW
+        )
+        settlement_batch.error = error
+        settlement_batch.updated_at = now
+
+        db.add(settlement_batch)
+        db.flush()
+        raise
+
+    status_before = (
+        str(existing_batch.status)
+        if existing_batch is not None
+        else None
+    )
     can_resume_payout_processing = (
         existing_batch is not None
         and str(existing_batch.status) in LIVE_RESUMABLE_PAYOUT_BATCH_STATUSES

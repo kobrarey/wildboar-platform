@@ -16,6 +16,10 @@ from app.settlement.negative_payout_flow import (
     execute_negative_payout_flow_mock,
 )
 from app.settlement.negative_payout_flow_mock import load_negative_payout_mock_file
+from app.settlement.accounting_service import (
+    SettlementShareQuantityError,
+    validate_settlement_share_state_before_external,
+)
 from app.settlement.statuses import (
     BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT,
     BATCH_STATUS_NEGATIVE_NET_PAYOUT_PROCESSING,
@@ -178,9 +182,17 @@ def _run_live_once(*, fund_code: str | None) -> int:
         processed = 0
 
         for settlement_batch in candidates:
+            validate_settlement_share_state_before_external(
+                db,
+                batch=settlement_batch,
+                mark_failed=True,
+            )
+
             result = execute_negative_payout_flow_live(
                 db,
-                settlement_batch_id=int(settlement_batch.id),
+                settlement_batch_id=int(
+                    settlement_batch.id
+                ),
             )
             processed += 1
 
@@ -212,6 +224,21 @@ def _run_live_once(*, fund_code: str | None) -> int:
             }
         )
         return processed
+
+    except SettlementShareQuantityError as exc:
+        db.commit()
+
+        print(
+            {
+                "worker": "fund_negative_payout_worker",
+                "live_execution": True,
+                "action": "commit_failed_requires_review",
+                "external_action": False,
+                "error": str(exc),
+                "fund_code_filter": fund_code or "",
+            }
+        )
+        return 1
 
     except Exception:
         db.rollback()

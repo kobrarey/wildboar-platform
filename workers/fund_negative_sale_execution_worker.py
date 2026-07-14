@@ -17,6 +17,9 @@ from app.settlement.negative_sale_execution import (
     execute_negative_sale_plan_mock,
     load_negative_sale_execution_mock_file,
 )
+from app.settlement.accounting_service import (
+    SettlementShareQuantityError,
+)
 from app.settlement.statuses import (
     BATCH_STATUS_NEGATIVE_NET_SALE_PLANNED,
     SALE_BATCH_STATUS_SALE_PLAN_CREATED,
@@ -185,6 +188,18 @@ def process_one_live_batch(*, fund_code: str | None = None) -> bool:
             "settlement_status_after=", result.settlement_status_after,
             "final_shortage_usdt=", result.final_shortage_usdt,
             "executed_leg_count=", result.executed_leg_count,
+            "fund_code_filter=", fund_code or "",
+        )
+        return True
+
+    except SettlementShareQuantityError as exc:
+        db.commit()
+
+        print(
+            "fund_negative_sale_execution_worker_live:",
+            "action= commit_failed_requires_review",
+            "external_action= false",
+            "error=", str(exc),
             "fund_code_filter=", fund_code or "",
         )
         return True
