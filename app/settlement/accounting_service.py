@@ -8,6 +8,12 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models import Fund, FundOrder, FundSettlementBatch, UserFundPosition
+from app.settlement.share_quantity import (
+    BuyShareQuantity,
+    ShareQuantityError,
+    calculate_successful_buy_share_quantity,
+    require_share_quantity_4dp_aligned,
+)
 from app.settlement.pricing_lock import PricingLockError, unlock_pricing_for_fund
 from app.settlement.statuses import (
     BATCH_STATUS_FAILED_REQUIRES_REVIEW,
@@ -26,6 +32,12 @@ class SettlementAccountingError(RuntimeError):
     pass
 
 
+class SettlementShareQuantityError(
+    SettlementAccountingError
+):
+    pass
+
+
 @dataclass(frozen=True)
 class AccountingFinalizationResult:
     batch_id: int
@@ -40,6 +52,19 @@ class AccountingFinalizationResult:
     pricing_unlocked: bool
 
 
+@dataclass(frozen=True)
+class AccountingSharePlan:
+    buy_quantities_by_order_id: dict[
+        int,
+        BuyShareQuantity,
+    ]
+    buyer_shares_total: Decimal
+    redeem_shares_total: Decimal
+    actual_net_shares_change: Decimal
+    fund_shares_before: Decimal
+    fund_shares_after: Decimal
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -50,6 +75,24 @@ def _dec(value: Any) -> Decimal:
     if isinstance(value, Decimal):
         return value
     return Decimal(str(value))
+
+
+def _require_4dp(
+    value: Any,
+    *,
+    field_name: str,
+    allow_negative: bool = False,
+) -> Decimal:
+    try:
+        return require_share_quantity_4dp_aligned(
+            value,
+            field_name=field_name,
+            allow_negative=allow_negative,
+        )
+    except ShareQuantityError as exc:
+        raise SettlementShareQuantityError(
+            str(exc)
+        ) from exc
 
 
 def _get_position_for_update(
@@ -93,6 +136,314 @@ def _get_or_create_position_for_buyer(
     db.add(position)
     db.flush()
     return position
+
+
+def _build_accounting_share_plan(
+    db: Session,
+    *,
+    batch: FundSettlementBatch,
+    fund: Fund,
+    buy_orders: list[FundOrder],
+    redeem_orders: list[FundOrder],
+    validate_positions: bool = True,
+) -> AccountingSharePlan:
+    settlement_price = _dec(
+        batch.settlement_price_usdt
+    )
+
+    fund_shares_before = _require_4dp(
+        fund.shares_outstanding_current,
+        field_name="fund_shares_outstanding_current",
+    )
+    snapshot_shares_before = _require_4dp(
+        batch.shares_outstanding_before,
+        field_name="settlement_shares_outstanding_before",
+    )
+
+    if fund_shares_before != snapshot_shares_before:
+        raise SettlementShareQuantityError(
+            "fund_shares_outstanding_current_mismatch"
+        )
+
+    checked_positions: set[tuple[int, int]] = set()
+
+    def validate_existing_position(
+        *,
+        user_id: int,
+        fund_id: int,
+    ) -> UserFundPosition | None:
+        key = (int(user_id), int(fund_id))
+
+        position = _get_position_for_update(
+            db,
+            user_id=int(user_id),
+            fund_id=int(fund_id),
+        )
+
+        if position is None:
+            return None
+
+        if key not in checked_positions:
+            _require_4dp(
+                position.shares,
+                field_name=(
+                    f"position_{user_id}_{fund_id}_shares"
+                ),
+            )
+            _require_4dp(
+                getattr(position, "shares_reserved", 0),
+                field_name=(
+                    f"position_{user_id}_{fund_id}"
+                    "_shares_reserved"
+                ),
+            )
+            checked_positions.add(key)
+
+        return position
+
+    buy_quantities_by_order_id: dict[
+        int,
+        BuyShareQuantity,
+    ] = {}
+    buyer_shares_total = ZERO
+
+    for order in buy_orders:
+        try:
+            quantity = (
+                calculate_successful_buy_share_quantity(
+                    amount_usdt=order.amount_usdt,
+                    settlement_price_usdt=(
+                        settlement_price
+                    ),
+                )
+            )
+        except ShareQuantityError as exc:
+            raise SettlementShareQuantityError(
+                f"buy_order_{order.id}:{exc}"
+            ) from exc
+
+        if order.shares is not None:
+            stored_shares = _require_4dp(
+                order.shares,
+                field_name=(
+                    f"buy_order_{order.id}_shares"
+                ),
+            )
+
+            if stored_shares != quantity.issued_shares:
+                raise SettlementShareQuantityError(
+                    f"buy_order_{order.id}:"
+                    "planned_shares_mismatch"
+                )
+
+        if validate_positions:
+            validate_existing_position(
+                user_id=int(order.user_id),
+                fund_id=int(batch.fund_id),
+            )
+
+        buy_quantities_by_order_id[
+            int(order.id)
+        ] = quantity
+        buyer_shares_total += quantity.issued_shares
+
+    buyer_shares_total = _require_4dp(
+        buyer_shares_total,
+        field_name="buyer_shares_total",
+    )
+
+    redeem_shares_total = ZERO
+    redeem_totals_by_position: dict[
+        tuple[int, int],
+        Decimal,
+    ] = {}
+    redeem_positions: dict[
+        tuple[int, int],
+        UserFundPosition,
+    ] = {}
+
+    for order in redeem_orders:
+        redeem_shares = _require_4dp(
+            order.shares,
+            field_name=(
+                f"redeem_order_{order.id}_shares"
+            ),
+        )
+
+        if validate_positions:
+            key = (
+                int(order.user_id),
+                int(batch.fund_id),
+            )
+            position = validate_existing_position(
+                user_id=key[0],
+                fund_id=key[1],
+            )
+
+            if position is None:
+                raise SettlementShareQuantityError(
+                    f"redeem_order_{order.id}:"
+                    "position_not_found"
+                )
+
+            redeem_positions[key] = position
+            redeem_totals_by_position[key] = (
+                redeem_totals_by_position.get(
+                    key,
+                    ZERO,
+                )
+                + redeem_shares
+            )
+
+        redeem_shares_total += redeem_shares
+
+    redeem_shares_total = _require_4dp(
+        redeem_shares_total,
+        field_name="redeem_shares_total",
+    )
+
+    if validate_positions:
+        for key, required_shares in (
+            redeem_totals_by_position.items()
+        ):
+            position = redeem_positions[key]
+            position_shares = _dec(
+                position.shares
+            )
+            position_reserved = _dec(
+                getattr(
+                    position,
+                    "shares_reserved",
+                    0,
+                )
+            )
+
+            if position_shares < required_shares:
+                raise SettlementShareQuantityError(
+                    "redeem_position_shares_insufficient"
+                )
+
+            if position_reserved < required_shares:
+                raise SettlementShareQuantityError(
+                    "redeem_position_reserved_insufficient"
+                )
+
+    planned_issue = _require_4dp(
+        batch.planned_shares_to_issue,
+        field_name="planned_shares_to_issue",
+    )
+    planned_redeem = _require_4dp(
+        batch.planned_shares_to_redeem,
+        field_name="planned_shares_to_redeem",
+    )
+    planned_net_change = _require_4dp(
+        batch.planned_net_shares_change,
+        field_name="planned_net_shares_change",
+        allow_negative=True,
+    )
+    batch_total_redeem = _require_4dp(
+        batch.total_redeem_shares,
+        field_name="batch_total_redeem_shares",
+    )
+
+    if planned_issue != buyer_shares_total:
+        raise SettlementShareQuantityError(
+            "planned_shares_to_issue_mismatch"
+        )
+
+    if planned_redeem != redeem_shares_total:
+        raise SettlementShareQuantityError(
+            "planned_shares_to_redeem_mismatch"
+        )
+
+    if batch_total_redeem != redeem_shares_total:
+        raise SettlementShareQuantityError(
+            "batch_total_redeem_shares_mismatch"
+        )
+
+    actual_net_change = _require_4dp(
+        buyer_shares_total - redeem_shares_total,
+        field_name="actual_net_shares_change",
+        allow_negative=True,
+    )
+
+    if planned_net_change != actual_net_change:
+        raise SettlementShareQuantityError(
+            "planned_net_shares_change_mismatch"
+        )
+
+    fund_shares_after = _require_4dp(
+        fund_shares_before + actual_net_change,
+        field_name="fund_shares_outstanding_after",
+    )
+
+    return AccountingSharePlan(
+        buy_quantities_by_order_id=(
+            buy_quantities_by_order_id
+        ),
+        buyer_shares_total=buyer_shares_total,
+        redeem_shares_total=redeem_shares_total,
+        actual_net_shares_change=actual_net_change,
+        fund_shares_before=fund_shares_before,
+        fund_shares_after=fund_shares_after,
+    )
+
+
+def validate_positive_net_share_preflight(
+    db: Session,
+    *,
+    batch: FundSettlementBatch,
+) -> AccountingSharePlan:
+    orders = _load_orders_for_accounting(
+        db,
+        batch_id=int(batch.id),
+    )
+
+    if not orders:
+        raise SettlementShareQuantityError(
+            f"Batch {batch.id} has no orders"
+        )
+
+    fund = (
+        db.query(Fund)
+        .filter(Fund.id == int(batch.fund_id))
+        .with_for_update()
+        .first()
+    )
+
+    if fund is None:
+        raise SettlementShareQuantityError(
+            f"Fund not found for batch {batch.id}"
+        )
+
+    buy_orders = [
+        order
+        for order in orders
+        if order.side == ORDER_SIDE_BUY
+    ]
+    redeem_orders = [
+        order
+        for order in orders
+        if order.side == ORDER_SIDE_REDEEM
+    ]
+
+    try:
+        return _build_accounting_share_plan(
+            db,
+            batch=batch,
+            fund=fund,
+            buy_orders=buy_orders,
+            redeem_orders=redeem_orders,
+            validate_positions=False,
+        )
+    except SettlementShareQuantityError as exc:
+        _mark_batch_failed_requires_review(
+            db,
+            batch=batch,
+            error=str(exc),
+            orders=orders,
+        )
+        raise
 
 
 def _mark_batch_failed_requires_review(
@@ -156,18 +507,15 @@ def _finalize_buy_order(
     order: FundOrder,
     batch: FundSettlementBatch,
     settlement_price: Decimal,
+    buyer_shares: Decimal,
     now: datetime,
 ) -> Decimal:
     amount_usdt = _dec(order.amount_usdt)
+
     if amount_usdt <= 0:
         raise SettlementAccountingError(
-            f"Buy order {order.id} has invalid amount_usdt={order.amount_usdt}"
-        )
-
-    buyer_shares = amount_usdt / settlement_price
-    if buyer_shares <= 0:
-        raise SettlementAccountingError(
-            f"Buy order {order.id} calculated non-positive buyer_shares={buyer_shares}"
+            f"Buy order {order.id} has invalid "
+            f"amount_usdt={order.amount_usdt}"
         )
 
     position = _get_or_create_position_for_buyer(
@@ -176,7 +524,9 @@ def _finalize_buy_order(
         fund_id=batch.fund_id,
     )
 
-    position.shares = _dec(position.shares) + buyer_shares
+    position.shares = (
+        _dec(position.shares) + buyer_shares
+    )
 
     order.shares = buyer_shares
     order.price_usdt = settlement_price
@@ -302,22 +652,47 @@ def finalize_positive_net_accounting(
     settlement_price = _dec(batch.settlement_price_usdt)
     now = utcnow()
 
-    buy_orders = [order for order in orders if order.side == ORDER_SIDE_BUY]
-    redeem_orders = [order for order in orders if order.side == ORDER_SIDE_REDEEM]
+    buy_orders = [
+        order
+        for order in orders
+        if order.side == ORDER_SIDE_BUY
+    ]
+    redeem_orders = [
+        order
+        for order in orders
+        if order.side == ORDER_SIDE_REDEEM
+    ]
 
     buyer_shares_total = ZERO
     redeem_shares_total = ZERO
     redeem_usdt_total = ZERO
 
-    fund_shares_before = _dec(fund.shares_outstanding_current)
-
     try:
+        share_plan = _build_accounting_share_plan(
+            db,
+            batch=batch,
+            fund=fund,
+            buy_orders=buy_orders,
+            redeem_orders=redeem_orders,
+        )
+
+        fund_shares_before = (
+            share_plan.fund_shares_before
+        )
+
         for order in buy_orders:
             buyer_shares_total += _finalize_buy_order(
                 db,
                 order=order,
                 batch=batch,
                 settlement_price=settlement_price,
+                buyer_shares=(
+                    share_plan
+                    .buy_quantities_by_order_id[
+                        int(order.id)
+                    ]
+                    .issued_shares
+                ),
                 now=now,
             )
 
@@ -332,8 +707,9 @@ def finalize_positive_net_accounting(
             redeem_shares_total += redeem_shares
             redeem_usdt_total += redeem_usdt
 
-        planned_net_change = _dec(batch.planned_net_shares_change)
-        fund.shares_outstanding_current = fund_shares_before + planned_net_change
+        fund.shares_outstanding_current = (
+            share_plan.fund_shares_after
+        )
 
         if _dec(fund.shares_outstanding_current) < 0:
             raise SettlementAccountingError(

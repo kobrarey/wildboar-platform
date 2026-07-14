@@ -26,6 +26,12 @@ from app.settlement.statuses import (
     ORDER_STATUS_PROCESSING,
     ORDER_STATUS_SETTLING,
 )
+from app.settlement.share_quantity import (
+    RedeemSharePrecisionError,
+    ShareQuantityError,
+    require_share_quantity_4dp_aligned,
+    validate_redeem_share_input_precision,
+)
 
 
 class TradingOrderError(ValueError):
@@ -348,7 +354,15 @@ def create_redeem_order(
     """
     _validate_user_for_redeem(user)
 
-    shares_dec = _to_decimal(shares, error_key="invalid_shares")
+    try:
+        shares_dec = validate_redeem_share_input_precision(shares)
+    except RedeemSharePrecisionError:
+        raise TradingOrderError(
+            "redeem_shares_precision_exceeded"
+        )
+    except ShareQuantityError:
+        raise TradingOrderError("invalid_shares")
+
     validate_redeem_shares_limits(shares_dec)
 
     fund = _get_active_fund(db, fund_code)
@@ -360,6 +374,20 @@ def create_redeem_order(
             user_id=user.id,
             fund_id=fund.id,
         )
+
+        try:
+            require_share_quantity_4dp_aligned(
+                position.shares,
+                field_name="position_shares",
+            )
+            require_share_quantity_4dp_aligned(
+                getattr(position, "shares_reserved", 0),
+                field_name="position_shares_reserved",
+            )
+        except ShareQuantityError:
+            raise TradingOrderError(
+                "share_quantity_not_4dp_aligned"
+            )
 
         if _active_redeem_order_exists(
             db,
@@ -373,7 +401,20 @@ def create_redeem_order(
             raise TradingOrderError("insufficient_shares")
 
         current_reserved = _dec(getattr(position, "shares_reserved", 0))
-        position.shares_reserved = current_reserved + shares_dec
+
+        new_reserved = current_reserved + shares_dec
+
+        try:
+            require_share_quantity_4dp_aligned(
+                new_reserved,
+                field_name="position_shares_reserved_after",
+            )
+        except ShareQuantityError:
+            raise TradingOrderError(
+                "share_quantity_not_4dp_aligned"
+            )
+
+        position.shares_reserved = new_reserved
 
         order = FundOrder(
             user_id=user.id,

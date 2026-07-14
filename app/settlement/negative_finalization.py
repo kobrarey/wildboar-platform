@@ -27,6 +27,11 @@ from app.settlement.negative_finalization_types import (
     utcnow,
 )
 from app.settlement.negative_sale_snapshot import dec
+from app.settlement.share_quantity import (
+    ShareQuantityError,
+    calculate_successful_buy_share_quantity,
+    require_share_quantity_4dp_aligned,
+)
 from app.settlement.statuses import (
     BATCH_STATUS_FAILED_REQUIRES_REVIEW,
     BATCH_STATUS_NEGATIVE_CASH_SETTLEMENT_COMPLETED,
@@ -57,8 +62,32 @@ ZERO = Decimal("0")
 Q10 = Decimal("0.0000000001")
 
 
+class NegativeShareQuantityError(
+    NegativeFinalizationError
+):
+    pass
+
+
 def _q10(value: Any) -> Decimal:
     return dec(value).quantize(Q10)
+
+
+def _share_4dp(
+    value: Any,
+    *,
+    field_name: str,
+    allow_negative: bool = False,
+) -> Decimal:
+    try:
+        return require_share_quantity_4dp_aligned(
+            value,
+            field_name=field_name,
+            allow_negative=allow_negative,
+        )
+    except ShareQuantityError as exc:
+        raise NegativeShareQuantityError(
+            str(exc)
+        ) from exc
 
 
 def _same_decimal(left: Any, right: Any) -> bool:
@@ -293,6 +322,43 @@ def _set_failed(
         error=error,
         diagnostics=diagnostics or {},
     )
+
+
+def _mark_share_failed_orders(
+    db: Session,
+    *,
+    settlement_batch_id: int,
+    error: str,
+) -> None:
+    orders = (
+        db.query(FundOrder)
+        .filter(
+            FundOrder.settlement_batch_id
+            == int(settlement_batch_id)
+        )
+        .filter(
+            FundOrder.side.in_(
+                [ORDER_SIDE_BUY, ORDER_SIDE_REDEEM]
+            )
+        )
+        .with_for_update()
+        .all()
+    )
+
+    for order in orders:
+        if order.status in {
+            ORDER_STATUS_SUCCESS,
+            ORDER_STATUS_CANCELLED,
+        }:
+            continue
+
+        order.status = (
+            ORDER_STATUS_FAILED_REQUIRES_REVIEW
+        )
+        order.error = error
+        db.add(order)
+
+    db.flush()
 
 
 def _lock_settlement_batch(
@@ -601,14 +667,20 @@ def _validate_redeem_orders(
     payout_batch: FundNegativePayoutBatch,
     payout_legs: list[FundNegativePayoutLeg],
 ) -> dict[str, Any]:
-    redeem_ids = {int(order.id) for order in redeem_orders}
-    covered_ids = _covered_redeem_order_ids(payout_legs=payout_legs)
+    redeem_ids = {
+        int(order.id)
+        for order in redeem_orders
+    }
+    covered_ids = _covered_redeem_order_ids(
+        payout_legs=payout_legs,
+    )
 
     if redeem_ids != covered_ids:
         missing = sorted(redeem_ids - covered_ids)
         extra = sorted(covered_ids - redeem_ids)
         raise NegativeFinalizationError(
-            f"Payout legs must cover all redeem orders. missing={missing}, extra={extra}"
+            "Payout legs must cover all redeem orders. "
+            f"missing={missing}, extra={extra}"
         )
 
     total_net_payout = ZERO
@@ -616,37 +688,79 @@ def _validate_redeem_orders(
     total_partial_month_fee = ZERO
 
     for order in redeem_orders:
-        if order.shares is None or dec(order.shares) <= ZERO:
-            raise NegativeFinalizationError(f"Redeem order {order.id} shares must be positive")
+        redeem_shares = _share_4dp(
+            order.shares,
+            field_name=(
+                f"redeem_order_{order.id}_shares"
+            ),
+        )
 
-        if order.net_user_payout_usdt is None or dec(order.net_user_payout_usdt) <= ZERO:
-            raise NegativeFinalizationError(
-                f"Redeem order {order.id} net_user_payout_usdt must be positive"
+        if redeem_shares <= ZERO:
+            raise NegativeShareQuantityError(
+                f"Redeem order {order.id} "
+                "shares must be positive"
             )
 
-        if order.net_price_usdt is None or dec(order.net_price_usdt) <= ZERO:
+        if (
+            order.net_user_payout_usdt is None
+            or dec(order.net_user_payout_usdt) <= ZERO
+        ):
             raise NegativeFinalizationError(
-                f"Redeem order {order.id} net_price_usdt must be positive"
+                f"Redeem order {order.id} "
+                "net_user_payout_usdt must be positive"
             )
 
-        if order.partial_month_fee_usdt is not None and dec(order.partial_month_fee_usdt) < ZERO:
+        if (
+            order.net_price_usdt is None
+            or dec(order.net_price_usdt) <= ZERO
+        ):
             raise NegativeFinalizationError(
-                f"Redeem order {order.id} partial_month_fee_usdt must be >= 0"
+                f"Redeem order {order.id} "
+                "net_price_usdt must be positive"
             )
 
-        total_net_payout += dec(order.net_user_payout_usdt)
-        total_redeem_shares += dec(order.shares)
-        total_partial_month_fee += dec(order.partial_month_fee_usdt or ZERO)
+        if (
+            order.partial_month_fee_usdt is not None
+            and dec(order.partial_month_fee_usdt) < ZERO
+        ):
+            raise NegativeFinalizationError(
+                f"Redeem order {order.id} "
+                "partial_month_fee_usdt must be >= 0"
+            )
 
-    if not _same_decimal(total_net_payout, payout_batch.confirmed_total_payout_usdt):
-        raise NegativeFinalizationError("Payout total must match redeem orders")
+        total_net_payout += dec(
+            order.net_user_payout_usdt
+        )
+        total_redeem_shares += redeem_shares
+        total_partial_month_fee += dec(
+            order.partial_month_fee_usdt or ZERO
+        )
+
+    total_redeem_shares = _share_4dp(
+        total_redeem_shares,
+        field_name="total_redeem_shares",
+    )
+
+    if not _same_decimal(
+        total_net_payout,
+        payout_batch.confirmed_total_payout_usdt,
+    ):
+        raise NegativeFinalizationError(
+            "Payout total must match redeem orders"
+        )
 
     return {
         "redeem_order_ids": sorted(redeem_ids),
         "payout_leg_order_ids": sorted(covered_ids),
-        "total_net_user_payout_usdt": _q10(total_net_payout),
-        "total_redeem_shares": _q10(total_redeem_shares),
-        "total_partial_month_fee_usdt": _q10(total_partial_month_fee),
+        "total_net_user_payout_usdt": (
+            _q10(total_net_payout)
+        ),
+        "total_redeem_shares": (
+            total_redeem_shares
+        ),
+        "total_partial_month_fee_usdt": (
+            _q10(total_partial_month_fee)
+        ),
     }
 
 
@@ -657,30 +771,62 @@ def _validate_buy_orders(
 ) -> dict[str, Any]:
     total_buy_usdt = ZERO
     total_buy_shares = ZERO
-    computed_shares_by_order_id: dict[int, Decimal] = {}
+    computed_shares_by_order_id: dict[
+        int,
+        Decimal,
+    ] = {}
 
     for order in buy_orders:
-        if order.amount_usdt is None or dec(order.amount_usdt) <= ZERO:
-            raise NegativeFinalizationError(
-                f"Buy order {order.id} amount_usdt must be positive"
+        try:
+            quantity = (
+                calculate_successful_buy_share_quantity(
+                    amount_usdt=order.amount_usdt,
+                    settlement_price_usdt=(
+                        settlement_price_usdt
+                    ),
+                )
+            )
+        except ShareQuantityError as exc:
+            raise NegativeShareQuantityError(
+                f"buy_order_{order.id}:{exc}"
+            ) from exc
+
+        buy_shares = quantity.issued_shares
+
+        if order.shares is not None:
+            stored_shares = _share_4dp(
+                order.shares,
+                field_name=(
+                    f"buy_order_{order.id}_shares"
+                ),
             )
 
-        buy_shares = _q10(dec(order.amount_usdt) / settlement_price_usdt)
-
-        if order.shares is not None and dec(order.shares) > ZERO:
-            if not _same_decimal(order.shares, buy_shares):
-                raise NegativeFinalizationError(
-                    f"Buy order {order.id} shares mismatch with settlement price"
+            if stored_shares != buy_shares:
+                raise NegativeShareQuantityError(
+                    f"Buy order {order.id} "
+                    "shares mismatch with canonical "
+                    "4dp settlement calculation"
                 )
 
-        computed_shares_by_order_id[int(order.id)] = buy_shares
-        total_buy_usdt += dec(order.amount_usdt)
+        computed_shares_by_order_id[
+            int(order.id)
+        ] = buy_shares
+        total_buy_usdt += (
+            quantity.full_investment_usdt
+        )
         total_buy_shares += buy_shares
+
+    total_buy_shares = _share_4dp(
+        total_buy_shares,
+        field_name="total_buy_shares",
+    )
 
     return {
         "total_buy_usdt": _q10(total_buy_usdt),
-        "total_buy_shares": _q10(total_buy_shares),
-        "computed_shares_by_order_id": computed_shares_by_order_id,
+        "total_buy_shares": total_buy_shares,
+        "computed_shares_by_order_id": (
+            computed_shares_by_order_id
+        ),
     }
 
 
@@ -697,27 +843,6 @@ def _lock_position(
         .with_for_update()
         .first()
     )
-
-
-def _lock_or_create_position(
-    db: Session,
-    *,
-    user_id: int,
-    fund_id: int,
-) -> UserFundPosition:
-    position = _lock_position(db, user_id=int(user_id), fund_id=int(fund_id))
-    if position is not None:
-        return position
-
-    position = UserFundPosition(
-        user_id=int(user_id),
-        fund_id=int(fund_id),
-        shares=ZERO,
-        shares_reserved=ZERO,
-    )
-    db.add(position)
-    db.flush()
-    return position
 
 
 def _lock_active_user_wallet(
@@ -750,7 +875,10 @@ def _validate_positions_and_wallets(
     redeem_orders: list[FundOrder],
 ) -> dict[str, Any]:
     redeem_positions: dict[int, UserFundPosition] = {}
-    buy_positions: dict[int, UserFundPosition] = {}
+    buy_positions: dict[
+        int,
+        UserFundPosition | None,
+    ] = {}
     buy_wallets: dict[int, UserWallet] = {}
 
     positions_before: dict[str, Any] = {}
@@ -763,12 +891,33 @@ def _validate_positions_and_wallets(
                 f"Missing user fund position for redeem order {order.id}"
             )
 
-        if dec(position.shares) < dec(order.shares):
+        redeem_shares = _share_4dp(
+            order.shares,
+            field_name=(
+                f"redeem_order_{order.id}_shares"
+            ),
+        )
+        position_shares = _share_4dp(
+            position.shares,
+            field_name=(
+                f"position_{order.user_id}_{fund_id}"
+                "_shares"
+            ),
+        )
+        position_reserved = _share_4dp(
+            position.shares_reserved or ZERO,
+            field_name=(
+                f"position_{order.user_id}_{fund_id}"
+                "_shares_reserved"
+            ),
+        )
+
+        if position_shares < redeem_shares:
             raise NegativeFinalizationError(
                 f"Insufficient position shares for redeem order {order.id}"
             )
 
-        if dec(position.shares_reserved or ZERO) < dec(order.shares):
+        if position_reserved < redeem_shares:
             raise NegativeFinalizationError(
                 f"Insufficient shares_reserved for redeem order {order.id}"
             )
@@ -788,20 +937,52 @@ def _validate_positions_and_wallets(
                 f"Insufficient usdt_reserved for buy order {order.id}"
             )
 
-        position = _lock_or_create_position(
+        position = _lock_position(
             db,
             user_id=int(order.user_id),
             fund_id=int(fund_id),
         )
 
+        if position is not None:
+            _share_4dp(
+                position.shares,
+                field_name=(
+                    f"position_{order.user_id}_{fund_id}"
+                    "_shares"
+                ),
+            )
+            _share_4dp(
+                position.shares_reserved or ZERO,
+                field_name=(
+                    f"position_{order.user_id}_{fund_id}"
+                    "_shares_reserved"
+                ),
+            )
+
         buy_wallets[int(order.id)] = wallet
         buy_positions[int(order.id)] = position
 
-        positions_before[_position_key(int(order.user_id), int(fund_id))] = {
+        positions_before[
+            _position_key(
+                int(order.user_id),
+                int(fund_id),
+            )
+        ] = {
             "user_id": int(order.user_id),
             "fund_id": int(fund_id),
-            "shares": position.shares,
-            "shares_reserved": position.shares_reserved,
+            "shares": (
+                position.shares
+                if position is not None
+                else ZERO
+            ),
+            "shares_reserved": (
+                position.shares_reserved
+                if position is not None
+                else ZERO
+            ),
+            "position_existed_before": (
+                position is not None
+            ),
         }
         wallets_before[_wallet_key(int(wallet.id))] = {
             "user_id": int(order.user_id),
@@ -827,27 +1008,84 @@ def _validate_share_totals(
     total_buy_shares: Decimal,
     total_redeem_shares: Decimal,
 ) -> dict[str, Decimal]:
-    shares_outstanding_before = _q10(settlement_batch.shares_outstanding_before)
-    actual_net_change = _q10(total_buy_shares - total_redeem_shares)
-    shares_outstanding_after = _q10(shares_outstanding_before + actual_net_change)
+    total_buy_shares = _share_4dp(
+        total_buy_shares,
+        field_name="total_buy_shares",
+    )
+    total_redeem_shares = _share_4dp(
+        total_redeem_shares,
+        field_name="total_redeem_shares",
+    )
+    shares_outstanding_before = _share_4dp(
+        settlement_batch.shares_outstanding_before,
+        field_name="shares_outstanding_before",
+    )
 
-    if not _same_decimal(settlement_batch.planned_shares_to_issue or ZERO, total_buy_shares):
-        raise NegativeFinalizationError("Planned shares to issue mismatch")
+    planned_issue = _share_4dp(
+        settlement_batch.planned_shares_to_issue
+        or ZERO,
+        field_name="planned_shares_to_issue",
+    )
+    planned_redeem = _share_4dp(
+        settlement_batch.planned_shares_to_redeem
+        or ZERO,
+        field_name="planned_shares_to_redeem",
+    )
+    planned_net_change = _share_4dp(
+        settlement_batch.planned_net_shares_change
+        or ZERO,
+        field_name="planned_net_shares_change",
+        allow_negative=True,
+    )
 
-    if not _same_decimal(settlement_batch.planned_shares_to_redeem or ZERO, total_redeem_shares):
-        raise NegativeFinalizationError("Planned shares to redeem mismatch")
+    actual_net_change = _share_4dp(
+        total_buy_shares - total_redeem_shares,
+        field_name="actual_net_shares_change",
+        allow_negative=True,
+    )
+    shares_outstanding_after = _share_4dp(
+        shares_outstanding_before
+        + actual_net_change,
+        field_name="shares_outstanding_after",
+    )
+    current_fund_shares = _share_4dp(
+        fund.shares_outstanding_current,
+        field_name="fund_shares_outstanding_current",
+    )
 
-    if not _same_decimal(settlement_batch.planned_net_shares_change or ZERO, actual_net_change):
-        raise NegativeFinalizationError("Planned net shares change mismatch")
+    if planned_issue != total_buy_shares:
+        raise NegativeShareQuantityError(
+            "Planned shares to issue mismatch"
+        )
 
-    if not _same_decimal(fund.shares_outstanding_current, shares_outstanding_before):
-        raise NegativeFinalizationError("Fund shares_outstanding_current mismatch")
+    if planned_redeem != total_redeem_shares:
+        raise NegativeShareQuantityError(
+            "Planned shares to redeem mismatch"
+        )
+
+    if planned_net_change != actual_net_change:
+        raise NegativeShareQuantityError(
+            "Planned net shares change mismatch"
+        )
+
+    if current_fund_shares != shares_outstanding_before:
+        raise NegativeShareQuantityError(
+            "Fund shares_outstanding_current mismatch"
+        )
 
     return {
-        "shares_outstanding_before": shares_outstanding_before,
-        "shares_outstanding_after": shares_outstanding_after,
-        "actual_net_shares_change": actual_net_change,
-        "planned_net_shares_change": _q10(settlement_batch.planned_net_shares_change or ZERO),
+        "shares_outstanding_before": (
+            shares_outstanding_before
+        ),
+        "shares_outstanding_after": (
+            shares_outstanding_after
+        ),
+        "actual_net_shares_change": (
+            actual_net_change
+        ),
+        "planned_net_shares_change": (
+            planned_net_change
+        ),
     }
 
 
@@ -970,8 +1208,27 @@ def _apply_redeem_accounting(
         position_shares_before = dec(position.shares)
         position_reserved_before = dec(position.shares_reserved or ZERO)
 
-        position.shares = _q10(position_shares_before - dec(order.shares))
-        position.shares_reserved = _q10(position_reserved_before - dec(order.shares))
+        redeem_shares = _share_4dp(
+            order.shares,
+            field_name=(
+                f"redeem_order_{order.id}_shares"
+            ),
+        )
+
+        position.shares = _share_4dp(
+            position_shares_before - redeem_shares,
+            field_name=(
+                f"position_{order.user_id}_shares_after"
+            ),
+        )
+        position.shares_reserved = _share_4dp(
+            position_reserved_before
+            - redeem_shares,
+            field_name=(
+                f"position_{order.user_id}"
+                "_shares_reserved_after"
+            ),
+        )
 
         order_amount_before = order.amount_usdt
         order_price_before = order.price_usdt
@@ -1014,25 +1271,34 @@ def _apply_redeem_accounting(
 
 
 def _apply_buy_accounting(
+    db: Session,
     *,
+    fund_id: int,
     buy_orders: list[FundOrder],
-    buy_positions: dict[int, UserFundPosition],
+    buy_positions: dict[
+        int,
+        UserFundPosition | None,
+    ],
     buy_wallets: dict[int, UserWallet],
-    computed_shares_by_order_id: dict[int, Decimal],
+    computed_shares_by_order_id: dict[
+        int,
+        Decimal,
+    ],
     settlement_price_usdt: Decimal,
     executed_at,
 ) -> list[dict[str, Any]]:
     updates: list[dict[str, Any]] = []
+    created_positions: dict[
+        tuple[int, int],
+        UserFundPosition,
+    ] = {}
 
     for order in buy_orders:
         position = buy_positions.get(int(order.id))
         wallet = buy_wallets.get(int(order.id))
-        buy_shares = computed_shares_by_order_id.get(int(order.id))
-
-        if position is None:
-            raise NegativeFinalizationError(
-                f"Buy position not locked for order {order.id}"
-            )
+        buy_shares = computed_shares_by_order_id.get(
+            int(order.id)
+        )
 
         if wallet is None:
             raise NegativeFinalizationError(
@@ -1041,8 +1307,38 @@ def _apply_buy_accounting(
 
         if buy_shares is None:
             raise NegativeFinalizationError(
-                f"Buy shares not computed for order {order.id}"
+                f"Buy shares not calculated for order {order.id}"
             )
+
+        buy_shares = _share_4dp(
+            buy_shares,
+            field_name=f"buy_order_{order.id}_shares",
+        )
+
+        if position is None:
+            position_key = (
+                int(order.user_id),
+                int(fund_id),
+            )
+            position = created_positions.get(
+                position_key
+            )
+
+            if position is None:
+                position = UserFundPosition(
+                    user_id=int(order.user_id),
+                    fund_id=int(fund_id),
+                    shares=ZERO,
+                    shares_reserved=ZERO,
+                )
+                db.add(position)
+                db.flush()
+
+                created_positions[
+                    position_key
+                ] = position
+
+        buy_positions[int(order.id)] = position
 
         wallet_balance_before = dec(wallet.usdt_balance or ZERO)
         wallet_reserved_before = dec(wallet.usdt_reserved or ZERO)
@@ -1050,7 +1346,12 @@ def _apply_buy_accounting(
         position_reserved_before = dec(position.shares_reserved or ZERO)
 
         wallet.usdt_reserved = _q10(wallet_reserved_before - dec(order.amount_usdt))
-        position.shares = _q10(position_shares_before + buy_shares)
+        position.shares = _share_4dp(
+            position_shares_before + buy_shares,
+            field_name=(
+                f"position_{order.user_id}_shares_after"
+            ),
+        )
 
         order_shares_before = order.shares
         order_price_before = order.price_usdt
@@ -1183,11 +1484,27 @@ def _apply_accounting_finalization(
         executed_at=now,
     )
     buy_updates = _apply_buy_accounting(
+        db,
+        fund_id=int(fund.id),
         buy_orders=buy_orders,
-        buy_positions=position_wallet_validation["buy_positions"],
-        buy_wallets=position_wallet_validation["buy_wallets"],
-        computed_shares_by_order_id=buy_validation["computed_shares_by_order_id"],
-        settlement_price_usdt=dec(settlement_batch.settlement_price_usdt),
+        buy_positions=(
+            position_wallet_validation[
+                "buy_positions"
+            ]
+        ),
+        buy_wallets=(
+            position_wallet_validation[
+                "buy_wallets"
+            ]
+        ),
+        computed_shares_by_order_id=(
+            buy_validation[
+                "computed_shares_by_order_id"
+            ]
+        ),
+        settlement_price_usdt=dec(
+            settlement_batch.settlement_price_usdt
+        ),
         executed_at=now,
     )
 
@@ -1522,6 +1839,38 @@ def finalize_negative_net_settlement(
                 "no_payout_transfers": True,
                 "no_nav_chart_writes": True,
                 "no_server_deploy": True,
+            },
+        )
+
+    except NegativeShareQuantityError as exc:
+        if (
+            "finalization" not in locals()
+            or finalization is None
+        ):
+            raise
+
+        _mark_share_failed_orders(
+            db,
+            settlement_batch_id=int(
+                settlement_batch.id
+            ),
+            error=str(exc),
+        )
+
+        return _set_failed(
+            finalization=finalization,
+            settlement_batch=settlement_batch,
+            fund=fund,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            error=str(exc),
+            now=now,
+            diagnostics={
+                "share_quantity_failure": True,
+                "share_quantum": "0.0001",
+                "rounding_mode": "ROUND_DOWN",
             },
         )
 

@@ -66,6 +66,8 @@ MESSAGES = {
         "buy_amount_below_min": "Minimum purchase amount is 10 USDT.",
         "buy_amount_above_max": "Maximum purchase amount is 10,000,000 USDT.",
         "redeem_shares_above_max": "Maximum redemption amount is 1,000 shares.",
+        "redeem_shares_precision_exceeded": "Share quantity may contain no more than 4 decimal places.",
+        "share_quantity_not_4dp_aligned": "Stored share quantity is not aligned to 4 decimal places. The operation was stopped for review.",
         "not_authenticated": "Please sign in.",
     },
     "ru": {
@@ -132,6 +134,8 @@ MESSAGES = {
         "buy_amount_below_min": "Минимальная сумма покупки — 10 USDT.",
         "buy_amount_above_max": "Максимальная сумма покупки — 10,000,000 USDT.",
         "redeem_shares_above_max": "Максимальная сумма погашения — 1,000 паёв.",
+        "redeem_shares_precision_exceeded": "Количество паёв может содержать не более 4 знаков после запятой.",
+        "share_quantity_not_4dp_aligned": "Сохранённое количество паёв не соответствует точности 4 знака. Операция остановлена для проверки.",
         "not_authenticated": "Войдите в аккаунт.",
     },
 }

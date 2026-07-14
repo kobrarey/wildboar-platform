@@ -4,21 +4,29 @@ import logging
 from dataclasses import dataclass
 from datetime import date, datetime, time, timedelta, timezone
 from decimal import Decimal
-from typing import Iterable
+from typing import Any, Iterable
 
 from sqlalchemy.orm import Session
 
 from app.config import settings
 from app.models import Fund, FundOrder, FundSettlementBatch
 from app.settlement.price_service import SettlementPriceError, fix_settlement_price_for_batch
+from app.settlement.share_quantity import (
+    BuyShareQuantity,
+    ShareQuantityError,
+    calculate_successful_buy_share_quantity,
+    require_share_quantity_4dp_aligned,
+)
 from app.settlement.pricing_lock import PricingLockError, lock_pricing_for_fund, unlock_pricing_for_fund
 from app.settlement.statuses import (
     BATCH_STATUS_CREATED,
     BATCH_STATUS_FAILED,
+    BATCH_STATUS_FAILED_REQUIRES_REVIEW,
     BATCH_STATUS_GAS_CHECKING,
     BATCH_STATUS_NO_ORDERS,
     ORDER_SIDE_BUY,
     ORDER_SIDE_REDEEM,
+    ORDER_STATUS_FAILED_REQUIRES_REVIEW,
     ORDER_STATUS_PENDING,
     ORDER_STATUS_SETTLING,
     PRICING_LOCK_REASON_SETTLEMENT,
@@ -195,31 +203,110 @@ def _calculate_batch_fields(
     *,
     orders: list[FundOrder],
     settlement_price_usdt: Decimal,
-) -> dict[str, Decimal]:
-    buy_orders = [order for order in orders if order.side == ORDER_SIDE_BUY]
-    redeem_orders = [order for order in orders if order.side == ORDER_SIDE_REDEEM]
-
-    total_buy_usdt = sum((_dec(order.amount_usdt) for order in buy_orders), ZERO)
-    total_redeem_shares = sum((_dec(order.shares) for order in redeem_orders), ZERO)
+) -> dict[str, Any]:
+    buy_orders = [
+        order
+        for order in orders
+        if order.side == ORDER_SIDE_BUY
+    ]
+    redeem_orders = [
+        order
+        for order in orders
+        if order.side == ORDER_SIDE_REDEEM
+    ]
 
     if settlement_price_usdt <= 0:
-        raise SettlementBatchError(f"Invalid settlement_price_usdt={settlement_price_usdt}")
+        raise SettlementBatchError(
+            f"Invalid settlement_price_usdt={settlement_price_usdt}"
+        )
 
-    total_redeem_usdt = total_redeem_shares * settlement_price_usdt
+    total_buy_usdt = ZERO
+    planned_shares_to_issue = ZERO
+    buy_share_quantities_by_order_id: dict[
+        int,
+        BuyShareQuantity,
+    ] = {}
+
+    for order in buy_orders:
+        try:
+            quantity = calculate_successful_buy_share_quantity(
+                amount_usdt=order.amount_usdt,
+                settlement_price_usdt=settlement_price_usdt,
+            )
+        except ShareQuantityError as exc:
+            raise ShareQuantityError(
+                f"buy_order_{order.id}:{exc}"
+            ) from exc
+
+        buy_share_quantities_by_order_id[
+            int(order.id)
+        ] = quantity
+
+        total_buy_usdt += quantity.full_investment_usdt
+        planned_shares_to_issue += quantity.issued_shares
+
+    total_redeem_shares = ZERO
+
+    for order in redeem_orders:
+        try:
+            redeem_shares = require_share_quantity_4dp_aligned(
+                order.shares,
+                field_name=f"redeem_order_{order.id}_shares",
+            )
+        except ShareQuantityError as exc:
+            raise ShareQuantityError(str(exc)) from exc
+
+        total_redeem_shares += redeem_shares
+
+    planned_shares_to_issue = (
+        require_share_quantity_4dp_aligned(
+            planned_shares_to_issue,
+            field_name="planned_shares_to_issue",
+        )
+    )
+    total_redeem_shares = (
+        require_share_quantity_4dp_aligned(
+            total_redeem_shares,
+            field_name="total_redeem_shares",
+        )
+    )
+
+    total_redeem_usdt = (
+        total_redeem_shares * settlement_price_usdt
+    )
     net_cash_usdt = total_buy_usdt - total_redeem_usdt
 
-    planned_shares_to_issue = total_buy_usdt / settlement_price_usdt if total_buy_usdt > 0 else ZERO
     planned_shares_to_redeem = total_redeem_shares
-    planned_net_shares_change = planned_shares_to_issue - planned_shares_to_redeem
+    planned_net_shares_change = (
+        planned_shares_to_issue
+        - planned_shares_to_redeem
+    )
+
+    planned_net_shares_change = (
+        require_share_quantity_4dp_aligned(
+            planned_net_shares_change,
+            field_name="planned_net_shares_change",
+            allow_negative=True,
+        )
+    )
 
     return {
         "total_buy_usdt": total_buy_usdt,
         "total_redeem_shares": total_redeem_shares,
         "total_redeem_usdt": total_redeem_usdt,
         "net_cash_usdt": net_cash_usdt,
-        "planned_shares_to_issue": planned_shares_to_issue,
-        "planned_shares_to_redeem": planned_shares_to_redeem,
-        "planned_net_shares_change": planned_net_shares_change,
+        "planned_shares_to_issue": (
+            planned_shares_to_issue
+        ),
+        "planned_shares_to_redeem": (
+            planned_shares_to_redeem
+        ),
+        "planned_net_shares_change": (
+            planned_net_shares_change
+        ),
+        "buy_share_quantities_by_order_id": (
+            buy_share_quantities_by_order_id
+        ),
     }
 
 
@@ -239,6 +326,30 @@ def _apply_batch_calculation(
     batch.planned_net_shares_change = fields["planned_net_shares_change"]
     batch.status = BATCH_STATUS_GAS_CHECKING
     batch.updated_at = now
+
+
+def _apply_order_share_plan(
+    *,
+    orders: list[FundOrder],
+    fields: dict[str, Any],
+    settlement_price_usdt: Decimal,
+) -> None:
+    quantities: dict[int, BuyShareQuantity] = fields[
+        "buy_share_quantities_by_order_id"
+    ]
+
+    for order in orders:
+        if order.side != ORDER_SIDE_BUY:
+            continue
+
+        quantity = quantities.get(int(order.id))
+        if quantity is None:
+            raise ShareQuantityError(
+                f"buy_order_{order.id}:share_plan_missing"
+            )
+
+        order.shares = quantity.issued_shares
+        order.price_usdt = settlement_price_usdt
 
 
 def _attach_orders_to_batch(
@@ -265,6 +376,25 @@ def _mark_batch_failed(
     batch.status = BATCH_STATUS_FAILED
     batch.error = error
     batch.updated_at = now
+
+
+def _mark_share_quantity_failed_requires_review(
+    *,
+    batch: FundSettlementBatch,
+    orders: list[FundOrder],
+    error: str,
+) -> None:
+    now = utcnow()
+
+    batch.status = BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    batch.error = error
+    batch.updated_at = now
+
+    for order in orders:
+        order.settlement_batch_id = batch.id
+        order.settlement_locked_at = now
+        order.status = ORDER_STATUS_FAILED_REQUIRES_REVIEW
+        order.error = error
 
 
 def _send_batch_alert(text: str) -> None:
@@ -419,15 +549,36 @@ def create_settlement_batch_for_fund(
         db.add(batch)
         db.flush()
 
-        price_snapshot = fix_settlement_price_for_batch(db, batch=batch)
+        require_share_quantity_4dp_aligned(
+            fund.shares_outstanding_current,
+            field_name="fund_shares_outstanding_current",
+        )
+
+        price_snapshot = fix_settlement_price_for_batch(
+            db,
+            batch=batch,
+        )
 
         fields = _calculate_batch_fields(
             orders=orders,
             settlement_price_usdt=price_snapshot.settlement_price_usdt,
         )
 
-        _apply_batch_calculation(batch=batch, fields=fields)
-        _attach_orders_to_batch(orders=orders, batch=batch)
+        _apply_batch_calculation(
+            batch=batch,
+            fields=fields,
+        )
+        _apply_order_share_plan(
+            orders=orders,
+            fields=fields,
+            settlement_price_usdt=(
+                price_snapshot.settlement_price_usdt
+            ),
+        )
+        _attach_orders_to_batch(
+            orders=orders,
+            batch=batch,
+        )
 
         db.add(batch)
         for order in orders:
@@ -455,6 +606,78 @@ def create_settlement_batch_for_fund(
             planned_shares_to_redeem=fields["planned_shares_to_redeem"],
             planned_net_shares_change=fields["planned_net_shares_change"],
             message="Batch created and moved to gas_checking.",
+        )
+
+    except ShareQuantityError as exc:
+        error_text = str(exc)
+
+        _mark_share_quantity_failed_requires_review(
+            batch=batch,
+            orders=orders,
+            error=error_text,
+        )
+
+        try:
+            unlock_pricing_for_fund(
+                db,
+                fund_id=fund.id,
+                batch_id=batch.id,
+            )
+            batch.pricing_unlocked_at = utcnow()
+            batch.updated_at = utcnow()
+        except Exception as unlock_exc:
+            log.exception(
+                "Failed to unlock pricing after share quantity failure: %s",
+                unlock_exc,
+            )
+            batch.error = (
+                f"{error_text}; pricing unlock failed: "
+                f"{unlock_exc}"
+            )
+
+        db.add(batch)
+        for order in orders:
+            db.add(order)
+        db.flush()
+
+        return SettlementBatchResult(
+            fund_id=fund.id,
+            fund_code=fund.code,
+            settlement_date=settlement_date,
+            batch_id=batch.id,
+            status=BATCH_STATUS_FAILED_REQUIRES_REVIEW,
+            orders_count=len(orders),
+            buy_orders_count=sum(
+                1
+                for order in orders
+                if order.side == ORDER_SIDE_BUY
+            ),
+            redeem_orders_count=sum(
+                1
+                for order in orders
+                if order.side == ORDER_SIDE_REDEEM
+            ),
+            total_buy_usdt=_dec(batch.total_buy_usdt),
+            total_redeem_shares=_dec(
+                batch.total_redeem_shares
+            ),
+            total_redeem_usdt=_dec(
+                batch.total_redeem_usdt
+            ),
+            net_cash_usdt=_dec(batch.net_cash_usdt),
+            planned_shares_to_issue=_dec(
+                batch.planned_shares_to_issue
+            ),
+            planned_shares_to_redeem=_dec(
+                batch.planned_shares_to_redeem
+            ),
+            planned_net_shares_change=_dec(
+                batch.planned_net_shares_change
+            ),
+            message=(
+                "Share quantity validation failed; "
+                "batch requires review."
+            ),
         )
 
     except (SettlementPriceError, PricingLockError, SettlementBatchError) as exc:

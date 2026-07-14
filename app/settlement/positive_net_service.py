@@ -14,7 +14,9 @@ from app.models import FundOrder, FundRuntimeState, FundSettlementBatch
 from app.settlement.accounting_service import (
     AccountingFinalizationResult,
     SettlementAccountingError,
+    SettlementShareQuantityError,
     finalize_positive_net_accounting,
+    validate_positive_net_share_preflight,
 )
 from app.settlement.bybit_deposit_service import (
     BybitDepositSettlementError,
@@ -299,8 +301,19 @@ def process_positive_net_batch(
 
     try:
         _validate_positive_net_batch(batch)
-        _validate_pricing_lock(db, batch=batch)
-        _validate_buy_collection_completed(db, batch_id=batch.id)
+        _validate_pricing_lock(
+            db,
+            batch=batch,
+        )
+        _validate_buy_collection_completed(
+            db,
+            batch_id=batch.id,
+        )
+
+        validate_positive_net_share_preflight(
+            db,
+            batch=batch,
+        )
 
         if batch.status == BATCH_STATUS_AWAITING_POSITIVE_NET_EXECUTION:
             batch.status = BATCH_STATUS_POSITIVE_NET_PROCESSING
@@ -444,6 +457,53 @@ def process_positive_net_batch(
             pricing_unlocked=finalized_batch.pricing_unlocked_at is not None,
             message="Positive net settlement finalized.",
             accounting_result=accounting_result,
+        )
+
+    except SettlementShareQuantityError as exc:
+        error = str(exc)
+
+        _mark_failed_requires_review(
+            db,
+            batch=batch,
+            error=error,
+        )
+
+        _send_alert(
+            "❌ Positive net share accounting failed\n"
+            f"Batch ID: {batch.id}\n"
+            f"Fund ID: {batch.fund_id}\n"
+            f"Error: {error}"
+        )
+
+        return PositiveNetSettlementResult(
+            batch_id=batch.id,
+            fund_id=batch.fund_id,
+            status=batch.status,
+            seller_payouts_completed=(
+                batch.seller_payouts_completed_at
+                is not None
+            ),
+            positive_net_transfer_confirmed=(
+                _dec(batch.net_cash_usdt) == ZERO
+                or batch.bybit_deposit_tx_hash is not None
+            ),
+            bybit_deposit_confirmed=(
+                _dec(batch.net_cash_usdt) == ZERO
+                or batch.bybit_deposit_confirmed_at
+                is not None
+            ),
+            internal_transfer_ready=(
+                _dec(batch.net_cash_usdt) == ZERO
+                or batch.bybit_internal_transfer_completed_at
+                is not None
+            ),
+            accounting_finalized=False,
+            pricing_unlocked=False,
+            message=(
+                "Share quantity validation failed; "
+                f"batch requires review: {error}"
+            ),
+            accounting_result=None,
         )
 
     except (
