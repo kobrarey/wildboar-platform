@@ -158,17 +158,14 @@ def _build_accounting_share_plan(
     redeem_orders: list[FundOrder],
     validate_positions: bool = True,
 ) -> AccountingSharePlan:
-    if buy_orders:
-        settlement_price = _dec(
-            batch.settlement_price_usdt
-        )
+    settlement_price = _dec(
+        batch.settlement_price_usdt
+    )
 
-        if settlement_price <= ZERO:
-            raise SettlementShareQuantityError(
-                "settlement_price_usdt_invalid"
-            )
-    else:
-        settlement_price = ZERO
+    if settlement_price <= ZERO:
+        raise SettlementShareQuantityError(
+            "settlement_price_usdt_invalid"
+        )
 
     fund_shares_before = _require_4dp(
         fund.shares_outstanding_current,

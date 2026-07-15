@@ -2842,6 +2842,101 @@ def test_r1_pre_external_fail_closed(
     }
 
 
+
+def test_redeem_only_pre_external(
+    db: Session,
+) -> dict[str, Any]:
+    fund = new_fund(
+        db,
+        suffix="redeem-only",
+        shares_outstanding=D("1.0000"),
+    )
+    user = new_user(
+        db,
+        suffix="redeem-only",
+    )
+    new_position(
+        db,
+        user=user,
+        fund=fund,
+        shares=D("1.0000"),
+        shares_reserved=D("0.0160"),
+    )
+
+    batch = new_settlement_batch(
+        db,
+        fund=fund,
+        suffix=90,
+        settlement_price=D("634.25"),
+        shares_before=D("1.0000"),
+        planned_issue=D("0"),
+        planned_redeem=D("0.0160"),
+        status="negative_net_sale_planned",
+    )
+    batch.total_buy_usdt = D("0")
+    batch.total_redeem_shares = D("0.0160")
+    batch.total_redeem_usdt = D("10.1480")
+    batch.net_cash_usdt = D("-10.1480")
+    batch.planned_shares_to_issue = D("0")
+    batch.planned_shares_to_redeem = D("0.0160")
+    batch.planned_net_shares_change = D("-0.0160")
+
+    order = FundOrder(
+        user_id=int(user.id),
+        fund_id=int(fund.id),
+        side="redeem",
+        amount_usdt=None,
+        shares=D("0.0160"),
+        price_usdt=None,
+        status="settling",
+        settlement_batch_id=int(batch.id),
+        created_at=NOW,
+    )
+    db.add(order)
+    db.commit()
+
+    plan = validate_settlement_share_state_before_external(
+        db,
+        batch=batch,
+        mark_failed=True,
+    )
+
+    require(
+        plan.total_buy_usdt == D("0"),
+        f"Redeem-only buy total mismatch: {plan.total_buy_usdt}",
+    )
+    require(
+        plan.total_redeem_shares == D("0.0160"),
+        (
+            "Redeem-only shares mismatch: "
+            f"{plan.total_redeem_shares}"
+        ),
+    )
+    require(
+        plan.total_redeem_usdt == D("10.1480"),
+        (
+            "Redeem-only USDT mismatch: "
+            f"{plan.total_redeem_usdt}"
+        ),
+    )
+    require(
+        plan.net_cash_usdt == D("-10.1480"),
+        (
+            "Redeem-only net cash mismatch: "
+            f"{plan.net_cash_usdt}"
+        ),
+    )
+
+    print("STAGE26_3_12P_REDEEM_ONLY_PREFLIGHT_OK")
+
+    return {
+        "total_buy_usdt": plan.total_buy_usdt,
+        "total_redeem_shares": plan.total_redeem_shares,
+        "total_redeem_usdt": plan.total_redeem_usdt,
+        "net_cash_usdt": plan.net_cash_usdt,
+    }
+
+
 def print_final_markers() -> None:
     print(
         "STAGE26_3_12P_R1_FOUR_DECIMAL_SHARE_ACCOUNTING_OK"
@@ -2865,6 +2960,7 @@ def main() -> int:
     direct_api = None
     positive_accounting = None
     negative_accounting = None
+    redeem_only = None
     zero_share_db = None
     historical_tail = None
     r1_pre_external = None
@@ -2903,6 +2999,9 @@ def main() -> int:
             )
             negative_accounting = (
                 test_negative_net_buy_accounting(db)
+            )
+            redeem_only = (
+                test_redeem_only_pre_external(db)
             )
             zero_share_db = (
                 test_zero_share_db_fail_closed(
@@ -2962,6 +3061,7 @@ def main() -> int:
             "direct_api": direct_api,
             "positive_accounting": positive_accounting,
             "negative_accounting": negative_accounting,
+            "redeem_only": redeem_only,
             "zero_share_db": zero_share_db,
             "historical_tail": historical_tail,
             "r1_pre_external": r1_pre_external,
