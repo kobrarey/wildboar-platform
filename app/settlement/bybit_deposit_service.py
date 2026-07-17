@@ -15,6 +15,13 @@ from app.config import settings
 from app.models import FundSettlementBatch, FundSettlementTransfer, FundWallet
 from app.operation_guard.hooks import require_bsc_positive_net_to_bybit_guard
 from app.operation_guard.service import OperationGuardBlockedError
+from app.settlement.bsc_intent_service import (
+    BscIntentError,
+    broadcast_persisted_transfer_intent,
+    persist_prepared_transfer_intent,
+    prepare_usdt_transfer_transaction,
+    prepared_transaction_from_transfer,
+)
 from app.settlement.bybit_destination import get_active_bybit_deposit_destination
 from app.settlement.gas_service import get_web3
 from app.settlement.statuses import (
@@ -23,12 +30,15 @@ from app.settlement.statuses import (
     BATCH_STATUS_POSITIVE_NET_PROCESSING,
     TRANSFER_STATUS_CONFIRMED,
     TRANSFER_STATUS_FAILED_REQUIRES_REVIEW,
+    TRANSFER_STATUS_PENDING,
     TRANSFER_STATUS_PENDING_CONFIRMATION,
+    TRANSFER_STATUS_PREPARED,
+    TRANSFER_STATUS_PROCESSING,
     TRANSFER_STATUS_SENT,
     TRANSFER_STATUS_SKIPPED,
     TRANSFER_TYPE_POSITIVE_NET_SETTLEMENT_TO_BYBIT_SUBACCOUNT,
 )
-from app.settlement.transfer_service import _check_tx_confirmed, _send_usdt_transfer
+from app.settlement.transfer_service import _check_tx_confirmed
 from app.telegram import send_telegram_message
 from app.wallets import decrypt_private_key
 
@@ -40,6 +50,19 @@ ZERO = Decimal("0")
 
 class BybitDepositSettlementError(RuntimeError):
     pass
+
+
+class BybitDepositRecordMismatchError(
+    BybitDepositSettlementError
+):
+    def __init__(
+        self,
+        message: str,
+        *,
+        record: dict[str, Any],
+    ) -> None:
+        super().__init__(message)
+        self.record = record
 
 
 @dataclass(frozen=True)
@@ -74,6 +97,7 @@ class BybitDepositRecord:
     chain_type: str | None
     amount: Decimal
     status: str | None
+    deposit_type: str | None
     success_at: str | None
     account_type: str | None
     raw: dict[str, Any]
@@ -186,6 +210,7 @@ def _create_or_update_positive_net_transfer(
     amount_usdt: Decimal,
     status: str,
     tx_hash: str | None = None,
+    request_key: str | None = None,
     error: str | None = None,
 ) -> FundSettlementTransfer:
     now = utcnow()
@@ -197,6 +222,7 @@ def _create_or_update_positive_net_transfer(
             fund_id=batch.fund_id,
             user_id=None,
             transfer_type=TRANSFER_TYPE_POSITIVE_NET_SETTLEMENT_TO_BYBIT_SUBACCOUNT,
+            request_key=request_key,
             from_address=from_address,
             to_address=to_address,
             amount_usdt=amount_usdt,
@@ -214,6 +240,19 @@ def _create_or_update_positive_net_transfer(
         db.add(row)
         db.flush()
         return row
+
+    if (
+        existing.request_key
+        and request_key
+        and str(existing.request_key) != str(request_key)
+    ):
+        raise BybitDepositSettlementError(
+            "Positive-net transfer request key mismatch: "
+            f"transfer_id={existing.id}"
+        )
+
+    if request_key and not existing.request_key:
+        existing.request_key = str(request_key)
 
     existing.from_address = from_address
     existing.to_address = to_address
@@ -439,6 +478,96 @@ def send_or_confirm_positive_net_transfer(
                 message="Positive net transfer pending BSC confirmation.",
             )
 
+        if existing is not None:
+            prepared_existing = (
+                prepared_transaction_from_transfer(
+                    existing
+                )
+            )
+
+            if prepared_existing is not None:
+                if dry_run:
+                    return PositiveNetTransferResult(
+                        batch_id=batch.id,
+                        fund_id=batch.fund_id,
+                        amount_usdt=amount_usdt,
+                        transfer_status=str(
+                            existing.status
+                        ),
+                        tx_hash=None,
+                        bybit_deposit_confirmed=False,
+                        message=(
+                            "Dry-run: prepared positive-net "
+                            "transaction was not broadcast."
+                        ),
+                    )
+
+                w3 = get_web3()
+
+                try:
+                    recovered = (
+                        broadcast_persisted_transfer_intent(
+                            db,
+                            w3=w3,
+                            transfer_id=int(existing.id),
+                            from_address=(
+                                settlement_wallet.address
+                            ),
+                        )
+                    )
+                except BscIntentError as exc:
+                    error = (
+                        "Positive-net prepared transaction "
+                        "requires reconciliation: "
+                        f"transfer_id={existing.id}; {exc}"
+                    )
+
+                    batch.status = (
+                        BATCH_STATUS_PENDING_CONFIRMATION
+                    )
+                    batch.error = error
+                    batch.updated_at = utcnow()
+                    db.add(batch)
+                    db.flush()
+
+                    return PositiveNetTransferResult(
+                        batch_id=batch.id,
+                        fund_id=batch.fund_id,
+                        amount_usdt=amount_usdt,
+                        transfer_status=(
+                            TRANSFER_STATUS_PROCESSING
+                        ),
+                        tx_hash=None,
+                        bybit_deposit_confirmed=False,
+                        message=error,
+                    )
+
+                batch.bybit_deposit_tx_hash = (
+                    recovered.tx_hash
+                )
+                batch.status = (
+                    BATCH_STATUS_PENDING_CONFIRMATION
+                )
+                batch.error = None
+                batch.updated_at = utcnow()
+                db.add(batch)
+                db.flush()
+
+                return PositiveNetTransferResult(
+                    batch_id=batch.id,
+                    fund_id=batch.fund_id,
+                    amount_usdt=amount_usdt,
+                    transfer_status=str(
+                        recovered.status
+                    ),
+                    tx_hash=recovered.tx_hash,
+                    bybit_deposit_confirmed=False,
+                    message=(
+                        "Prepared positive-net transaction "
+                        "reconciled; waiting confirmation."
+                    ),
+                )
+
         if dry_run:
             row = _create_or_update_positive_net_transfer(
                 db,
@@ -528,8 +657,11 @@ def send_or_confirm_positive_net_transfer(
                 from_address=settlement_wallet.address,
                 to_address=destination.deposit_address,
                 amount_usdt=amount_usdt,
-                status=TRANSFER_STATUS_FAILED_REQUIRES_REVIEW,
+                status=(
+                    TRANSFER_STATUS_FAILED_REQUIRES_REVIEW
+                ),
                 tx_hash=None,
+                request_key=request_id,
                 error=error,
             )
             _mark_batch_failed_requires_review(db, batch=batch, error=error)
@@ -546,30 +678,94 @@ def send_or_confirm_positive_net_transfer(
         )
 
         w3 = get_web3()
-        private_key = decrypt_private_key(settlement_wallet.encrypted_private_key)
-
-        tx_hash = _send_usdt_transfer(
-            w3,
-            from_private_key=private_key,
-            from_address=settlement_wallet.address,
-            to_address=destination.deposit_address,
-            amount_usdt=amount_usdt,
+        private_key = decrypt_private_key(
+            settlement_wallet.encrypted_private_key
         )
 
-        row = _create_or_update_positive_net_transfer(
-            db,
-            existing=existing,
-            batch=batch,
-            from_address=settlement_wallet.address,
-            to_address=destination.deposit_address,
-            amount_usdt=amount_usdt,
-            status=TRANSFER_STATUS_SENT,
-            tx_hash=tx_hash,
-            error=None,
+        intent_status = TRANSFER_STATUS_PENDING
+
+        if (
+            existing is not None
+            and str(existing.status)
+            in {
+                TRANSFER_STATUS_PREPARED,
+                TRANSFER_STATUS_PROCESSING,
+            }
+        ):
+            intent_status = str(existing.status)
+
+        intent_row = (
+            _create_or_update_positive_net_transfer(
+                db,
+                existing=existing,
+                batch=batch,
+                from_address=settlement_wallet.address,
+                to_address=destination.deposit_address,
+                amount_usdt=amount_usdt,
+                status=intent_status,
+                tx_hash=None,
+                request_key=request_id,
+                error=None,
+            )
         )
 
-        batch.bybit_deposit_tx_hash = tx_hash
+        prepared = prepared_transaction_from_transfer(
+            intent_row
+        )
+
+        if prepared is None:
+            prepared = prepare_usdt_transfer_transaction(
+                w3,
+                from_private_key=private_key,
+                from_address=settlement_wallet.address,
+                to_address=destination.deposit_address,
+                amount_usdt=amount_usdt,
+            )
+
+            intent_row = persist_prepared_transfer_intent(
+                db,
+                transfer_id=int(intent_row.id),
+                request_key=request_id,
+                prepared=prepared,
+            )
+
+        try:
+            row = broadcast_persisted_transfer_intent(
+                db,
+                w3=w3,
+                transfer_id=int(intent_row.id),
+                from_address=settlement_wallet.address,
+            )
+        except BscIntentError as exc:
+            error = (
+                "Positive-net prepared transaction "
+                "requires reconciliation: "
+                f"transfer_id={intent_row.id}; {exc}"
+            )
+
+            batch.status = (
+                BATCH_STATUS_PENDING_CONFIRMATION
+            )
+            batch.error = error
+            batch.updated_at = utcnow()
+            db.add(batch)
+            db.flush()
+
+            return PositiveNetTransferResult(
+                batch_id=batch.id,
+                fund_id=batch.fund_id,
+                amount_usdt=amount_usdt,
+                transfer_status=(
+                    TRANSFER_STATUS_PROCESSING
+                ),
+                tx_hash=None,
+                bybit_deposit_confirmed=False,
+                message=error,
+            )
+
+        batch.bybit_deposit_tx_hash = row.tx_hash
         batch.status = BATCH_STATUS_PENDING_CONFIRMATION
+        batch.error = None
         batch.updated_at = utcnow()
         db.add(batch)
         db.flush()
@@ -578,10 +774,13 @@ def send_or_confirm_positive_net_transfer(
             batch_id=batch.id,
             fund_id=batch.fund_id,
             amount_usdt=amount_usdt,
-            transfer_status=row.status,
-            tx_hash=tx_hash,
+            transfer_status=str(row.status),
+            tx_hash=row.tx_hash,
             bybit_deposit_confirmed=False,
-            message="Positive net transfer sent; waiting confirmation.",
+            message=(
+                "Positive net transfer sent; "
+                "waiting confirmation."
+            ),
         )
 
     except Exception as exc:
@@ -730,6 +929,93 @@ def _record_status(record: dict[str, Any]) -> str | None:
     return str(value) if value is not None else None
 
 
+def _record_deposit_type(
+    record: dict[str, Any],
+) -> str | None:
+    value = record.get("depositType")
+
+    if value is None:
+        value = record.get("deposit_type")
+
+    if value is None:
+        return None
+
+    normalized = str(value).strip()
+    return normalized or None
+
+
+BYBIT_DEPOSIT_SUCCESS_STATUSES = frozenset(
+    {
+        "3",
+        "70012",
+        "70013",
+        "10012",
+    }
+)
+
+BYBIT_DEPOSIT_PENDING_STATUSES = frozenset(
+    {
+        "0",
+        "1",
+        "2",
+        "7",
+        "10011",
+    }
+)
+
+BYBIT_DEPOSIT_FAILED_STATUSES = frozenset(
+    {
+        "4",
+        "70011",
+    }
+)
+
+
+def classify_bybit_deposit_status(
+    *,
+    status: str | None,
+    deposit_type: str | None,
+) -> str:
+    normalized_deposit_type = str(
+        deposit_type or ""
+    ).strip()
+
+    if normalized_deposit_type == "50":
+        return "failed"
+
+    normalized_status = str(
+        status or ""
+    ).strip().upper()
+
+    if normalized_status in BYBIT_DEPOSIT_SUCCESS_STATUSES:
+        return "success"
+
+    if normalized_status in BYBIT_DEPOSIT_FAILED_STATUSES:
+        return "failed"
+
+    if (
+        not normalized_status
+        or normalized_status in BYBIT_DEPOSIT_PENDING_STATUSES
+    ):
+        return "pending"
+
+    explicit_failure_markers = (
+        "FAIL",
+        "ROLLBACK",
+        "REJECT",
+        "DEDUCT",
+        "CLAWBACK",
+    )
+
+    if any(
+        marker in normalized_status
+        for marker in explicit_failure_markers
+    ):
+        return "failed"
+
+    return "pending"
+
+
 def _record_success_at(record: dict[str, Any]) -> str | None:
     value = (
         record.get("successAt")
@@ -778,25 +1064,59 @@ def find_matching_deposit_record(
         if record_tx != target_tx:
             continue
 
-        if _record_coin(record) != coin_norm:
-            continue
+        record_coin = _record_coin(record)
+
+        if record_coin != coin_norm:
+            raise BybitDepositRecordMismatchError(
+                "Bybit deposit coin mismatch: "
+                f"tx={tx_hash} "
+                f"expected={coin_norm} "
+                f"actual={record_coin or 'missing'}",
+                record=record,
+            )
 
         chain_values = _record_chain_values(record)
-        if chain_values and chain_norm not in chain_values and not any(
-            chain_norm in value.lower() for value in chain_values
+
+        if (
+            not chain_values
+            or (
+                chain_norm not in chain_values
+                and not any(
+                    chain_norm in value.lower()
+                    for value in chain_values
+                )
+            )
         ):
-            continue
+            raise BybitDepositRecordMismatchError(
+                "Bybit deposit chain mismatch: "
+                f"tx={tx_hash} "
+                f"expected={chain_type} "
+                f"actual={sorted(chain_values) if chain_values else 'missing'}",
+                record=record,
+            )
 
         record_to_address = _record_to_address(record)
-        if expected_to_address and record_to_address:
-            if record_to_address.lower() != expected_to_address.lower():
-                continue
+
+        if expected_to_address:
+            if (
+                not record_to_address
+                or record_to_address.lower()
+                != expected_to_address.lower()
+            ):
+                raise BybitDepositRecordMismatchError(
+                    "Bybit deposit address mismatch: "
+                    f"tx={tx_hash} "
+                    f"expected={expected_to_address} "
+                    f"actual={record_to_address or 'missing'}",
+                    record=record,
+                )
 
         amount = _record_amount(record)
         if amount + dust_tolerance < expected_amount:
-            raise BybitDepositSettlementError(
+            raise BybitDepositRecordMismatchError(
                 f"Bybit deposit amount mismatch: tx={tx_hash} "
-                f"expected={expected_amount}, actual={amount}, tolerance={dust_tolerance}"
+                f"expected={expected_amount}, actual={amount}, tolerance={dust_tolerance}",
+                record=record,
             )
 
         return BybitDepositRecord(
@@ -806,6 +1126,7 @@ def find_matching_deposit_record(
             chain_type=record.get("chainType") or record.get("chain_type"),
             amount=amount,
             status=_record_status(record),
+            deposit_type=_record_deposit_type(record),
             success_at=_record_success_at(record),
             account_type=_record_account_type(record),
             raw=record,
@@ -896,15 +1217,41 @@ def confirm_bybit_deposit_for_batch(
         tx_hash=tx_hash,
     )
 
-    record = find_matching_deposit_record(
-        records=records,
-        tx_hash=tx_hash,
-        expected_amount=amount_usdt,
-        dust_tolerance=Decimal(settings.POSITIVE_NET_DUST_TOLERANCE_USDT),
-        coin="USDT",
-        chain_type=destination.chain_type,
-        expected_to_address=destination.deposit_address,
-    )
+    try:
+        record = find_matching_deposit_record(
+            records=records,
+            tx_hash=tx_hash,
+            expected_amount=amount_usdt,
+            dust_tolerance=Decimal(
+                settings.POSITIVE_NET_DUST_TOLERANCE_USDT
+            ),
+            coin="USDT",
+            chain_type=destination.chain_type,
+            expected_to_address=destination.deposit_address,
+        )
+
+    except BybitDepositRecordMismatchError as exc:
+        now = utcnow()
+        raw_record = exc.record
+
+        batch.bybit_deposit_tx_hash = tx_hash
+        batch.bybit_deposit_status = _record_status(
+            raw_record
+        )
+        batch.bybit_deposit_type = _record_deposit_type(
+            raw_record
+        )
+        batch.bybit_deposit_account_type = (
+            _record_account_type(raw_record)
+        )
+        batch.bybit_deposit_record_json = raw_record
+        batch.status = BATCH_STATUS_FAILED_REQUIRES_REVIEW
+        batch.error = str(exc)
+        batch.updated_at = now
+
+        db.add(batch)
+        db.flush()
+        return False
 
     if record is None:
         batch.status = BATCH_STATUS_PENDING_CONFIRMATION
@@ -913,10 +1260,45 @@ def confirm_bybit_deposit_for_batch(
         db.flush()
         return False
 
+    deposit_classification = classify_bybit_deposit_status(
+        status=record.status,
+        deposit_type=record.deposit_type,
+    )
+
+    now = utcnow()
+
     batch.bybit_deposit_tx_hash = tx_hash
-    batch.bybit_deposit_confirmed_at = utcnow()
+    batch.bybit_deposit_status = record.status
+    batch.bybit_deposit_type = record.deposit_type
     batch.bybit_deposit_account_type = record.account_type
-    batch.updated_at = utcnow()
+    batch.bybit_deposit_record_json = record.raw
+    batch.updated_at = now
+
+    if deposit_classification == "pending":
+        batch.status = BATCH_STATUS_PENDING_CONFIRMATION
+        db.add(batch)
+        db.flush()
+        return False
+
+    if deposit_classification == "failed":
+        error = (
+            "Bybit deposit requires review: "
+            f"batch_id={batch.id} "
+            f"tx_hash={tx_hash} "
+            f"status={record.status} "
+            f"deposit_type={record.deposit_type}"
+        )
+
+        batch.status = BATCH_STATUS_FAILED_REQUIRES_REVIEW
+        batch.error = error
+        db.add(batch)
+        db.flush()
+        return False
+
+    batch.bybit_deposit_confirmed_at = (
+        batch.bybit_deposit_confirmed_at
+        or now
+    )
 
     db.add(batch)
     db.flush()
@@ -936,17 +1318,85 @@ def deterministic_internal_transfer_id(
     )
 
 
-def _parse_internal_transfer_status(payload: dict[str, Any]) -> str:
+def _parse_internal_transfer_status(
+    payload: dict[str, Any],
+) -> str:
     result = payload.get("result", {}) or {}
 
     raw = (
         result.get("status")
         or result.get("transferStatus")
         or payload.get("status")
-        or "SUCCESS"
     )
 
-    return str(raw).strip().upper()
+    if raw is None:
+        return "STATUS_UNKNOWN"
+
+    normalized = str(raw).strip().upper()
+
+    if normalized in {
+        "SUCCESS",
+        "PENDING",
+        "FAILED",
+        "STATUS_UNKNOWN",
+    }:
+        return normalized
+
+    return "STATUS_UNKNOWN"
+
+
+def query_fund_to_unified_internal_transfer(
+    client: BybitV5Client,
+    *,
+    transfer_id: str,
+) -> BybitInternalTransferResult | None:
+    payload = client.get(
+        "/v5/asset/transfer/query-inter-transfer-list",
+        {
+            "transferId": transfer_id,
+            "coin": "USDT",
+            "limit": 50,
+        },
+    )
+
+    result = payload.get("result", {}) or {}
+    rows = result.get("list", []) or []
+
+    if not isinstance(rows, list):
+        raise BybitDepositSettlementError(
+            "Invalid Bybit internal transfer query response: "
+            "result.list is not a list"
+        )
+
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+
+        row_transfer_id = str(
+            row.get("transferId") or ""
+        ).strip()
+
+        if row_transfer_id != transfer_id:
+            continue
+
+        status = _parse_internal_transfer_status(
+            {"result": row}
+        )
+
+        if status == "FAILED":
+            raise BybitDepositSettlementError(
+                "Bybit FUND -> UNIFIED internal transfer failed: "
+                f"transferId={transfer_id} status={status}"
+            )
+
+        return BybitInternalTransferResult(
+            transfer_id=transfer_id,
+            status=status,
+            completed=status == "SUCCESS",
+            raw=row,
+        )
+
+    return None
 
 
 def execute_fund_to_unified_internal_transfer(
@@ -1004,14 +1454,23 @@ def ensure_fund_to_unified_internal_transfer(
     dry_run: bool = False,
     mock_confirm: bool = False,
 ) -> bool:
-    batch = _get_batch_for_update(db, batch_id=batch_id)
+    batch = _get_batch_for_update(
+        db,
+        batch_id=batch_id,
+    )
 
     amount_usdt = _dec(batch.net_cash_usdt)
     now = utcnow()
 
     if amount_usdt == 0:
-        batch.bybit_internal_transfer_id = batch.bybit_internal_transfer_id or "skipped_zero_net"
-        batch.bybit_internal_transfer_completed_at = batch.bybit_internal_transfer_completed_at or now
+        batch.bybit_internal_transfer_id = (
+            batch.bybit_internal_transfer_id
+            or "skipped_zero_net"
+        )
+        batch.bybit_internal_transfer_completed_at = (
+            batch.bybit_internal_transfer_completed_at
+            or now
+        )
         batch.updated_at = now
         db.add(batch)
         db.flush()
@@ -1020,25 +1479,42 @@ def ensure_fund_to_unified_internal_transfer(
     if batch.bybit_internal_transfer_completed_at is not None:
         return True
 
-    account_type = (batch.bybit_deposit_account_type or "").strip().lower()
+    account_type = (
+        batch.bybit_deposit_account_type or ""
+    ).strip().lower()
 
-    if account_type in {"unified", "unifiedtrading", "uta"}:
-        batch.bybit_internal_transfer_id = batch.bybit_internal_transfer_id or f"skipped_{account_type}"
+    if account_type in {
+        "unified",
+        "unifiedtrading",
+        "uta",
+    }:
+        batch.bybit_internal_transfer_id = (
+            batch.bybit_internal_transfer_id
+            or f"skipped_{account_type}"
+        )
         batch.bybit_internal_transfer_completed_at = now
         batch.updated_at = now
         db.add(batch)
         db.flush()
         return True
 
-    # Real-mode rule:
-    # FUND or unknown account type requires FUND -> UNIFIED transfer before accounting.
-    transfer_id = batch.bybit_internal_transfer_id or deterministic_internal_transfer_id(
-        batch_id=batch.id,
-        fund_id=batch.fund_id,
+    existing_transfer_id = str(
+        batch.bybit_internal_transfer_id or ""
+    ).strip()
+
+    transfer_id = (
+        existing_transfer_id
+        or deterministic_internal_transfer_id(
+            batch_id=batch.id,
+            fund_id=batch.fund_id,
+        )
     )
-    batch.bybit_internal_transfer_id = transfer_id
-    db.add(batch)
-    db.flush()
+
+    if not existing_transfer_id:
+        batch.bybit_internal_transfer_id = transfer_id
+        batch.updated_at = now
+        db.add(batch)
+        db.flush()
 
     if dry_run:
         batch.status = BATCH_STATUS_PENDING_CONFIRMATION
@@ -1061,6 +1537,30 @@ def ensure_fund_to_unified_internal_transfer(
             coin="USDT",
             chain_type="BSC",
         )
+
+    if existing_transfer_id:
+        existing_result = (
+            query_fund_to_unified_internal_transfer(
+                fund_client,
+                transfer_id=transfer_id,
+            )
+        )
+
+        if (
+            existing_result is not None
+            and existing_result.completed
+        ):
+            batch.bybit_internal_transfer_completed_at = now
+            batch.updated_at = now
+            db.add(batch)
+            db.flush()
+            return True
+
+        batch.status = BATCH_STATUS_PENDING_CONFIRMATION
+        batch.updated_at = now
+        db.add(batch)
+        db.flush()
+        return False
 
     result = execute_fund_to_unified_internal_transfer(
         fund_client,

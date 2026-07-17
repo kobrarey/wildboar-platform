@@ -26,6 +26,7 @@ from app.settlement.accounting_service import (
     SettlementShareQuantityError,
     validate_settlement_share_state_before_external,
 )
+from app.settlement.batch_repository import get_or_create_settlement_batch
 from app.settlement.pricing_lock import PricingLockError, lock_pricing_for_fund, unlock_pricing_for_fund
 from app.settlement.statuses import (
     BATCH_STATUS_CREATED,
@@ -134,51 +135,6 @@ def _get_active_funds(db: Session, fund_codes: Iterable[str] | None = None) -> l
         q = q.filter(Fund.code.in_(codes))
 
     return q.order_by(Fund.sort_order.asc(), Fund.id.asc()).all()
-
-
-def _get_or_create_batch(
-    db: Session,
-    *,
-    fund_id: int,
-    settlement_date: date,
-    cutoff_ts: datetime,
-    settlement_ts: datetime,
-) -> FundSettlementBatch:
-    batch = (
-        db.query(FundSettlementBatch)
-        .filter(
-            FundSettlementBatch.fund_id == fund_id,
-            FundSettlementBatch.settlement_date == settlement_date,
-        )
-        .with_for_update()
-        .first()
-    )
-
-    if batch is not None:
-        return batch
-
-    now = utcnow()
-
-    batch = FundSettlementBatch(
-        fund_id=fund_id,
-        settlement_date=settlement_date,
-        cutoff_ts=cutoff_ts,
-        settlement_ts=settlement_ts,
-        status=BATCH_STATUS_CREATED,
-        total_buy_usdt=ZERO,
-        total_redeem_shares=ZERO,
-        total_redeem_usdt=ZERO,
-        net_cash_usdt=ZERO,
-        planned_shares_to_issue=ZERO,
-        planned_shares_to_redeem=ZERO,
-        planned_net_shares_change=ZERO,
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(batch)
-    db.flush()
-
-    return batch
 
 
 def _lock_pending_orders_for_batch(
@@ -483,7 +439,7 @@ def create_no_orders_batch(
     cutoff_ts: datetime,
     settlement_ts: datetime,
 ) -> SettlementBatchResult:
-    batch = _get_or_create_batch(
+    batch = get_or_create_settlement_batch(
         db,
         fund_id=fund.id,
         settlement_date=settlement_date,
@@ -576,7 +532,7 @@ def create_settlement_batch_for_fund(
             message="No pending orders; batch skipped.",
         )
 
-    batch = _get_or_create_batch(
+    batch = get_or_create_settlement_batch(
         db,
         fund_id=fund.id,
         settlement_date=settlement_date,
@@ -657,17 +613,16 @@ def create_settlement_batch_for_fund(
             batch=batch,
         )
 
+        db.add(batch)
+        for order in orders:
+            db.add(order)
+        db.flush()
+
         validate_settlement_share_state_before_external(
             db,
             batch=batch,
             mark_failed=True,
         )
-
-        db.add(batch)
-        for order in orders:
-            db.add(order)
-
-        db.flush()
 
         buy_orders_count = sum(1 for order in orders if order.side == ORDER_SIDE_BUY)
         redeem_orders_count = sum(1 for order in orders if order.side == ORDER_SIDE_REDEEM)

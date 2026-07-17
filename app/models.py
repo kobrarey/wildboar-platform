@@ -642,6 +642,17 @@ class FundOrder(Base):
     reserved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     settlement_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     collection_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    buy_reserve_released_usdt: Mapped[Decimal] = mapped_column(
+        Numeric(30, 10),
+        nullable=False,
+        server_default=sa_text("0"),
+    )
+    buy_reserve_released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
@@ -734,8 +745,26 @@ class FundSettlementBatch(Base):
     seller_payouts_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
     bybit_deposit_tx_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
-    bybit_deposit_confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    bybit_deposit_account_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    bybit_deposit_confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    bybit_deposit_account_type: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+    )
+    bybit_deposit_status: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    bybit_deposit_type: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+    )
+    bybit_deposit_record_json: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
 
     bybit_internal_transfer_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     bybit_internal_transfer_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -1781,11 +1810,34 @@ class FundSettlementTransfer(Base):
 
     transfer_type: Mapped[str] = mapped_column(String(64), nullable=False)
 
+    request_key: Mapped[str | None] = mapped_column(
+        String(256),
+        nullable=True,
+    )
+
     from_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
     to_address: Mapped[str | None] = mapped_column(String(64), nullable=True)
 
     amount_usdt: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
     amount_bnb: Mapped[Decimal | None] = mapped_column(Numeric(38, 18), nullable=True)
+
+    chain_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+    source_nonce: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+
+    prepared_tx_hash: Mapped[str | None] = mapped_column(
+        String(80),
+        nullable=True,
+    )
+    prepared_raw_tx: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
 
     gas_tx_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
     tx_hash: Mapped[str | None] = mapped_column(String(80), nullable=True)
@@ -1814,11 +1866,38 @@ class FundSettlementTransfer(Base):
         server_default=func.now(),
     )
 
-    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    confirmed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    prepared_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    broadcast_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
-    next_retry_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    last_gas_alert_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    next_retry_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    last_gas_alert_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "request_key",
+            name="fund_settlement_transfers_request_key_uq",
+        ),
+    )
 
 
 class PlatformEmergencyLock(Base):

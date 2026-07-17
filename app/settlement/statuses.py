@@ -165,6 +165,7 @@ TRANSFER_TYPE_BYBIT_FUND_TO_UNIFIED_INTERNAL_TRANSFER = "bybit_fund_to_unified_i
 
 # fund_settlement_transfers.status
 TRANSFER_STATUS_PENDING = "pending"
+TRANSFER_STATUS_PREPARED = "prepared"
 TRANSFER_STATUS_PROCESSING = "processing"
 TRANSFER_STATUS_WAITING_FOR_GAS = "waiting_for_gas"
 TRANSFER_STATUS_SENT = "sent"

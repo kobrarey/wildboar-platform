@@ -23,11 +23,21 @@ from app.operation_guard.hooks import (
     require_bsc_buy_collection_usdt_to_settlement_guard,
 )
 from app.operation_guard.service import OperationGuardBlockedError
+from app.settlement.bsc_intent_service import (
+    BscIntentError,
+    broadcast_persisted_transfer_intent,
+    persist_prepared_transfer_intent,
+    prepare_native_bnb_transaction,
+    prepare_usdt_transfer_transaction,
+    prepared_transaction_from_transfer,
+)
+from app.settlement.buy_reserve_service import (
+    release_buy_reserve_if_safe,
+)
 from app.settlement.gas_service import (
     WEI_PER_BNB,
     get_bnb_balance,
     get_web3,
-    send_native_bnb,
 )
 from app.settlement.pricing_lock import unlock_pricing_for_fund
 from app.settlement.statuses import (
@@ -51,6 +61,7 @@ from app.settlement.statuses import (
     TRANSFER_STATUS_FAILED,
     TRANSFER_STATUS_FAILED_REQUIRES_REVIEW,
     TRANSFER_STATUS_PENDING,
+    TRANSFER_STATUS_PREPARED,
     TRANSFER_STATUS_PROCESSING,
     TRANSFER_STATUS_SENT,
     TRANSFER_STATUS_SKIPPED,
@@ -275,6 +286,7 @@ def _create_or_update_transfer(
     amount_bnb: Decimal | None = None,
     tx_hash: str | None = None,
     gas_tx_hash: str | None = None,
+    request_key: str | None = None,
     status: str = TRANSFER_STATUS_PENDING,
     error: str | None = None,
 ) -> FundSettlementTransfer:
@@ -287,6 +299,7 @@ def _create_or_update_transfer(
             fund_id=fund_id,
             user_id=user_id,
             transfer_type=transfer_type,
+            request_key=request_key,
             from_address=from_address,
             to_address=to_address,
             amount_usdt=amount_usdt,
@@ -304,6 +317,19 @@ def _create_or_update_transfer(
         db.add(row)
         db.flush()
         return row
+
+    if (
+        existing.request_key
+        and request_key
+        and str(existing.request_key) != str(request_key)
+    ):
+        raise SettlementTransferError(
+            "Settlement transfer request key mismatch: "
+            f"transfer_id={existing.id}"
+        )
+
+    if request_key and not existing.request_key:
+        existing.request_key = str(request_key)
 
     existing.from_address = from_address
     existing.to_address = to_address
@@ -517,7 +543,14 @@ def _mark_batch_failed(batch: FundSettlementBatch, *, error: str) -> None:
 
 def _mark_order_failed(order: FundOrder, *, error: str) -> None:
     order.status = ORDER_STATUS_FAILED_REQUIRES_REVIEW
-    order.error = error
+
+    existing_error = str(order.error or "").strip()
+    normalized_error = str(error or "").strip()
+
+    if not existing_error:
+        order.error = normalized_error
+    elif normalized_error and normalized_error not in existing_error:
+        order.error = f"{existing_error}; {normalized_error}"
 
 
 def _confirm_buy_collection(
@@ -625,17 +658,6 @@ def _maybe_advance_batch_after_buy_confirmations(
     return _update_terminal_batch_status(db, batch=batch)
 
 
-def _release_reserved_for_failed_collection(
-    *,
-    wallet: UserWallet,
-    amount_usdt: Decimal,
-) -> Decimal:
-    reserved_before = _dec(wallet.usdt_reserved)
-    release_amount = min(reserved_before, amount_usdt)
-    wallet.usdt_reserved = reserved_before - release_amount
-    return release_amount
-
-
 def _apply_confirmed_sent_transfer(
     db: Session,
     *,
@@ -728,20 +750,23 @@ def _apply_failed_sent_transfer(
 
         if order.status != ORDER_STATUS_BUY_COLLECTED:
             try:
-                wallet = _get_active_user_wallet_for_update(db, user_id=int(order.user_id))
-                amount_usdt = _dec(transfer.amount_usdt or order.amount_usdt)
-                released = _release_reserved_for_failed_collection(
-                    wallet=wallet,
-                    amount_usdt=amount_usdt,
-                )
-                db.add(wallet)
-
-                order.error = (
-                    f"{error}; released_reserved_usdt={released}; "
-                    "receipt.status=0 proves the failed tx did not move USDT"
+                release_buy_reserve_if_safe(
+                    db,
+                    order_id=int(order.id),
+                    reason=(
+                        f"{error}; "
+                        "receipt.status=0 proves the failed tx "
+                        "did not move USDT"
+                    ),
+                    proven_failed_transfer_id=int(transfer.id),
+                    proven_receipt_status=(
+                        receipt_check.receipt_status
+                    ),
                 )
             except Exception as exc:
-                order.error = f"{error}; reserve_release_failed={exc}"
+                order.error = (
+                    f"{error}; reserve_release_failed={exc}"
+                )
         else:
             order.error = f"{error}; order already buy_collected, wallet accounting not changed"
 
@@ -1016,6 +1041,36 @@ def _ensure_user_wallet_gas(
         db.flush()
         return False
 
+    if existing is not None:
+        prepared_existing = (
+            prepared_transaction_from_transfer(
+                existing
+            )
+        )
+
+        if prepared_existing is not None:
+            if dry_run:
+                return False
+
+            try:
+                broadcast_persisted_transfer_intent(
+                    db,
+                    w3=w3,
+                    transfer_id=int(existing.id),
+                    from_address=ok_wallet_address,
+                    copy_to_gas_tx_hash=True,
+                )
+            except BscIntentError as exc:
+                log.warning(
+                    "Prepared buy gas top-up remains pending "
+                    "reconciliation: transfer_id=%s error=%s",
+                    existing.id,
+                    exc,
+                )
+                return False
+
+            return False
+
     required_bnb = _bnb_required_for_erc20_transfer(w3)
     current_bnb = get_bnb_balance(w3, user_address)
 
@@ -1037,7 +1092,28 @@ def _ensure_user_wallet_gas(
         return True
 
     amount_bnb = required_bnb - current_bnb
-    ok_bnb = get_bnb_balance(w3, ok_wallet_address)
+
+    if dry_run:
+        _create_or_update_transfer(
+            db,
+            existing=existing,
+            batch_id=batch.id,
+            order_id=order.id,
+            fund_id=batch.fund_id,
+            user_id=order.user_id,
+            transfer_type=TRANSFER_TYPE_USER_WALLET_GAS_TOPUP,
+            from_address=ok_wallet_address,
+            to_address=user_address,
+            amount_bnb=amount_bnb,
+            status=TRANSFER_STATUS_SKIPPED,
+            error="dry_run: would send BNB gas top-up",
+        )
+        return True
+
+    ok_bnb = get_bnb_balance(
+        w3,
+        ok_wallet_address,
+    )
 
     if ok_bnb < amount_bnb:
         error = (
@@ -1062,24 +1138,19 @@ def _ensure_user_wallet_gas(
             error=error,
         )
 
-        raise SettlementTransferError(error)
+        try:
+            release_buy_reserve_if_safe(
+                db,
+                order_id=int(order.id),
+                reason=error,
+            )
+        except Exception as reserve_exc:
+            error = (
+                f"{error}; "
+                f"reserve_release_failed={reserve_exc}"
+            )
 
-    if dry_run:
-        _create_or_update_transfer(
-            db,
-            existing=existing,
-            batch_id=batch.id,
-            order_id=order.id,
-            fund_id=batch.fund_id,
-            user_id=order.user_id,
-            transfer_type=TRANSFER_TYPE_USER_WALLET_GAS_TOPUP,
-            from_address=ok_wallet_address,
-            to_address=user_address,
-            amount_bnb=amount_bnb,
-            status=TRANSFER_STATUS_SKIPPED,
-            error="dry_run: would send BNB gas top-up",
-        )
-        return True
+        raise SettlementTransferError(error)
 
     request_id = deterministic_buy_collection_gas_topup_request_id(
         batch_id=int(batch.id),
@@ -1127,6 +1198,18 @@ def _ensure_user_wallet_gas(
             error=error,
         )
 
+        try:
+            release_buy_reserve_if_safe(
+                db,
+                order_id=int(order.id),
+                reason=error,
+            )
+        except Exception as reserve_exc:
+            error = (
+                f"{error}; "
+                f"reserve_release_failed={reserve_exc}"
+            )
+
         raise SettlementTransferError(error) from exc
 
     log.info(
@@ -1138,15 +1221,19 @@ def _ensure_user_wallet_gas(
         guard_decision.event_id,
     )
 
-    tx_hash = send_native_bnb(
-        w3,
-        from_private_key=settings.FEE_WALLET_OK_PRIVATE_KEY,
-        from_address=ok_wallet_address,
-        to_address=user_address,
-        amount_bnb=amount_bnb,
-    )
+    intent_status = TRANSFER_STATUS_PENDING
 
-    _create_or_update_transfer(
+    if (
+        existing is not None
+        and str(existing.status)
+        in {
+            TRANSFER_STATUS_PREPARED,
+            TRANSFER_STATUS_PROCESSING,
+        }
+    ):
+        intent_status = str(existing.status)
+
+    intent_row = _create_or_update_transfer(
         db,
         existing=existing,
         batch_id=batch.id,
@@ -1157,11 +1244,49 @@ def _ensure_user_wallet_gas(
         from_address=ok_wallet_address,
         to_address=user_address,
         amount_bnb=amount_bnb,
-        tx_hash=tx_hash,
-        gas_tx_hash=tx_hash,
-        status=TRANSFER_STATUS_SENT,
+        request_key=request_id,
+        status=intent_status,
         error=None,
     )
+
+    prepared = prepared_transaction_from_transfer(
+        intent_row
+    )
+
+    if prepared is None:
+        prepared = prepare_native_bnb_transaction(
+            w3,
+            from_private_key=(
+                settings.FEE_WALLET_OK_PRIVATE_KEY
+            ),
+            from_address=ok_wallet_address,
+            to_address=user_address,
+            amount_bnb=amount_bnb,
+        )
+
+        intent_row = persist_prepared_transfer_intent(
+            db,
+            transfer_id=int(intent_row.id),
+            request_key=request_id,
+            prepared=prepared,
+        )
+
+    try:
+        broadcast_persisted_transfer_intent(
+            db,
+            w3=w3,
+            transfer_id=int(intent_row.id),
+            from_address=ok_wallet_address,
+            copy_to_gas_tx_hash=True,
+        )
+    except BscIntentError as exc:
+        log.warning(
+            "Buy gas top-up remains pending reconciliation: "
+            "transfer_id=%s error=%s",
+            intent_row.id,
+            exc,
+        )
+        return False
 
     return False
 
@@ -1231,6 +1356,36 @@ def _collect_buy_order_usdt(
         db.flush()
         return False
 
+    if existing is not None:
+        prepared_existing = (
+            prepared_transaction_from_transfer(
+                existing
+            )
+        )
+
+        if prepared_existing is not None:
+            if dry_run:
+                return False
+
+            try:
+                broadcast_persisted_transfer_intent(
+                    db,
+                    w3=w3,
+                    transfer_id=int(existing.id),
+                    from_address=from_address,
+                )
+            except BscIntentError as exc:
+                log.warning(
+                    "Prepared buy USDT collection remains "
+                    "pending reconciliation: "
+                    "transfer_id=%s error=%s",
+                    existing.id,
+                    exc,
+                )
+                return False
+
+            return False
+
     order.status = ORDER_STATUS_BUY_COLLECTING
     db.add(order)
     db.flush()
@@ -1298,12 +1453,32 @@ def _collect_buy_order_usdt(
             error=error,
         )
 
-        order.status = ORDER_STATUS_FAILED_REQUIRES_REVIEW
-        order.error = error
+        _mark_order_failed(
+            order,
+            error=error,
+        )
         db.add(order)
         db.flush()
 
-        raise SettlementTransferError(error) from exc
+        try:
+            release_buy_reserve_if_safe(
+                db,
+                order_id=int(order.id),
+                reason=error,
+            )
+        except Exception as reserve_exc:
+            _mark_order_failed(
+                order,
+                error=(
+                    f"reserve_release_failed={reserve_exc}"
+                ),
+            )
+            db.add(order)
+            db.flush()
+
+        raise SettlementTransferError(
+            str(order.error or error)
+        ) from exc
 
     log.info(
         "Operation Guard allowed buy-collection USDT transfer "
@@ -1314,31 +1489,75 @@ def _collect_buy_order_usdt(
         guard_decision.event_id,
     )
 
-    private_key = decrypt_private_key(user_wallet.encrypted_private_key)
-
-    tx_hash = _send_usdt_transfer(
-        w3,
-        from_private_key=private_key,
-        from_address=from_address,
-        to_address=to_address,
-        amount_usdt=amount_usdt,
+    private_key = decrypt_private_key(
+        user_wallet.encrypted_private_key
     )
 
-    _create_or_update_transfer(
+    intent_status = TRANSFER_STATUS_PENDING
+
+    if (
+        existing is not None
+        and str(existing.status)
+        in {
+            TRANSFER_STATUS_PREPARED,
+            TRANSFER_STATUS_PROCESSING,
+        }
+    ):
+        intent_status = str(existing.status)
+
+    intent_row = _create_or_update_transfer(
         db,
         existing=existing,
         batch_id=batch.id,
         order_id=order.id,
         fund_id=batch.fund_id,
         user_id=order.user_id,
-        transfer_type=TRANSFER_TYPE_USER_BUY_USDT_TO_SETTLEMENT,
+        transfer_type=(
+            TRANSFER_TYPE_USER_BUY_USDT_TO_SETTLEMENT
+        ),
         from_address=from_address,
         to_address=to_address,
         amount_usdt=amount_usdt,
-        tx_hash=tx_hash,
-        status=TRANSFER_STATUS_SENT,
+        request_key=request_id,
+        status=intent_status,
         error=None,
     )
+
+    prepared = prepared_transaction_from_transfer(
+        intent_row
+    )
+
+    if prepared is None:
+        prepared = prepare_usdt_transfer_transaction(
+            w3,
+            from_private_key=private_key,
+            from_address=from_address,
+            to_address=to_address,
+            amount_usdt=amount_usdt,
+        )
+
+        intent_row = persist_prepared_transfer_intent(
+            db,
+            transfer_id=int(intent_row.id),
+            request_key=request_id,
+            prepared=prepared,
+        )
+
+    try:
+        broadcast_persisted_transfer_intent(
+            db,
+            w3=w3,
+            transfer_id=int(intent_row.id),
+            from_address=from_address,
+        )
+    except BscIntentError as exc:
+        log.warning(
+            "Buy USDT collection remains pending "
+            "reconciliation: transfer_id=%s error=%s",
+            intent_row.id,
+            exc,
+        )
+        return False
 
     return False
 
@@ -1358,7 +1577,7 @@ def _get_buy_orders_for_batch(db: Session, *, batch_id: int) -> list[FundOrder]:
             ),
         )
         .order_by(FundOrder.created_at.asc(), FundOrder.id.asc())
-        .with_for_update(skip_locked=True)
+        .with_for_update()
         .all()
     )
 
@@ -1372,7 +1591,7 @@ def _get_redeem_orders_for_batch(db: Session, *, batch_id: int) -> list[FundOrde
             FundOrder.status == ORDER_STATUS_SETTLING,
         )
         .order_by(FundOrder.created_at.asc(), FundOrder.id.asc())
-        .with_for_update(skip_locked=True)
+        .with_for_update()
         .all()
     )
 
@@ -1482,42 +1701,94 @@ def collect_buy_usdt_for_batch(
                 collected += 1
                 continue
 
-            user_wallet = _get_active_user_wallet_for_update(db, user_id=order.user_id)
+            try:
+                user_wallet = (
+                    _get_active_user_wallet_for_update(
+                        db,
+                        user_id=order.user_id,
+                    )
+                )
 
-            gas_ready = _ensure_user_wallet_gas(
-                db,
-                w3=w3,
-                batch=batch,
-                order=order,
-                user_wallet=user_wallet,
-                dry_run=dry_run,
-            )
+                gas_ready = _ensure_user_wallet_gas(
+                    db,
+                    w3=w3,
+                    batch=batch,
+                    order=order,
+                    user_wallet=user_wallet,
+                    dry_run=dry_run,
+                )
 
-            if not gas_ready:
-                pending += 1
-                continue
+                if not gas_ready:
+                    pending += 1
+                    continue
 
-            confirmed = _collect_buy_order_usdt(
-                db,
-                w3=w3,
-                batch=batch,
-                order=order,
-                user_wallet=user_wallet,
-                settlement_wallet=settlement_wallet,
-                dry_run=dry_run,
-            )
+                confirmed = _collect_buy_order_usdt(
+                    db,
+                    w3=w3,
+                    batch=batch,
+                    order=order,
+                    user_wallet=user_wallet,
+                    settlement_wallet=settlement_wallet,
+                    dry_run=dry_run,
+                )
 
-            if confirmed:
-                if dry_run:
-                    # In dry-run we simulate successful state-machine path without final balance mutation.
+                if confirmed:
                     collected += 1
                 else:
-                    collected += 1
-            else:
-                pending += 1
+                    pending += 1
+
+            except Exception as exc:
+                error = str(exc)
+
+                _mark_order_failed(
+                    order,
+                    error=error,
+                )
+
+                try:
+                    release_buy_reserve_if_safe(
+                        db,
+                        order_id=int(order.id),
+                        reason=error,
+                    )
+                except Exception as reserve_exc:
+                    _mark_order_failed(
+                        order,
+                        error=(
+                            "reserve_release_failed="
+                            f"{reserve_exc}"
+                        ),
+                    )
+
+                db.add(order)
+                db.flush()
+
+                failed += 1
 
         if failed > 0:
-            raise SettlementTransferError(f"{failed} buy orders failed in batch {batch.id}")
+            error = (
+                f"{failed} buy orders failed "
+                f"in batch {batch.id}"
+            )
+
+            _mark_batch_failed(
+                batch,
+                error=error,
+            )
+            db.add(batch)
+            db.flush()
+
+            return BuyCollectionResult(
+                batch_id=batch.id,
+                fund_id=batch.fund_id,
+                fund_code=fund.code,
+                buy_orders_count=len(buy_orders),
+                collected_orders_count=collected,
+                pending_orders_count=pending,
+                failed_orders_count=failed,
+                batch_status=batch.status,
+                message=error,
+            )
 
         if pending > 0:
             batch.status = BATCH_STATUS_COLLECTING_BUY_USDT
@@ -1554,11 +1825,6 @@ def collect_buy_usdt_for_batch(
     except Exception as exc:
         error = str(exc)
         _mark_batch_failed(batch, error=error)
-
-        for order in buy_orders:
-            if order.status != ORDER_STATUS_BUY_COLLECTED:
-                _mark_order_failed(order, error=error)
-                db.add(order)
 
         db.add(batch)
         db.flush()

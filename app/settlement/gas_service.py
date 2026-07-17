@@ -12,9 +12,9 @@ from web3 import Web3
 
 from app.config import settings
 from app.models import Fund, FundSettlementBatch, FundSettlementTransfer, FundWallet
+from app.settlement.batch_repository import get_or_create_settlement_batch
 from app.settlement.batch_service import get_cutoff_ts, get_default_settlement_date
 from app.settlement.statuses import (
-    BATCH_STATUS_CREATED,
     TRANSFER_STATUS_FAILED,
     TRANSFER_STATUS_PENDING,
     TRANSFER_STATUS_PROCESSING,
@@ -460,49 +460,6 @@ def _get_active_settlement_wallets(
     return rows
 
 
-def _get_or_create_shell_batch(
-    db: Session,
-    *,
-    fund_id: int,
-    settlement_date: date,
-) -> FundSettlementBatch:
-    batch = (
-        db.query(FundSettlementBatch)
-        .filter(
-            FundSettlementBatch.fund_id == fund_id,
-            FundSettlementBatch.settlement_date == settlement_date,
-        )
-        .with_for_update()
-        .first()
-    )
-
-    if batch is not None:
-        return batch
-
-    now = utcnow()
-    cutoff_ts = get_cutoff_ts(settlement_date)
-
-    batch = FundSettlementBatch(
-        fund_id=fund_id,
-        settlement_date=settlement_date,
-        cutoff_ts=cutoff_ts,
-        settlement_ts=cutoff_ts,
-        status=BATCH_STATUS_CREATED,
-        total_buy_usdt=ZERO,
-        total_redeem_shares=ZERO,
-        total_redeem_usdt=ZERO,
-        net_cash_usdt=ZERO,
-        planned_shares_to_issue=ZERO,
-        planned_shares_to_redeem=ZERO,
-        planned_net_shares_change=ZERO,
-        created_at=now,
-        updated_at=now,
-    )
-    db.add(batch)
-    db.flush()
-    return batch
-
-
 def _find_existing_topup_transfer(
     db: Session,
     *,
@@ -596,6 +553,7 @@ def top_up_settlement_wallets_once(
     - if dry_run=True, no BNB transaction is sent and caller may rollback.
     """
     actual_settlement_date = settlement_date or get_default_settlement_date()
+    cutoff_ts = get_cutoff_ts(actual_settlement_date)
     effective_fund_codes = _effective_fund_codes(fund_codes)
     w3 = get_web3()
 
@@ -665,10 +623,12 @@ def top_up_settlement_wallets_once(
 
     for fund, wallet in _get_active_settlement_wallets(db, fund_codes=effective_fund_codes):
         wallet_address = _checksum(w3, wallet.address)
-        batch = _get_or_create_shell_batch(
+        batch = get_or_create_settlement_batch(
             db,
             fund_id=int(fund.id),
             settlement_date=actual_settlement_date,
+            cutoff_ts=cutoff_ts,
+            settlement_ts=cutoff_ts,
         )
 
         existing = _find_existing_topup_transfer(
