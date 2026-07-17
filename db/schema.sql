@@ -1366,6 +1366,8 @@ CREATE TABLE public.fund_orders (
     fee_calc_days_in_month_period integer,
     success_fee_rate numeric(18,10),
     management_fee_rate numeric(18,10),
+    buy_reserve_released_usdt numeric(30,10) DEFAULT 0 NOT NULL,
+    buy_reserve_released_at timestamp with time zone,
     CONSTRAINT fund_orders_side_check CHECK (((side)::text = ANY ((ARRAY['buy'::character varying, 'redeem'::character varying])::text[]))),
     CONSTRAINT fund_orders_status_check CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'settling'::character varying, 'buy_collecting'::character varying, 'buy_collected'::character varying, 'awaiting_positive_net_execution'::character varying, 'awaiting_negative_net_execution'::character varying, 'processing'::character varying, 'success'::character varying, 'failed'::character varying, 'cancelled'::character varying, 'failed_requires_review'::character varying])::text[])))
 );
@@ -1443,6 +1445,9 @@ CREATE TABLE public.fund_settlement_batches (
     bybit_deposit_tx_hash character varying(80),
     bybit_deposit_confirmed_at timestamp with time zone,
     bybit_deposit_account_type character varying(32),
+    bybit_deposit_status character varying(64),
+    bybit_deposit_type character varying(32),
+    bybit_deposit_record_json jsonb,
     bybit_internal_transfer_id character varying(128),
     bybit_internal_transfer_completed_at timestamp with time zone,
     accounting_finalized_at timestamp with time zone,
@@ -1501,12 +1506,19 @@ CREATE TABLE public.fund_settlement_transfers (
     fund_id integer NOT NULL,
     user_id bigint,
     transfer_type character varying(64) NOT NULL,
+    request_key character varying(256),
     from_address character varying(64),
     to_address character varying(64),
     amount_usdt numeric(38,18),
     amount_bnb numeric(38,18),
     gas_tx_hash character varying(80),
     tx_hash character varying(80),
+    chain_id bigint,
+    source_nonce bigint,
+    prepared_tx_hash character varying(80),
+    prepared_raw_tx text,
+    prepared_at timestamp with time zone,
+    broadcast_at timestamp with time zone,
     status character varying(64) DEFAULT 'pending'::character varying NOT NULL,
     attempts integer DEFAULT 0 NOT NULL,
     error text,
@@ -1516,7 +1528,7 @@ CREATE TABLE public.fund_settlement_transfers (
     confirmed_at timestamp with time zone,
     next_retry_at timestamp with time zone,
     last_gas_alert_at timestamp with time zone,
-    CONSTRAINT fund_settlement_transfers_status_check CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'processing'::character varying, 'waiting_for_gas'::character varying, 'sent'::character varying, 'confirmed'::character varying, 'skipped'::character varying, 'pending_confirmation'::character varying, 'failed'::character varying, 'failed_requires_review'::character varying])::text[]))),
+    CONSTRAINT fund_settlement_transfers_status_check CHECK (((status)::text = ANY ((ARRAY['pending'::character varying, 'processing'::character varying, 'waiting_for_gas'::character varying, 'prepared'::character varying, 'sent'::character varying, 'confirmed'::character varying, 'skipped'::character varying, 'pending_confirmation'::character varying, 'failed'::character varying, 'failed_requires_review'::character varying])::text[]))),
     CONSTRAINT fund_settlement_transfers_transfer_type_check CHECK (((transfer_type)::text = ANY ((ARRAY['settlement_wallet_gas_topup'::character varying, 'user_wallet_gas_topup'::character varying, 'user_buy_usdt_to_settlement'::character varying, 'redeem_payout_settlement_to_user_wallet'::character varying, 'positive_net_settlement_to_bybit_subaccount'::character varying, 'bybit_fund_to_unified_internal_transfer'::character varying])::text[])))
 );
 
@@ -2765,6 +2777,14 @@ ALTER TABLE ONLY public.fund_settlement_batches
 
 ALTER TABLE ONLY public.fund_settlement_transfers
     ADD CONSTRAINT fund_settlement_transfers_pkey PRIMARY KEY (id);
+
+
+--
+-- Name: fund_settlement_transfers fund_settlement_transfers_request_key_uq; Type: CONSTRAINT; Schema: public; Owner: -
+--
+
+ALTER TABLE ONLY public.fund_settlement_transfers
+    ADD CONSTRAINT fund_settlement_transfers_request_key_uq UNIQUE (request_key);
 
 
 --
