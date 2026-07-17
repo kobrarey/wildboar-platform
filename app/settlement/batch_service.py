@@ -27,6 +27,10 @@ from app.settlement.accounting_service import (
     validate_settlement_share_state_before_external,
 )
 from app.settlement.batch_repository import get_or_create_settlement_batch
+from app.settlement.buy_reserve_service import (
+    BuyReserveReleaseError,
+    release_buy_reserve_if_safe,
+)
 from app.settlement.pricing_lock import PricingLockError, lock_pricing_for_fund, unlock_pricing_for_fund
 from app.settlement.statuses import (
     BATCH_STATUS_CREATED,
@@ -657,6 +661,41 @@ def create_settlement_batch_for_fund(
             orders=orders,
             error=error_text,
         )
+
+        db.add(batch)
+        for order in orders:
+            db.add(order)
+        db.flush()
+
+        for order in orders:
+            if order.side != ORDER_SIDE_BUY:
+                continue
+
+            try:
+                release_buy_reserve_if_safe(
+                    db,
+                    order_id=int(order.id),
+                    reason=(
+                        "pre_external_validation_failed:"
+                        f"{error_text}"
+                    ),
+                )
+            except BuyReserveReleaseError as reserve_exc:
+                reserve_error = (
+                    f"reserve_release_blocked={reserve_exc}"
+                )
+                current_error = str(
+                    order.error or error_text
+                ).strip()
+
+                if reserve_error not in current_error:
+                    order.error = (
+                        f"{current_error}; {reserve_error}"
+                        if current_error
+                        else reserve_error
+                    )
+
+                db.add(order)
 
         try:
             unlock_pricing_for_fund(

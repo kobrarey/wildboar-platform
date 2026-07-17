@@ -35,9 +35,12 @@ from app.settlement.buy_reserve_service import (
 from app.settlement.statuses import (
     BATCH_STATUS_AWAITING_POSITIVE_NET_EXECUTION,
     BATCH_STATUS_CREATED,
+    BATCH_STATUS_FAILED_REQUIRES_REVIEW,
     BATCH_STATUS_GAS_CHECKING,
     ORDER_SIDE_BUY,
+    ORDER_SIDE_REDEEM,
     ORDER_STATUS_BUY_COLLECTED,
+    ORDER_STATUS_FAILED_REQUIRES_REVIEW,
     ORDER_STATUS_PENDING,
     TRANSFER_STATUS_PENDING,
     TRANSFER_STATUS_PREPARED,
@@ -1077,6 +1080,278 @@ def test_sent_or_ambiguous_usdt_transfer_blocks_release(
     assert wallet.usdt_balance == Decimal("25")
     assert order.buy_reserve_released_usdt == Decimal("0")
     assert order.buy_reserve_released_at is None
+
+
+class BatchFailureSession(ReserveSession):
+    def __init__(
+        self,
+        *,
+        buy_order: Any,
+        redeem_order: Any,
+        wallet: Any,
+    ) -> None:
+        super().__init__(
+            order=buy_order,
+            transfers=[],
+            wallet=wallet,
+        )
+        self.orders = [
+            buy_order,
+            redeem_order,
+        ]
+        self.attached_orders_flushed = False
+
+    def flush(self) -> None:
+        super().flush()
+
+        if all(
+            order.settlement_batch_id is not None
+            for order in self.orders
+        ):
+            self.attached_orders_flushed = True
+
+
+def test_batch_validation_failure_releases_only_buy_reserve(
+    monkeypatch: Any,
+) -> None:
+    created_at = datetime(
+        2026,
+        7,
+        16,
+        12,
+        0,
+        tzinfo=timezone.utc,
+    )
+
+    buy_order = SimpleNamespace(
+        id=5101,
+        user_id=71,
+        fund_id=9,
+        side=ORDER_SIDE_BUY,
+        amount_usdt=Decimal("10"),
+        shares=None,
+        price_usdt=None,
+        settlement_batch_id=None,
+        status=ORDER_STATUS_PENDING,
+        created_at=created_at,
+        settlement_locked_at=None,
+        collection_confirmed_at=None,
+        buy_reserve_released_usdt=Decimal("0"),
+        buy_reserve_released_at=None,
+        error=None,
+    )
+
+    redeem_order = SimpleNamespace(
+        id=5102,
+        user_id=72,
+        fund_id=9,
+        side=ORDER_SIDE_REDEEM,
+        amount_usdt=Decimal("0"),
+        shares=Decimal("1.0000"),
+        price_usdt=None,
+        settlement_batch_id=None,
+        status=ORDER_STATUS_PENDING,
+        created_at=created_at,
+        settlement_locked_at=None,
+        error=None,
+    )
+
+    wallet = SimpleNamespace(
+        id=6101,
+        user_id=buy_order.user_id,
+        blockchain="BSC",
+        is_active=True,
+        usdt_reserved=Decimal("10"),
+        usdt_balance=Decimal("25"),
+    )
+
+    fund = SimpleNamespace(
+        id=9,
+        code="wb_test",
+        shares_outstanding_current=Decimal("100.0000"),
+    )
+
+    batch = SimpleNamespace(
+        id=7101,
+        fund_id=fund.id,
+        settlement_date=date(2026, 7, 16),
+        cutoff_ts=None,
+        settlement_ts=None,
+        settlement_price_usdt=None,
+        status=BATCH_STATUS_CREATED,
+        total_buy_usdt=Decimal("0"),
+        total_redeem_shares=Decimal("0"),
+        total_redeem_usdt=Decimal("0"),
+        net_cash_usdt=Decimal("0"),
+        planned_shares_to_issue=Decimal("0"),
+        planned_shares_to_redeem=Decimal("0"),
+        planned_net_shares_change=Decimal("0"),
+        pricing_locked_at=None,
+        pricing_unlocked_at=None,
+        updated_at=None,
+        error=None,
+    )
+
+    db = BatchFailureSession(
+        buy_order=buy_order,
+        redeem_order=redeem_order,
+        wallet=wallet,
+    )
+
+    monkeypatch.setattr(
+        batch_service,
+        "_lock_pending_orders_for_batch",
+        lambda *args, **kwargs: [
+            buy_order,
+            redeem_order,
+        ],
+    )
+    monkeypatch.setattr(
+        batch_service,
+        "get_or_create_settlement_batch",
+        lambda *args, **kwargs: batch,
+    )
+    monkeypatch.setattr(
+        batch_service,
+        "_validate_pre_lock_share_state",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        batch_service,
+        "lock_pricing_for_fund",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        batch_service,
+        "unlock_pricing_for_fund",
+        lambda *args, **kwargs: None,
+    )
+
+    def fake_price_snapshot(
+        *args: Any,
+        **kwargs: Any,
+    ) -> Any:
+        batch.settlement_price_usdt = Decimal("2")
+
+        return SimpleNamespace(
+            settlement_price_usdt=Decimal("2"),
+        )
+
+    monkeypatch.setattr(
+        batch_service,
+        "fix_settlement_price_for_batch",
+        fake_price_snapshot,
+    )
+
+    validator_calls: list[int] = []
+
+    def failing_validator(
+        session: Any,
+        *,
+        batch: Any,
+        mark_failed: bool,
+    ) -> None:
+        assert mark_failed is True
+        assert session.attached_orders_flushed is True
+
+        validator_calls.append(int(batch.id))
+
+        raise batch_service.SettlementShareQuantityError(
+            "forced_post_flush_share_validation_failure"
+        )
+
+    monkeypatch.setattr(
+        batch_service,
+        "validate_settlement_share_state_before_external",
+        failing_validator,
+    )
+
+    release_call_order_ids: list[int] = []
+
+    def counted_release(
+        session: Any,
+        *,
+        order_id: int,
+        reason: str,
+    ) -> Decimal:
+        release_call_order_ids.append(int(order_id))
+
+        return release_buy_reserve_if_safe(
+            session,
+            order_id=order_id,
+            reason=reason,
+        )
+
+    monkeypatch.setattr(
+        batch_service,
+        "release_buy_reserve_if_safe",
+        counted_release,
+    )
+
+    first_result = (
+        batch_service.create_settlement_batch_for_fund(
+            db,
+            fund=fund,
+            settlement_date=date(2026, 7, 16),
+        )
+    )
+
+    assert db.attached_orders_flushed is True
+    assert validator_calls == [batch.id]
+
+    assert (
+        first_result.status
+        == BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert (
+        batch.status
+        == BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert (
+        buy_order.status
+        == ORDER_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert (
+        redeem_order.status
+        == ORDER_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert release_call_order_ids == [buy_order.id]
+    assert wallet.usdt_reserved == Decimal("0")
+    assert wallet.usdt_balance == Decimal("25")
+
+    assert (
+        buy_order.buy_reserve_released_usdt
+        == Decimal("10")
+    )
+    assert buy_order.buy_reserve_released_at is not None
+    assert (
+        "forced_post_flush_share_validation_failure"
+        in buy_order.error
+    )
+    assert "released_reserved_usdt=10" in buy_order.error
+
+    assert (
+        "released_reserved_usdt"
+        not in redeem_order.error
+    )
+
+    second_result = (
+        batch_service.create_settlement_batch_for_fund(
+            db,
+            fund=fund,
+            settlement_date=date(2026, 7, 16),
+        )
+    )
+
+    assert (
+        second_result.status
+        == BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert release_call_order_ids == [buy_order.id]
+    assert validator_calls == [batch.id]
+    assert wallet.usdt_reserved == Decimal("0")
+    assert wallet.usdt_balance == Decimal("25")
 
 
 class IntentQuery:
