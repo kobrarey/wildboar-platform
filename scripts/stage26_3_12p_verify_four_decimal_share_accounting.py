@@ -37,6 +37,7 @@ from app.models import (
     FundWallet,
     User,
     UserFundPosition,
+    UserFundPositionStats,
     UserWallet,
 )
 from app.settlement.batch_service import _calculate_batch_fields
@@ -90,6 +91,7 @@ TEST_TABLES = [
     FundNegativeFinalizationBatch.__table__,
     FundOrder.__table__,
     UserFundPosition.__table__,
+    UserFundPositionStats.__table__,
     UserWallet.__table__,
 ]
 
@@ -302,6 +304,7 @@ def new_position(
     fund: Fund,
     shares: Decimal = D("2000.0000"),
     shares_reserved: Decimal = D("0.0000"),
+    avg_entry_price_usdt: Decimal | None = None,
 ) -> UserFundPosition:
     position = UserFundPosition(
         user_id=int(user.id),
@@ -311,6 +314,26 @@ def new_position(
     )
     db.add(position)
     db.flush()
+
+    resolved_average = (
+        D(str(avg_entry_price_usdt))
+        if avg_entry_price_usdt is not None
+        else (
+            D("1")
+            if D(str(shares)) > D("0")
+            else D("0")
+        )
+    )
+
+    stats = UserFundPositionStats(
+        user_id=int(user.id),
+        fund_id=int(fund.id),
+        avg_entry_price_usdt=resolved_average,
+        updated_at=NOW,
+    )
+    db.add(stats)
+    db.flush()
+
     return position
 
 
@@ -1433,6 +1456,10 @@ def test_positive_net_accounting_and_idempotency(
         counters["internal_transfer"] += 1
 
         batch.bybit_internal_transfer_completed_at = NOW
+        batch.bybit_internal_transfer_status = (
+            "SUCCESS"
+        )
+        batch.bybit_internal_transfer_error = None
         fake_db.add(batch)
         fake_db.flush()
         return True

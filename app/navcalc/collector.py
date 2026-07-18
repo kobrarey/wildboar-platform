@@ -10,10 +10,16 @@ from app.db import SessionLocal
 from app.navcalc.db_writer import (
     get_fund_by_code,
     get_fund_shares_outstanding_current,
+    get_latest_nav_minute,
     upsert_minute_state,
 )
 from app.navcalc.exceptions import NavCalcError, NavConfigError
-from app.navcalc.minute_builder import minute_floor, open_new_minute_state, update_minute_state
+from app.navcalc.minute_builder import (
+    minute_floor,
+    open_new_minute_state,
+    rebase_minute_state_for_shares,
+    update_minute_state,
+)
 from app.navcalc.nav_guard import evaluate_and_record_nav_guard, mark_nav_guard_accepted
 from app.navcalc.portfolio_nav import compute_nav
 from app.navcalc.schemas import FundNavConfig, MinuteState
@@ -84,6 +90,27 @@ def run_collector_forever(
         fund_code=cfg.fund_code,
     )
 
+    with SessionLocal() as db:
+        latest_nav_row = get_latest_nav_minute(
+            db,
+            fund_id=fund_id,
+        )
+
+    restored_prev_close_nav = (
+        Decimal(str(latest_nav_row.nav_usdt))
+        if latest_nav_row is not None
+        else None
+    )
+    restored_prev_close_shares = (
+        Decimal(
+            str(
+                latest_nav_row.shares_outstanding
+            )
+        )
+        if latest_nav_row is not None
+        else None
+    )
+
     log.info(
         "Starting NAV collector fund=%s fund_id=%s interval=%ss shares_outstanding_source=db shares_outstanding=%s",
         cfg.fund_code,
@@ -93,7 +120,10 @@ def run_collector_forever(
     )
 
     current_state: MinuteState | None = None
-    prev_close_nav = None
+    prev_close_nav = restored_prev_close_nav
+    prev_close_shares_outstanding = (
+        restored_prev_close_shares
+    )
     next_tick = time.monotonic()
 
     while True:
@@ -169,19 +199,35 @@ def run_collector_forever(
                     current_sample_nav=sample_nav,
                     sample_ts=sample_ts,
                     shares_outstanding=shares_outstanding,
-                    prev_close_nav=None,
+                    prev_close_nav=prev_close_nav,
+                    prev_close_shares_outstanding=(
+                        prev_close_shares_outstanding
+                    ),
                 )
 
             elif sample_minute == current_state.minute_ts:
+                current_state = (
+                    rebase_minute_state_for_shares(
+                        current_state,
+                        shares_outstanding=(
+                            shares_outstanding
+                        ),
+                    )
+                )
+
                 current_state = update_minute_state(
                     current_state,
                     current_sample_nav=sample_nav,
                     sample_ts=sample_ts,
                 )
-                current_state.shares_outstanding = shares_outstanding
 
             elif sample_minute > current_state.minute_ts:
-                prev_close_nav = current_state.close_nav
+                prev_close_nav = (
+                    current_state.close_nav
+                )
+                prev_close_shares_outstanding = (
+                    current_state.shares_outstanding
+                )
 
                 _log_gap_minutes(
                     fund_code=cfg.fund_code,
@@ -196,6 +242,9 @@ def run_collector_forever(
                     sample_ts=sample_ts,
                     shares_outstanding=shares_outstanding,
                     prev_close_nav=prev_close_nav,
+                    prev_close_shares_outstanding=(
+                        prev_close_shares_outstanding
+                    ),
                 )
 
             else:

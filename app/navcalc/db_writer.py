@@ -38,6 +38,19 @@ def get_fund_shares_outstanding_current(
     return Decimal(str(value))
 
 
+def get_latest_nav_minute(
+    db: Session,
+    *,
+    fund_id: int,
+) -> FundNavMinute | None:
+    return (
+        db.query(FundNavMinute)
+        .filter(FundNavMinute.fund_id == int(fund_id))
+        .order_by(FundNavMinute.ts_utc.desc())
+        .first()
+    )
+
+
 def upsert_nav_minute(
     db: Session,
     *,

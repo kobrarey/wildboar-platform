@@ -15,6 +15,12 @@ from app.settlement.share_quantity import (
     require_share_quantity_4dp_aligned,
 )
 from app.settlement.pricing_lock import PricingLockError, unlock_pricing_for_fund
+from app.settlement.position_cost_basis import (
+    PositionCostBasisError,
+    apply_buy_cost_basis,
+    apply_redeem_cost_basis,
+    validate_position_cost_basis,
+)
 from app.settlement.statuses import (
     BATCH_STATUS_FAILED_REQUIRES_REVIEW,
     BATCH_STATUS_POSITIVE_CASH_SETTLEMENT_COMPLETED,
@@ -196,27 +202,38 @@ def _build_accounting_share_plan(
             fund_id=int(fund_id),
         )
 
-        if position is None:
-            return None
-
         if key not in checked_positions:
-            _require_4dp(
-                position.shares,
-                field_name=(
-                    f"position_{user_id}_{fund_id}_shares"
-                ),
-            )
-            _require_4dp(
-                getattr(
-                    position,
-                    "shares_reserved",
-                    ZERO,
-                ),
-                field_name=(
-                    f"position_{user_id}_{fund_id}"
-                    "_shares_reserved"
-                ),
-            )
+            if position is not None:
+                _require_4dp(
+                    position.shares,
+                    field_name=(
+                        f"position_{user_id}_{fund_id}_shares"
+                    ),
+                )
+                _require_4dp(
+                    getattr(
+                        position,
+                        "shares_reserved",
+                        ZERO,
+                    ),
+                    field_name=(
+                        f"position_{user_id}_{fund_id}"
+                        "_shares_reserved"
+                    ),
+                )
+
+            try:
+                validate_position_cost_basis(
+                    db,
+                    position=position,
+                    user_id=int(user_id),
+                    fund_id=int(fund_id),
+                )
+            except PositionCostBasisError as exc:
+                raise SettlementShareQuantityError(
+                    str(exc)
+                ) from exc
+
             checked_positions.add(key)
 
         return position
@@ -599,6 +616,19 @@ def _finalize_buy_order(
         fund_id=batch.fund_id,
     )
 
+    try:
+        apply_buy_cost_basis(
+            db,
+            position=position,
+            amount_usdt=amount_usdt,
+            issued_shares=buyer_shares,
+            now=now,
+        )
+    except PositionCostBasisError as exc:
+        raise SettlementAccountingError(
+            str(exc)
+        ) from exc
+
     position.shares = (
         _dec(position.shares) + buyer_shares
     )
@@ -657,6 +687,18 @@ def _finalize_redeem_order(
             f"Redeem order {order.id} would make shares_reserved negative: "
             f"shares_reserved={reserved_before}, redeem={redeem_shares}"
         )
+
+    try:
+        apply_redeem_cost_basis(
+            db,
+            position=position,
+            redeem_shares=redeem_shares,
+            now=now,
+        )
+    except PositionCostBasisError as exc:
+        raise SettlementAccountingError(
+            str(exc)
+        ) from exc
 
     position.shares = shares_before - redeem_shares
     position.shares_reserved = reserved_before - redeem_shares

@@ -53,6 +53,55 @@ def _safe_price(nav_usdt: Any, shares_outstanding: Any) -> Decimal:
     return nav / shares
 
 
+def _calculate_position_metrics(
+    *,
+    shares: Any,
+    current_price: Any,
+    avg_entry_price: Any | None,
+) -> tuple[
+    Decimal | None,
+    Decimal | None,
+    Decimal | None,
+]:
+    shares_value = _to_decimal(shares)
+    current_price_value = _to_decimal(
+        current_price
+    )
+
+    if avg_entry_price is None:
+        return None, None, None
+
+    average_value = _to_decimal(
+        avg_entry_price
+    )
+
+    if (
+        shares_value <= ZERO
+        or current_price_value <= ZERO
+        or average_value <= ZERO
+    ):
+        return None, None, None
+
+    result_pct = (
+        (
+            current_price_value
+            / average_value
+        )
+        - Decimal("1")
+    ) * Decimal("100")
+
+    result_usdt = (
+        current_price_value
+        - average_value
+    ) * shares_value
+
+    return (
+        average_value,
+        result_pct,
+        result_usdt,
+    )
+
+
 def _round_0(value: Any) -> Decimal:
     return _to_decimal(value).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
 
@@ -297,17 +346,34 @@ def _build_assets_block(db: Session, user: User | None, lang: str) -> list[dict]
         pos_row = pos_by_fund.get(fund.id)
         stats_row = stats_by_fund.get(fund.id)
 
-        shares = _to_decimal(pos_row.shares if pos_row else 0)
-        avg_entry_price = _to_decimal(stats_row.avg_entry_price_usdt if stats_row else 0)
+        shares = _to_decimal(
+            pos_row.shares
+            if pos_row
+            else ZERO
+        )
 
-        current_snap = _build_market_snapshot(db, fund, lang)
-        current_price = _to_decimal(current_snap["current_price_usdt"])
+        current_snap = _build_market_snapshot(
+            db,
+            fund,
+            lang,
+        )
+        current_price = _to_decimal(
+            current_snap["current_price_usdt"]
+        )
 
-        position_result_pct = None
-        if current_price > 0:
-            position_result_pct = (avg_entry_price / current_price - Decimal("1")) * Decimal("100")
-
-        position_result_usdt = (avg_entry_price - current_price) * shares
+        (
+            avg_entry_price,
+            position_result_pct,
+            position_result_usdt,
+        ) = _calculate_position_metrics(
+            shares=shares,
+            current_price=current_price,
+            avg_entry_price=(
+                stats_row.avg_entry_price_usdt
+                if stats_row is not None
+                else None
+            ),
+        )
 
         payload.append(
             {

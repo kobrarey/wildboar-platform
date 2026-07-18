@@ -47,6 +47,51 @@ log = logging.getLogger("settlement.bybit_deposit_service")
 
 ZERO = Decimal("0")
 
+BYBIT_INTERNAL_TRANSFER_STATUS_SUCCESS = (
+    "SUCCESS"
+)
+BYBIT_INTERNAL_TRANSFER_STATUS_PENDING = (
+    "PENDING"
+)
+BYBIT_INTERNAL_TRANSFER_STATUS_FAILED = (
+    "FAILED"
+)
+BYBIT_INTERNAL_TRANSFER_STATUS_UNKNOWN = (
+    "STATUS_UNKNOWN"
+)
+BYBIT_INTERNAL_TRANSFER_STATUS_SKIPPED_ZERO_NET = (
+    "SKIPPED_ZERO_NET"
+)
+BYBIT_INTERNAL_TRANSFER_STATUS_SKIPPED_ALREADY_UNIFIED = (
+    "SKIPPED_ALREADY_UNIFIED"
+)
+
+BYBIT_INTERNAL_TRANSFER_READY_STATUSES = frozenset(
+    {
+        BYBIT_INTERNAL_TRANSFER_STATUS_SUCCESS,
+        BYBIT_INTERNAL_TRANSFER_STATUS_SKIPPED_ZERO_NET,
+        BYBIT_INTERNAL_TRANSFER_STATUS_SKIPPED_ALREADY_UNIFIED,
+    }
+)
+
+
+def is_internal_transfer_accounting_ready(
+    batch: FundSettlementBatch,
+) -> bool:
+    status = str(
+        getattr(
+            batch,
+            "bybit_internal_transfer_status",
+            None,
+        )
+        or ""
+    ).strip().upper()
+
+    return (
+        status
+        in BYBIT_INTERNAL_TRANSFER_READY_STATUSES
+    )
+
 
 class BybitDepositSettlementError(RuntimeError):
     pass
@@ -1318,6 +1363,52 @@ def deterministic_internal_transfer_id(
     )
 
 
+def _save_internal_transfer_state(
+    db: Session,
+    *,
+    batch: FundSettlementBatch,
+    status: str,
+    error: str | None,
+    completed: bool,
+    batch_status: str | None = None,
+) -> None:
+    now = utcnow()
+    normalized_status = str(
+        status or ""
+    ).strip().upper()
+
+    batch.bybit_internal_transfer_status = (
+        normalized_status
+    )
+    batch.bybit_internal_transfer_error = (
+        error
+    )
+
+    if completed:
+        batch.bybit_internal_transfer_completed_at = (
+            batch.bybit_internal_transfer_completed_at
+            or now
+        )
+    else:
+        batch.bybit_internal_transfer_completed_at = (
+            None
+        )
+
+    if batch_status is not None:
+        batch.status = batch_status
+
+    if (
+        normalized_status
+        == BYBIT_INTERNAL_TRANSFER_STATUS_FAILED
+    ):
+        batch.error = error
+
+    batch.updated_at = now
+
+    db.add(batch)
+    db.flush()
+
+
 def _parse_internal_transfer_status(
     payload: dict[str, Any],
 ) -> str:
@@ -1383,12 +1474,6 @@ def query_fund_to_unified_internal_transfer(
             {"result": row}
         )
 
-        if status == "FAILED":
-            raise BybitDepositSettlementError(
-                "Bybit FUND -> UNIFIED internal transfer failed: "
-                f"transferId={transfer_id} status={status}"
-            )
-
         return BybitInternalTransferResult(
             transfer_id=transfer_id,
             status=status,
@@ -1408,7 +1493,9 @@ def execute_fund_to_unified_internal_transfer(
     if amount_usdt <= 0:
         return BybitInternalTransferResult(
             transfer_id=transfer_id,
-            status="SKIPPED_ZERO_AMOUNT",
+            status=(
+                BYBIT_INTERNAL_TRANSFER_STATUS_SKIPPED_ZERO_NET
+            ),
             completed=True,
             raw={},
         )
@@ -1421,28 +1508,22 @@ def execute_fund_to_unified_internal_transfer(
         "toAccountType": "UNIFIED",
     }
 
-    response = client.post("/v5/asset/transfer/inter-transfer", payload)
-    status = _parse_internal_transfer_status(response)
+    response = client.post(
+        "/v5/asset/transfer/inter-transfer",
+        payload,
+    )
+    status = _parse_internal_transfer_status(
+        response
+    )
 
-    if status in {"SUCCESS", "SUCCEEDED"}:
-        return BybitInternalTransferResult(
-            transfer_id=transfer_id,
-            status=status,
-            completed=True,
-            raw=response,
-        )
-
-    if status in {"PENDING", "STATUS_UNKNOWN", "UNKNOWN"}:
-        return BybitInternalTransferResult(
-            transfer_id=transfer_id,
-            status=status,
-            completed=False,
-            raw=response,
-        )
-
-    raise BybitDepositSettlementError(
-        f"Bybit FUND -> UNIFIED internal transfer failed: "
-        f"transferId={transfer_id} status={status} response={response}"
+    return BybitInternalTransferResult(
+        transfer_id=transfer_id,
+        status=status,
+        completed=(
+            status
+            == BYBIT_INTERNAL_TRANSFER_STATUS_SUCCESS
+        ),
+        raw=response,
     )
 
 
@@ -1462,25 +1543,26 @@ def ensure_fund_to_unified_internal_transfer(
     amount_usdt = _dec(batch.net_cash_usdt)
     now = utcnow()
 
-    if amount_usdt == 0:
+    if amount_usdt == ZERO:
         batch.bybit_internal_transfer_id = (
             batch.bybit_internal_transfer_id
             or "skipped_zero_net"
         )
-        batch.bybit_internal_transfer_completed_at = (
-            batch.bybit_internal_transfer_completed_at
-            or now
+
+        _save_internal_transfer_state(
+            db,
+            batch=batch,
+            status=(
+                BYBIT_INTERNAL_TRANSFER_STATUS_SKIPPED_ZERO_NET
+            ),
+            error=None,
+            completed=True,
         )
-        batch.updated_at = now
-        db.add(batch)
-        db.flush()
         return True
 
-    if batch.bybit_internal_transfer_completed_at is not None:
-        return True
-
-    account_type = (
-        batch.bybit_deposit_account_type or ""
+    account_type = str(
+        batch.bybit_deposit_account_type
+        or ""
     ).strip().lower()
 
     if account_type in {
@@ -1492,14 +1574,37 @@ def ensure_fund_to_unified_internal_transfer(
             batch.bybit_internal_transfer_id
             or f"skipped_{account_type}"
         )
-        batch.bybit_internal_transfer_completed_at = now
-        batch.updated_at = now
-        db.add(batch)
-        db.flush()
+
+        _save_internal_transfer_state(
+            db,
+            batch=batch,
+            status=(
+                BYBIT_INTERNAL_TRANSFER_STATUS_SKIPPED_ALREADY_UNIFIED
+            ),
+            error=None,
+            completed=True,
+        )
+        return True
+
+    if is_internal_transfer_accounting_ready(
+        batch
+    ):
+        if (
+            batch.bybit_internal_transfer_completed_at
+            is None
+        ):
+            batch.bybit_internal_transfer_completed_at = (
+                now
+            )
+            batch.updated_at = now
+            db.add(batch)
+            db.flush()
+
         return True
 
     existing_transfer_id = str(
-        batch.bybit_internal_transfer_id or ""
+        batch.bybit_internal_transfer_id
+        or ""
     ).strip()
 
     transfer_id = (
@@ -1511,31 +1616,51 @@ def ensure_fund_to_unified_internal_transfer(
     )
 
     if not existing_transfer_id:
-        batch.bybit_internal_transfer_id = transfer_id
+        batch.bybit_internal_transfer_id = (
+            transfer_id
+        )
         batch.updated_at = now
         db.add(batch)
         db.flush()
 
     if dry_run:
-        batch.status = BATCH_STATUS_PENDING_CONFIRMATION
-        batch.updated_at = now
-        db.add(batch)
-        db.flush()
+        _save_internal_transfer_state(
+            db,
+            batch=batch,
+            status=(
+                BYBIT_INTERNAL_TRANSFER_STATUS_PENDING
+            ),
+            error=(
+                "dry_run:"
+                "fund_to_unified_transfer_not_executed"
+            ),
+            completed=False,
+            batch_status=(
+                BATCH_STATUS_PENDING_CONFIRMATION
+            ),
+        )
         return False
 
     if mock_confirm:
-        batch.bybit_internal_transfer_completed_at = now
-        batch.updated_at = now
-        db.add(batch)
-        db.flush()
+        _save_internal_transfer_state(
+            db,
+            batch=batch,
+            status=(
+                BYBIT_INTERNAL_TRANSFER_STATUS_SUCCESS
+            ),
+            error=None,
+            completed=True,
+        )
         return True
 
     if fund_client is None:
-        fund_client = get_active_fund_bybit_client(
-            db,
-            fund_id=batch.fund_id,
-            coin="USDT",
-            chain_type="BSC",
+        fund_client = (
+            get_active_fund_bybit_client(
+                db,
+                fund_id=batch.fund_id,
+                coin="USDT",
+                chain_type="BSC",
+            )
         )
 
     if existing_transfer_id:
@@ -1546,20 +1671,89 @@ def ensure_fund_to_unified_internal_transfer(
             )
         )
 
+        if existing_result is None:
+            error = (
+                "Bybit FUND -> UNIFIED internal "
+                "transfer was not returned by query: "
+                f"transferId={transfer_id}"
+            )
+
+            _save_internal_transfer_state(
+                db,
+                batch=batch,
+                status=(
+                    BYBIT_INTERNAL_TRANSFER_STATUS_UNKNOWN
+                ),
+                error=error,
+                completed=False,
+                batch_status=(
+                    BATCH_STATUS_PENDING_CONFIRMATION
+                ),
+            )
+            return False
+
         if (
-            existing_result is not None
-            and existing_result.completed
+            existing_result.status
+            == BYBIT_INTERNAL_TRANSFER_STATUS_SUCCESS
         ):
-            batch.bybit_internal_transfer_completed_at = now
-            batch.updated_at = now
-            db.add(batch)
-            db.flush()
+            _save_internal_transfer_state(
+                db,
+                batch=batch,
+                status=(
+                    BYBIT_INTERNAL_TRANSFER_STATUS_SUCCESS
+                ),
+                error=None,
+                completed=True,
+            )
             return True
 
-        batch.status = BATCH_STATUS_PENDING_CONFIRMATION
-        batch.updated_at = now
-        db.add(batch)
-        db.flush()
+        if (
+            existing_result.status
+            == BYBIT_INTERNAL_TRANSFER_STATUS_FAILED
+        ):
+            error = (
+                "Bybit FUND -> UNIFIED internal "
+                "transfer failed: "
+                f"transferId={transfer_id} "
+                f"status={existing_result.status}"
+            )
+
+            _save_internal_transfer_state(
+                db,
+                batch=batch,
+                status=(
+                    BYBIT_INTERNAL_TRANSFER_STATUS_FAILED
+                ),
+                error=error,
+                completed=False,
+                batch_status=(
+                    BATCH_STATUS_FAILED_REQUIRES_REVIEW
+                ),
+            )
+            return False
+
+        unknown_error = None
+
+        if (
+            existing_result.status
+            == BYBIT_INTERNAL_TRANSFER_STATUS_UNKNOWN
+        ):
+            unknown_error = (
+                "Bybit FUND -> UNIFIED internal "
+                "transfer status is unknown: "
+                f"transferId={transfer_id}"
+            )
+
+        _save_internal_transfer_state(
+            db,
+            batch=batch,
+            status=existing_result.status,
+            error=unknown_error,
+            completed=False,
+            batch_status=(
+                BATCH_STATUS_PENDING_CONFIRMATION
+            ),
+        )
         return False
 
     result = execute_fund_to_unified_internal_transfer(
@@ -1568,15 +1762,66 @@ def ensure_fund_to_unified_internal_transfer(
         amount_usdt=amount_usdt,
     )
 
-    if result.completed:
-        batch.bybit_internal_transfer_completed_at = now
-        batch.updated_at = now
-        db.add(batch)
-        db.flush()
+    if (
+        result.status
+        == BYBIT_INTERNAL_TRANSFER_STATUS_SUCCESS
+    ):
+        _save_internal_transfer_state(
+            db,
+            batch=batch,
+            status=(
+                BYBIT_INTERNAL_TRANSFER_STATUS_SUCCESS
+            ),
+            error=None,
+            completed=True,
+        )
         return True
 
-    batch.status = BATCH_STATUS_PENDING_CONFIRMATION
-    batch.updated_at = now
-    db.add(batch)
-    db.flush()
+    if (
+        result.status
+        == BYBIT_INTERNAL_TRANSFER_STATUS_FAILED
+    ):
+        error = (
+            "Bybit FUND -> UNIFIED internal "
+            "transfer failed: "
+            f"transferId={transfer_id} "
+            f"status={result.status}"
+        )
+
+        _save_internal_transfer_state(
+            db,
+            batch=batch,
+            status=(
+                BYBIT_INTERNAL_TRANSFER_STATUS_FAILED
+            ),
+            error=error,
+            completed=False,
+            batch_status=(
+                BATCH_STATUS_FAILED_REQUIRES_REVIEW
+            ),
+        )
+        return False
+
+    result_error = None
+
+    if (
+        result.status
+        == BYBIT_INTERNAL_TRANSFER_STATUS_UNKNOWN
+    ):
+        result_error = (
+            "Bybit FUND -> UNIFIED internal "
+            "transfer status is unknown after POST: "
+            f"transferId={transfer_id}"
+        )
+
+    _save_internal_transfer_state(
+        db,
+        batch=batch,
+        status=result.status,
+        error=result_error,
+        completed=False,
+        batch_status=(
+            BATCH_STATUS_PENDING_CONFIRMATION
+        ),
+    )
     return False

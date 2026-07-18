@@ -766,10 +766,27 @@ class FundSettlementBatch(Base):
         nullable=True,
     )
 
-    bybit_internal_transfer_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
-    bybit_internal_transfer_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    bybit_internal_transfer_id: Mapped[str | None] = mapped_column(
+        String(128),
+        nullable=True,
+    )
+    bybit_internal_transfer_completed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    bybit_internal_transfer_status: Mapped[str | None] = mapped_column(
+        String(32),
+        nullable=True,
+    )
+    bybit_internal_transfer_error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
 
-    accounting_finalized_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    accounting_finalized_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
 
     pricing_locked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     pricing_unlocked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

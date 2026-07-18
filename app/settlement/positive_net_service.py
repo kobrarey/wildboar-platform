@@ -22,6 +22,7 @@ from app.settlement.bybit_deposit_service import (
     BybitDepositSettlementError,
     confirm_bybit_deposit_for_batch,
     ensure_fund_to_unified_internal_transfer,
+    is_internal_transfer_accounting_ready,
     send_or_confirm_positive_net_transfer,
 )
 from app.settlement.payout_service import (
@@ -296,7 +297,11 @@ def process_positive_net_batch(
             seller_payouts_completed=batch.seller_payouts_completed_at is not None,
             positive_net_transfer_confirmed=True,
             bybit_deposit_confirmed=batch.bybit_deposit_confirmed_at is not None,
-            internal_transfer_ready=batch.bybit_internal_transfer_completed_at is not None,
+            internal_transfer_ready=(
+                is_internal_transfer_accounting_ready(
+                    batch
+                )
+            ),
             accounting_finalized=True,
             pricing_unlocked=batch.pricing_unlocked_at is not None,
             message="Batch accounting already finalized.",
@@ -403,12 +408,28 @@ def process_positive_net_batch(
 
         batch = _get_batch_for_update(db, batch_id=batch.id)
 
-        internal_ready = _internal_transfer_ready_or_skipped(
+        internal_ready = (
+            _internal_transfer_ready_or_skipped(
+                db,
+                batch=batch,
+                fund_client_factory=(
+                    fund_client_factory
+                ),
+                dry_run=dry_run,
+                mock_bybit=mock_bybit,
+            )
+        )
+
+        batch = _get_batch_for_update(
             db,
-            batch=batch,
-            fund_client_factory=fund_client_factory,
-            dry_run=dry_run,
-            mock_bybit=mock_bybit,
+            batch_id=batch.id,
+        )
+
+        internal_ready = (
+            internal_ready
+            and is_internal_transfer_accounting_ready(
+                batch
+            )
         )
 
         if not internal_ready:
@@ -456,7 +477,11 @@ def process_positive_net_batch(
             seller_payouts_completed=finalized_batch.seller_payouts_completed_at is not None,
             positive_net_transfer_confirmed=True,
             bybit_deposit_confirmed=finalized_batch.bybit_deposit_confirmed_at is not None,
-            internal_transfer_ready=finalized_batch.bybit_internal_transfer_completed_at is not None,
+            internal_transfer_ready=(
+                is_internal_transfer_accounting_ready(
+                    finalized_batch
+                )
+            ),
             accounting_finalized=finalized_batch.accounting_finalized_at is not None,
             pricing_unlocked=finalized_batch.pricing_unlocked_at is not None,
             message="Positive net settlement finalized.",
@@ -531,9 +556,9 @@ def process_positive_net_batch(
                 is not None
             ),
             internal_transfer_ready=(
-                _dec(batch.net_cash_usdt) == ZERO
-                or batch.bybit_internal_transfer_completed_at
-                is not None
+                is_internal_transfer_accounting_ready(
+                    batch
+                )
             ),
             accounting_finalized=False,
             pricing_unlocked=pricing_unlocked,

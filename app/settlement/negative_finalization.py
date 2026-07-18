@@ -27,6 +27,12 @@ from app.settlement.negative_finalization_types import (
     utcnow,
 )
 from app.settlement.negative_sale_snapshot import dec
+from app.settlement.position_cost_basis import (
+    PositionCostBasisError,
+    apply_buy_cost_basis,
+    apply_redeem_cost_basis,
+    validate_position_cost_basis,
+)
 from app.settlement.share_quantity import (
     ShareQuantityError,
     calculate_successful_buy_share_quantity,
@@ -891,6 +897,18 @@ def _validate_positions_and_wallets(
                 f"Missing user fund position for redeem order {order.id}"
             )
 
+        try:
+            validate_position_cost_basis(
+                db,
+                position=position,
+                user_id=int(order.user_id),
+                fund_id=int(fund_id),
+            )
+        except PositionCostBasisError as exc:
+            raise NegativeFinalizationError(
+                str(exc)
+            ) from exc
+
         redeem_shares = _share_4dp(
             order.shares,
             field_name=(
@@ -942,6 +960,18 @@ def _validate_positions_and_wallets(
             user_id=int(order.user_id),
             fund_id=int(fund_id),
         )
+
+        try:
+            validate_position_cost_basis(
+                db,
+                position=position,
+                user_id=int(order.user_id),
+                fund_id=int(fund_id),
+            )
+        except PositionCostBasisError as exc:
+            raise NegativeFinalizationError(
+                str(exc)
+            ) from exc
 
         if position is not None:
             _share_4dp(
@@ -1191,6 +1221,7 @@ def _wallet_reserves_after_json(
 
 
 def _apply_redeem_accounting(
+    db: Session,
     *,
     redeem_orders: list[FundOrder],
     redeem_positions: dict[int, UserFundPosition],
@@ -1214,6 +1245,18 @@ def _apply_redeem_accounting(
                 f"redeem_order_{order.id}_shares"
             ),
         )
+
+        try:
+            apply_redeem_cost_basis(
+                db,
+                position=position,
+                redeem_shares=redeem_shares,
+                now=executed_at,
+            )
+        except PositionCostBasisError as exc:
+            raise NegativeFinalizationError(
+                str(exc)
+            ) from exc
 
         position.shares = _share_4dp(
             position_shares_before - redeem_shares,
@@ -1343,9 +1386,27 @@ def _apply_buy_accounting(
         wallet_balance_before = dec(wallet.usdt_balance or ZERO)
         wallet_reserved_before = dec(wallet.usdt_reserved or ZERO)
         position_shares_before = dec(position.shares or ZERO)
-        position_reserved_before = dec(position.shares_reserved or ZERO)
+        position_reserved_before = dec(
+            position.shares_reserved or ZERO
+        )
 
-        wallet.usdt_reserved = _q10(wallet_reserved_before - dec(order.amount_usdt))
+        try:
+            apply_buy_cost_basis(
+                db,
+                position=position,
+                amount_usdt=dec(order.amount_usdt),
+                issued_shares=buy_shares,
+                now=executed_at,
+            )
+        except PositionCostBasisError as exc:
+            raise NegativeFinalizationError(
+                str(exc)
+            ) from exc
+
+        wallet.usdt_reserved = _q10(
+            wallet_reserved_before
+            - dec(order.amount_usdt)
+        )
         position.shares = _share_4dp(
             position_shares_before + buy_shares,
             field_name=(
@@ -1479,6 +1540,7 @@ def _apply_accounting_finalization(
     finalization.updated_at = now
 
     redeem_updates = _apply_redeem_accounting(
+        db,
         redeem_orders=redeem_orders,
         redeem_positions=position_wallet_validation["redeem_positions"],
         executed_at=now,

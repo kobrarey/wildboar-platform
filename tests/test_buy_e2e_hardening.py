@@ -735,6 +735,8 @@ def test_accounting_runs_only_after_all_final_confirmations(
         seller_payouts_completed_at=now,
         bybit_deposit_confirmed_at=None,
         bybit_internal_transfer_completed_at=None,
+        bybit_internal_transfer_status=None,
+        bybit_internal_transfer_error=None,
         pricing_unlocked_at=None,
         positive_net_started_at=None,
         updated_at=None,
@@ -745,6 +747,7 @@ def test_accounting_runs_only_after_all_final_confirmations(
     state = {
         "deposit_confirmed": False,
         "internal_ready": False,
+        "persist_internal_status": False,
         "accounting_calls": 0,
     }
 
@@ -803,6 +806,13 @@ def test_accounting_runs_only_after_all_final_confirmations(
     ) -> bool:
         if state["internal_ready"]:
             batch.bybit_internal_transfer_completed_at = now
+
+            if state["persist_internal_status"]:
+                batch.bybit_internal_transfer_status = (
+                    "SUCCESS"
+                )
+                batch.bybit_internal_transfer_error = None
+
             return True
 
         return False
@@ -841,6 +851,30 @@ def test_accounting_runs_only_after_all_final_confirmations(
 
     state["deposit_confirmed"] = True
     state["internal_ready"] = True
+
+    legacy_completed_result = (
+        positive_net_service.process_positive_net_batch(
+            db,
+            batch_id=batch.id,
+            finalize_accounting=True,
+        )
+    )
+
+    assert (
+        legacy_completed_result.accounting_finalized
+        is False
+    )
+    assert state["accounting_calls"] == 0
+    assert (
+        batch.bybit_internal_transfer_completed_at
+        is not None
+    )
+    assert (
+        batch.bybit_internal_transfer_status
+        is None
+    )
+
+    state["persist_internal_status"] = True
 
     final_result = (
         positive_net_service.process_positive_net_batch(
