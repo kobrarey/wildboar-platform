@@ -653,6 +653,20 @@ class FundOrder(Base):
         nullable=True,
     )
 
+    redeem_reserve_released_shares: Mapped[Decimal] = mapped_column(
+        Numeric(30, 10),
+        nullable=False,
+        server_default=sa_text("0"),
+    )
+    redeem_reserve_released_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    redeem_reserve_release_reason: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
     error: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
@@ -714,9 +728,26 @@ class FundSettlementBatch(Base):
     required_master_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
     withdrawal_request_amount_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
     negative_net_target_calculated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
-    fee_calc_month_open_price_usdt: Mapped[Decimal | None] = mapped_column(Numeric(30, 10), nullable=True)
-    fee_calc_month_open_source: Mapped[str | None] = mapped_column(String(64), nullable=True)
-    fee_calc_days_in_month_period: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    fee_calc_month_open_price_usdt: Mapped[Decimal | None] = mapped_column(
+        Numeric(30, 10),
+        nullable=True,
+    )
+    fee_calc_month_open_source: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    fee_calc_days_in_month_period: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    negative_net_target_diagnostics_json: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+    negative_net_fee_policy_version: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
 
     planned_shares_to_issue: Mapped[Decimal] = mapped_column(
         Numeric(30, 10),

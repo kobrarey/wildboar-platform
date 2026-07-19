@@ -1145,7 +1145,7 @@ class BatchFailureSession(ReserveSession):
             self.attached_orders_flushed = True
 
 
-def test_batch_validation_failure_releases_only_buy_reserve(
+def test_batch_validation_failure_delegates_to_safe_recovery(
     monkeypatch: Any,
 ) -> None:
     created_at = datetime(
@@ -1255,11 +1255,6 @@ def test_batch_validation_failure_releases_only_buy_reserve(
         "lock_pricing_for_fund",
         lambda *args, **kwargs: None,
     )
-    monkeypatch.setattr(
-        batch_service,
-        "unlock_pricing_for_fund",
-        lambda *args, **kwargs: None,
-    )
 
     def fake_price_snapshot(
         *args: Any,
@@ -1300,26 +1295,52 @@ def test_batch_validation_failure_releases_only_buy_reserve(
         failing_validator,
     )
 
-    release_call_order_ids: list[int] = []
+    recovery_calls: list[
+        tuple[int, str, str]
+    ] = []
 
-    def counted_release(
+    def fake_safe_recovery(
         session: Any,
         *,
-        order_id: int,
-        reason: str,
-    ) -> Decimal:
-        release_call_order_ids.append(int(order_id))
+        settlement_batch_id: int,
+        error: str,
+        source: str,
+    ) -> Any:
+        assert session is db
 
-        return release_buy_reserve_if_safe(
-            session,
-            order_id=order_id,
-            reason=reason,
+        recovery_calls.append(
+            (
+                int(settlement_batch_id),
+                str(error),
+                str(source),
+            )
+        )
+
+        batch.status = (
+            BATCH_STATUS_FAILED_REQUIRES_REVIEW
+        )
+        batch.error = str(error)
+
+        for order in (
+            buy_order,
+            redeem_order,
+        ):
+            order.status = (
+                ORDER_STATUS_FAILED_REQUIRES_REVIEW
+            )
+            order.error = str(error)
+
+        return SimpleNamespace(
+            settlement_batch_id=int(
+                settlement_batch_id
+            ),
+            status=batch.status,
         )
 
     monkeypatch.setattr(
         batch_service,
-        "release_buy_reserve_if_safe",
-        counted_release,
+        "fail_negative_batch_pre_external",
+        fake_safe_recovery,
     )
 
     first_result = (
@@ -1332,6 +1353,14 @@ def test_batch_validation_failure_releases_only_buy_reserve(
 
     assert db.attached_orders_flushed is True
     assert validator_calls == [batch.id]
+
+    assert recovery_calls == [
+        (
+            batch.id,
+            "forced_post_flush_share_validation_failure",
+            "settlement_batch_share_validation",
+        )
+    ]
 
     assert (
         first_result.status
@@ -1350,24 +1379,20 @@ def test_batch_validation_failure_releases_only_buy_reserve(
         == ORDER_STATUS_FAILED_REQUIRES_REVIEW
     )
 
-    assert release_call_order_ids == [buy_order.id]
-    assert wallet.usdt_reserved == Decimal("0")
+    assert wallet.usdt_reserved == Decimal("10")
     assert wallet.usdt_balance == Decimal("25")
-
     assert (
         buy_order.buy_reserve_released_usdt
-        == Decimal("10")
+        == Decimal("0")
     )
-    assert buy_order.buy_reserve_released_at is not None
+
     assert (
         "forced_post_flush_share_validation_failure"
         in buy_order.error
     )
-    assert "released_reserved_usdt=10" in buy_order.error
-
     assert (
-        "released_reserved_usdt"
-        not in redeem_order.error
+        "forced_post_flush_share_validation_failure"
+        in redeem_order.error
     )
 
     second_result = (
@@ -1382,11 +1407,10 @@ def test_batch_validation_failure_releases_only_buy_reserve(
         second_result.status
         == BATCH_STATUS_FAILED_REQUIRES_REVIEW
     )
-    assert release_call_order_ids == [buy_order.id]
+    assert len(recovery_calls) == 1
     assert validator_calls == [batch.id]
-    assert wallet.usdt_reserved == Decimal("0")
+    assert wallet.usdt_reserved == Decimal("10")
     assert wallet.usdt_balance == Decimal("25")
-
 
 class IntentQuery:
     def __init__(self, row: Any) -> None:

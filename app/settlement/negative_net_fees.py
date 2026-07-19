@@ -8,11 +8,19 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models import FundChartDaily
+from app.settlement.share_quantity import (
+    ShareQuantityError,
+    require_share_quantity_4dp_aligned,
+)
 
 
 USDT_CENT = Decimal("0.01")
 ZERO = Decimal("0")
 DAYS_IN_FEE_MONTH = Decimal("30")
+
+NEGATIVE_NET_FEE_POLICY_VERSION = (
+    "monthly_open_v1"
+)
 
 
 class NegativeNetFeeError(RuntimeError):
@@ -96,14 +104,35 @@ class NegativeNetBatchTargets:
         return raw
 
 
-def dec(value: Any, default: str = "0") -> Decimal:
+def dec(
+    value: Any,
+    default: str = "0",
+) -> Decimal:
     if value is None or value == "":
-        return Decimal(default)
+        result = Decimal(default)
+    elif isinstance(value, Decimal):
+        result = value
+    elif isinstance(value, float):
+        raise NegativeNetFeeError(
+            "float values are forbidden in "
+            "negative-net fee calculations"
+        )
+    else:
+        try:
+            result = Decimal(str(value))
+        except Exception as exc:
+            raise NegativeNetFeeError(
+                "Invalid Decimal value: "
+                f"{value}"
+            ) from exc
 
-    if isinstance(value, Decimal):
-        return value
+    if not result.is_finite():
+        raise NegativeNetFeeError(
+            "NaN and Infinity are forbidden in "
+            "negative-net fee calculations"
+        )
 
-    return Decimal(str(value))
+    return result
 
 
 def _json_value(value: Any) -> Any:
@@ -142,6 +171,156 @@ def truncate_usdt_to_cents_down(value: Decimal | str | int | None) -> Decimal:
 
 def floor_usdt_2(value: Decimal | str | int | None) -> Decimal:
     return truncate_usdt_to_cents_down(value)
+
+
+def _require_positive(
+    value: Decimal,
+    *,
+    field_name: str,
+) -> Decimal:
+    result = dec(value)
+
+    if result <= ZERO:
+        raise NegativeNetFeeError(
+            f"{field_name} must be positive: "
+            f"{result}"
+        )
+
+    return result
+
+
+def _require_non_negative(
+    value: Decimal,
+    *,
+    field_name: str,
+) -> Decimal:
+    result = dec(value)
+
+    if result < ZERO:
+        raise NegativeNetFeeError(
+            f"{field_name} must be non-negative: "
+            f"{result}"
+        )
+
+    return result
+
+
+def _require_cent_aligned(
+    value: Decimal,
+    *,
+    field_name: str,
+) -> Decimal:
+    result = dec(value)
+
+    try:
+        aligned = result.quantize(USDT_CENT)
+    except Exception as exc:
+        raise NegativeNetFeeError(
+            f"{field_name} cannot be represented "
+            "as USDT cents"
+        ) from exc
+
+    if result != aligned:
+        raise NegativeNetFeeError(
+            f"{field_name} must have at most "
+            f"2 decimal places: {result}"
+        )
+
+    return result
+
+
+def _validate_order_fee_result(
+    item: RedeemOrderFeeResult,
+    *,
+    index: int,
+) -> None:
+    gross = _require_positive(
+        item.gross_redeem_usdt,
+        field_name=(
+            f"order_fee_results[{index}]."
+            "gross_redeem_usdt"
+        ),
+    )
+    success_fee = _require_non_negative(
+        item.success_fee_usdt,
+        field_name=(
+            f"order_fee_results[{index}]."
+            "success_fee_usdt"
+        ),
+    )
+    management_fee = _require_non_negative(
+        item.management_fee_usdt,
+        field_name=(
+            f"order_fee_results[{index}]."
+            "management_fee_usdt"
+        ),
+    )
+    partial_fee = _require_non_negative(
+        item.partial_month_fee_usdt,
+        field_name=(
+            f"order_fee_results[{index}]."
+            "partial_month_fee_usdt"
+        ),
+    )
+
+    if partial_fee != (
+        success_fee + management_fee
+    ):
+        raise NegativeNetFeeError(
+            "Order fee arithmetic mismatch: "
+            f"index={index}, "
+            f"partial_month_fee_usdt={partial_fee}, "
+            f"success_plus_management="
+            f"{success_fee + management_fee}"
+        )
+
+    if partial_fee > gross:
+        raise NegativeNetFeeError(
+            "Order total fee exceeds gross redeem: "
+            f"index={index}, "
+            f"gross={gross}, fee={partial_fee}"
+        )
+
+    raw_net = gross - partial_fee
+
+    _require_positive(
+        raw_net,
+        field_name=(
+            f"order_fee_results[{index}]."
+            "raw_net_user_payout_usdt"
+        ),
+    )
+
+    net_payout = _require_positive(
+        item.net_user_payout_usdt,
+        field_name=(
+            f"order_fee_results[{index}]."
+            "net_user_payout_usdt"
+        ),
+    )
+
+    _require_cent_aligned(
+        net_payout,
+        field_name=(
+            f"order_fee_results[{index}]."
+            "net_user_payout_usdt"
+        ),
+    )
+
+    if net_payout > raw_net:
+        raise NegativeNetFeeError(
+            "Floored net payout exceeds raw payout: "
+            f"index={index}, "
+            f"net={net_payout}, raw_net={raw_net}"
+        )
+
+    _require_positive(
+        item.net_price_usdt,
+        field_name=(
+            f"order_fee_results[{index}]."
+            "net_price_usdt"
+        ),
+    )
 
 
 def get_success_fee_rate(fund_code: str) -> Decimal:
@@ -252,159 +431,471 @@ def calculate_redeem_order_fees(
     month_open_price_usdt: Decimal | str,
     settlement_ts: datetime,
 ) -> RedeemOrderFeeResult:
-    p_t = dec(settlement_price_usdt)
-    n_s = dec(redeem_shares)
-    p_b = dec(month_open_price_usdt)
+    p_t = _require_positive(
+        dec(settlement_price_usdt),
+        field_name="settlement_price_usdt",
+    )
+    p_b = _require_positive(
+        dec(month_open_price_usdt),
+        field_name="month_open_price_usdt",
+    )
 
-    if p_t <= ZERO:
+    try:
+        n_s = require_share_quantity_4dp_aligned(
+            redeem_shares,
+            field_name="redeem_shares",
+        )
+    except ShareQuantityError as exc:
         raise NegativeNetFeeError(
-            f"settlement_price_usdt must be positive: {p_t}"
+            str(exc)
+        ) from exc
+
+    _require_positive(
+        n_s,
+        field_name="redeem_shares",
+    )
+
+    n_d = get_days_in_month_period(
+        settlement_ts
+    )
+
+    if n_d <= 0 or n_d > 31:
+        raise NegativeNetFeeError(
+            "fee_calc_days_in_month_period "
+            f"is invalid: {n_d}"
         )
 
-    if n_s <= ZERO:
-        raise NegativeNetFeeError(
-            f"redeem_shares must be positive: {n_s}"
-        )
+    success_fee_rate = _require_non_negative(
+        get_success_fee_rate(fund_code),
+        field_name="success_fee_rate",
+    )
+    management_fee_rate = _require_non_negative(
+        get_management_fee_rate(fund_code),
+        field_name="management_fee_rate",
+    )
 
-    if p_b <= ZERO:
-        raise NegativeNetFeeError(
-            f"month_open_price_usdt must be positive: {p_b}"
-        )
-
-    n_d = get_days_in_month_period(settlement_ts)
-
-    success_fee_rate = get_success_fee_rate(fund_code)
-    management_fee_rate = get_management_fee_rate(fund_code)
-
-    gross_redeem_usdt = p_t * n_s
+    gross_redeem_usdt = _require_positive(
+        p_t * n_s,
+        field_name="gross_redeem_usdt",
+    )
 
     success_profit_per_share = p_t - p_b
-    if success_profit_per_share > ZERO and success_fee_rate > ZERO:
-        success_fee_usdt = success_profit_per_share * success_fee_rate * n_s
+
+    if (
+        success_profit_per_share > ZERO
+        and success_fee_rate > ZERO
+    ):
+        success_fee_usdt = (
+            success_profit_per_share
+            * success_fee_rate
+            * n_s
+        )
     else:
         success_fee_usdt = ZERO
+
+    success_fee_usdt = _require_non_negative(
+        success_fee_usdt,
+        field_name="success_fee_usdt",
+    )
 
     management_fee_usdt = (
         p_t
         * n_s
         * management_fee_rate
-        * (Decimal(n_d) / DAYS_IN_FEE_MONTH)
+        * (
+            Decimal(n_d)
+            / DAYS_IN_FEE_MONTH
+        )
+    )
+    management_fee_usdt = (
+        _require_non_negative(
+            management_fee_usdt,
+            field_name="management_fee_usdt",
+        )
     )
 
-    # Stage 23.1.1:
-    # partial_month_fee_usdt is the total redeem fee shown in trade history:
-    # success fee + partial-month management fee.
-    partial_month_fee_usdt = success_fee_usdt + management_fee_usdt
+    partial_month_fee_usdt = (
+        success_fee_usdt
+        + management_fee_usdt
+    )
+    partial_month_fee_usdt = (
+        _require_non_negative(
+            partial_month_fee_usdt,
+            field_name=(
+                "partial_month_fee_usdt"
+            ),
+        )
+    )
 
-    total_fee_usdt = partial_month_fee_usdt
-    raw_net_user_payout_usdt = gross_redeem_usdt - total_fee_usdt
-    net_user_payout_usdt = truncate_usdt_to_cents_down(raw_net_user_payout_usdt)
+    total_fee_usdt = (
+        partial_month_fee_usdt
+    )
+
+    if total_fee_usdt > gross_redeem_usdt:
+        raise NegativeNetFeeError(
+            "Redeem total fee exceeds gross redeem: "
+            f"gross={gross_redeem_usdt}, "
+            f"fee={total_fee_usdt}"
+        )
+
+    raw_net_user_payout_usdt = (
+        gross_redeem_usdt
+        - total_fee_usdt
+    )
+    _require_positive(
+        raw_net_user_payout_usdt,
+        field_name=(
+            "raw_net_user_payout_usdt"
+        ),
+    )
+
+    net_user_payout_usdt = (
+        truncate_usdt_to_cents_down(
+            raw_net_user_payout_usdt
+        )
+    )
+    _require_positive(
+        net_user_payout_usdt,
+        field_name="net_user_payout_usdt",
+    )
+    _require_cent_aligned(
+        net_user_payout_usdt,
+        field_name="net_user_payout_usdt",
+    )
+
+    if (
+        net_user_payout_usdt
+        > raw_net_user_payout_usdt
+    ):
+        raise NegativeNetFeeError(
+            "Floored net payout exceeds raw payout"
+        )
+
     payout_truncation_remainder_usdt = (
-        raw_net_user_payout_usdt - net_user_payout_usdt
+        raw_net_user_payout_usdt
+        - net_user_payout_usdt
     )
-    net_price_usdt = p_t - (total_fee_usdt / n_s)
+    _require_non_negative(
+        payout_truncation_remainder_usdt,
+        field_name=(
+            "payout_truncation_remainder_usdt"
+        ),
+    )
 
-    return RedeemOrderFeeResult(
-        gross_redeem_usdt=gross_redeem_usdt,
-        success_fee_usdt=success_fee_usdt,
-        management_fee_usdt=management_fee_usdt,
-        partial_month_fee_usdt=partial_month_fee_usdt,
-        net_user_payout_usdt=net_user_payout_usdt,
+    if (
+        payout_truncation_remainder_usdt
+        >= USDT_CENT
+    ):
+        raise NegativeNetFeeError(
+            "Payout truncation remainder must "
+            "be below one cent: "
+            f"{payout_truncation_remainder_usdt}"
+        )
+
+    net_price_usdt = (
+        p_t
+        - (
+            total_fee_usdt
+            / n_s
+        )
+    )
+    _require_positive(
+        net_price_usdt,
+        field_name="net_price_usdt",
+    )
+
+    result = RedeemOrderFeeResult(
+        gross_redeem_usdt=(
+            gross_redeem_usdt
+        ),
+        success_fee_usdt=(
+            success_fee_usdt
+        ),
+        management_fee_usdt=(
+            management_fee_usdt
+        ),
+        partial_month_fee_usdt=(
+            partial_month_fee_usdt
+        ),
+        net_user_payout_usdt=(
+            net_user_payout_usdt
+        ),
         net_price_usdt=net_price_usdt,
         fee_calc_month_open_price_usdt=p_b,
         fee_calc_days_in_month_period=n_d,
         success_fee_rate=success_fee_rate,
-        management_fee_rate=management_fee_rate,
+        management_fee_rate=(
+            management_fee_rate
+        ),
         total_fee_usdt=total_fee_usdt,
         diagnostics={
+            "fee_policy_version": (
+                NEGATIVE_NET_FEE_POLICY_VERSION
+            ),
             "fund_code": fund_code,
             "settlement_price_usdt": p_t,
             "redeem_shares": n_s,
             "month_open_price_usdt": p_b,
-            "success_profit_per_share": success_profit_per_share,
+            "success_profit_per_share": (
+                success_profit_per_share
+            ),
             "days_in_month_period": n_d,
-            "gross_redeem_usdt": gross_redeem_usdt,
-            "success_fee_usdt": success_fee_usdt,
-            "management_fee_usdt": management_fee_usdt,
-            "total_fee_usdt": total_fee_usdt,
-            "raw_net_user_payout_usdt": raw_net_user_payout_usdt,
-            "payout_truncation_policy": PAYOUT_TRUNCATION_POLICY,
-            "payout_truncation_remainder_usdt": payout_truncation_remainder_usdt,
-            "net_user_payout_usdt": net_user_payout_usdt,
+            "gross_redeem_usdt": (
+                gross_redeem_usdt
+            ),
+            "success_fee_usdt": (
+                success_fee_usdt
+            ),
+            "management_fee_usdt": (
+                management_fee_usdt
+            ),
+            "total_fee_usdt": (
+                total_fee_usdt
+            ),
+            "raw_net_user_payout_usdt": (
+                raw_net_user_payout_usdt
+            ),
+            "payout_truncation_policy": (
+                PAYOUT_TRUNCATION_POLICY
+            ),
+            "payout_truncation_remainder_usdt": (
+                payout_truncation_remainder_usdt
+            ),
+            "net_user_payout_usdt": (
+                net_user_payout_usdt
+            ),
         },
     )
+
+    _validate_order_fee_result(
+        result,
+        index=0,
+    )
+
+    return result
 
 
 def calculate_negative_net_batch_targets(
     *,
-    order_fee_results: list[RedeemOrderFeeResult],
-    bybit_withdrawal_fee_usdt: Decimal | str,
-    month_open_result: MonthOpenPriceResult,
+    order_fee_results: list[
+        RedeemOrderFeeResult
+    ],
+    bybit_withdrawal_fee_usdt: (
+        Decimal | str
+    ),
+    month_open_result: (
+        MonthOpenPriceResult
+    ),
 ) -> NegativeNetBatchTargets:
-    bybit_fee = dec(bybit_withdrawal_fee_usdt)
-
-    if bybit_fee < ZERO:
+    if not order_fee_results:
         raise NegativeNetFeeError(
-            f"bybit_withdrawal_fee_usdt must be non-negative: {bybit_fee}"
+            "At least one redeem fee result "
+            "is required"
         )
 
+    for index, item in enumerate(
+        order_fee_results
+    ):
+        _validate_order_fee_result(
+            item,
+            index=index,
+        )
+
+    bybit_fee = _require_non_negative(
+        dec(bybit_withdrawal_fee_usdt),
+        field_name=(
+            "bybit_withdrawal_fee_usdt"
+        ),
+    )
+
     total_gross_redeem_usdt = sum(
-        (item.gross_redeem_usdt for item in order_fee_results),
+        (
+            item.gross_redeem_usdt
+            for item in order_fee_results
+        ),
         ZERO,
     )
     total_success_fee_usdt = sum(
-        (item.success_fee_usdt for item in order_fee_results),
+        (
+            item.success_fee_usdt
+            for item in order_fee_results
+        ),
         ZERO,
     )
     total_management_fee_usdt = sum(
-        (item.management_fee_usdt for item in order_fee_results),
+        (
+            item.management_fee_usdt
+            for item in order_fee_results
+        ),
         ZERO,
     )
     total_partial_month_fee_usdt = sum(
-        (item.partial_month_fee_usdt for item in order_fee_results),
+        (
+            item.partial_month_fee_usdt
+            for item in order_fee_results
+        ),
+        ZERO,
+    )
+    total_net_user_payout_usdt = sum(
+        (
+            item.net_user_payout_usdt
+            for item in order_fee_results
+        ),
         ZERO,
     )
 
-    # Per Stage 23.1 policy: floor is applied per order before summing.
-    total_net_user_payout_usdt = sum(
-        (item.net_user_payout_usdt for item in order_fee_results),
-        ZERO,
+    _require_positive(
+        total_gross_redeem_usdt,
+        field_name=(
+            "total_gross_redeem_usdt"
+        ),
     )
+    _require_non_negative(
+        total_success_fee_usdt,
+        field_name=(
+            "total_success_fee_usdt"
+        ),
+    )
+    _require_non_negative(
+        total_management_fee_usdt,
+        field_name=(
+            "total_management_fee_usdt"
+        ),
+    )
+    _require_non_negative(
+        total_partial_month_fee_usdt,
+        field_name=(
+            "total_partial_month_fee_usdt"
+        ),
+    )
+    _require_positive(
+        total_net_user_payout_usdt,
+        field_name=(
+            "total_net_user_payout_usdt"
+        ),
+    )
+    _require_cent_aligned(
+        total_net_user_payout_usdt,
+        field_name=(
+            "total_net_user_payout_usdt"
+        ),
+    )
+
+    expected_total_fee = (
+        total_success_fee_usdt
+        + total_management_fee_usdt
+    )
+
+    if (
+        total_partial_month_fee_usdt
+        != expected_total_fee
+    ):
+        raise NegativeNetFeeError(
+            "Batch fee arithmetic mismatch: "
+            "total_partial_month_fee_usdt="
+            f"{total_partial_month_fee_usdt}, "
+            "success_plus_management="
+            f"{expected_total_fee}"
+        )
+
+    if (
+        total_partial_month_fee_usdt
+        > total_gross_redeem_usdt
+    ):
+        raise NegativeNetFeeError(
+            "Batch total fee exceeds gross redeem"
+        )
 
     required_master_usdt = (
         total_net_user_payout_usdt
         + bybit_fee
         + total_partial_month_fee_usdt
     )
+    _require_positive(
+        required_master_usdt,
+        field_name="required_master_usdt",
+    )
 
-    withdrawal_request_amount_usdt = total_net_user_payout_usdt
+    withdrawal_request_amount_usdt = (
+        total_net_user_payout_usdt
+    )
+    _require_positive(
+        withdrawal_request_amount_usdt,
+        field_name=(
+            "withdrawal_request_amount_usdt"
+        ),
+    )
+    _require_cent_aligned(
+        withdrawal_request_amount_usdt,
+        field_name=(
+            "withdrawal_request_amount_usdt"
+        ),
+    )
 
     days_values = {
-        item.fee_calc_days_in_month_period
+        int(
+            item.fee_calc_days_in_month_period
+        )
         for item in order_fee_results
     }
+
     if len(days_values) > 1:
         raise NegativeNetFeeError(
-            f"Inconsistent fee_calc_days_in_month_period values: {sorted(days_values)}"
+            "Inconsistent "
+            "fee_calc_days_in_month_period "
+            f"values: {sorted(days_values)}"
         )
 
-    fee_days = (
-        next(iter(days_values))
-        if days_values
-        else get_days_in_month_period(month_open_result.settlement_ts)
+    fee_days = next(iter(days_values))
+
+    if fee_days <= 0 or fee_days > 31:
+        raise NegativeNetFeeError(
+            "fee_calc_days_in_month_period "
+            f"is invalid: {fee_days}"
+        )
+
+    month_open_price = _require_positive(
+        month_open_result.price_usdt,
+        field_name=(
+            "fee_calc_month_open_price_usdt"
+        ),
     )
 
     return NegativeNetBatchTargets(
-        total_gross_redeem_usdt=total_gross_redeem_usdt,
-        total_net_user_payout_usdt=total_net_user_payout_usdt,
-        total_success_fee_usdt=total_success_fee_usdt,
-        total_management_fee_usdt=total_management_fee_usdt,
-        total_partial_month_fee_usdt=total_partial_month_fee_usdt,
-        bybit_withdrawal_fee_usdt=bybit_fee,
-        required_master_usdt=required_master_usdt,
-        withdrawal_request_amount_usdt=withdrawal_request_amount_usdt,
-        fee_calc_month_open_price_usdt=month_open_result.price_usdt,
-        fee_calc_month_open_source=month_open_result.source,
-        fee_calc_days_in_month_period=fee_days,
-        order_count=len(order_fee_results),
+        total_gross_redeem_usdt=(
+            total_gross_redeem_usdt
+        ),
+        total_net_user_payout_usdt=(
+            total_net_user_payout_usdt
+        ),
+        total_success_fee_usdt=(
+            total_success_fee_usdt
+        ),
+        total_management_fee_usdt=(
+            total_management_fee_usdt
+        ),
+        total_partial_month_fee_usdt=(
+            total_partial_month_fee_usdt
+        ),
+        bybit_withdrawal_fee_usdt=(
+            bybit_fee
+        ),
+        required_master_usdt=(
+            required_master_usdt
+        ),
+        withdrawal_request_amount_usdt=(
+            withdrawal_request_amount_usdt
+        ),
+        fee_calc_month_open_price_usdt=(
+            month_open_price
+        ),
+        fee_calc_month_open_source=(
+            month_open_result.source
+        ),
+        fee_calc_days_in_month_period=(
+            fee_days
+        ),
+        order_count=len(
+            order_fee_results
+        ),
     )

@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import time
 from decimal import Decimal
 
 from sqlalchemy.orm import Session
 
+from app.bybit.client import BybitV5Client
 from app.config import settings
 from app.db import SessionLocal
 from app.lifecycle import evaluate_live_gate
@@ -34,10 +36,12 @@ def _setup_logging() -> None:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Stage 23.1 negative-net targets worker. "
-            "Local/mock only. Calculates redeem fees, net payouts, "
-            "batch negative-net targets and mocked Bybit withdrawal fee. "
-            "No real Bybit, no BSC, no accounting finalization."
+            "Negative-net targets worker. "
+            "Mock mode uses a configured withdrawal fee. "
+            "Live read-only mode performs only authenticated "
+            "GET /v5/asset/coin/query-info using the master "
+            "Bybit API key. No Bybit POST, transfer, withdrawal, "
+            "trade, BSC transaction or accounting finalization."
         )
     )
 
@@ -67,18 +71,13 @@ def _build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument(
-        "--static-bybit-withdrawal-fee-usdt",
-        type=str,
-        default=None,
-        help=(
-            "Approved static Bybit withdrawal fee in USDT for production-safe "
-            "negative-net target calculation. This does not call Bybit."
-        ),
-    )
-    parser.add_argument(
-        "--live-execution",
+        "--live-read-only",
         action="store_true",
-        help="Live fee mode is safe-gated by env + CLI flags; no Bybit call is made when the gate is disabled.",
+        help=(
+            "Read BSC USDT withdrawal constraints from "
+            "GET /v5/asset/coin/query-info. Requires both "
+            "production live env gates. Performs no POST."
+        ),
     )
     parser.add_argument(
         "--limit",
@@ -111,47 +110,122 @@ def _parse_decimal(value: str | None, *, name: str) -> Decimal:
     return result
 
 
-def _resolve_bybit_withdrawal_fee(args: argparse.Namespace) -> Decimal:
-    raw = args.static_bybit_withdrawal_fee_usdt
+def _resolve_mock_bybit_withdrawal_fee(
+    args: argparse.Namespace,
+) -> Decimal:
+    raw = args.mock_bybit_withdrawal_fee_usdt
 
     if raw is None or str(raw).strip() == "":
-        raw = args.mock_bybit_withdrawal_fee_usdt
-
-    if raw is None or str(raw).strip() == "":
-        raw = str(settings.NEGATIVE_NET_MOCK_BYBIT_WITHDRAWAL_FEE_USDT)
+        raw = str(
+            settings
+            .NEGATIVE_NET_MOCK_BYBIT_WITHDRAWAL_FEE_USDT
+        )
 
     return _parse_decimal(
         raw,
-        name="--static-bybit-withdrawal-fee-usdt / --mock-bybit-withdrawal-fee-usdt",
+        name=(
+            "--mock-bybit-withdrawal-fee-usdt"
+        ),
     )
 
 
-def _validate_stage23_1_args(args: argparse.Namespace) -> Decimal | None:
+def _build_master_bybit_client() -> BybitV5Client:
+    api_key = (
+        os.getenv("BYBIT_MASTER_API_KEY")
+        or ""
+    ).strip()
+    api_secret = (
+        os.getenv("BYBIT_MASTER_API_SECRET")
+        or ""
+    ).strip()
+
+    if not api_key or not api_secret:
+        raise RuntimeError(
+            "BYBIT_MASTER_API_KEY and "
+            "BYBIT_MASTER_API_SECRET are required "
+            "for --live-read-only"
+        )
+
+    return BybitV5Client(
+        api_key=api_key,
+        api_secret=api_secret,
+        recv_window_ms=(
+            settings.BYBIT_MASTER_RECV_WINDOW_MS
+        ),
+    )
+
+
+def _validate_stage23_1_args(
+    args: argparse.Namespace,
+) -> tuple[
+    Decimal | None,
+    BybitV5Client | None,
+    bool,
+] | None:
     if int(args.limit) <= 0:
-        raise RuntimeError("--limit must be positive")
+        raise RuntimeError(
+            "--limit must be positive"
+        )
 
     if int(args.sleep_sec) <= 0:
-        raise RuntimeError("--sleep-sec must be positive")
+        raise RuntimeError(
+            "--sleep-sec must be positive"
+        )
 
-    if args.live_execution:
+    if args.live_read_only:
+        if (
+            args.mock_bybit_withdrawal_fee_usdt
+            is not None
+            and str(
+                args.mock_bybit_withdrawal_fee_usdt
+            ).strip()
+        ):
+            raise RuntimeError(
+                "--mock-bybit-withdrawal-fee-usdt "
+                "cannot be used with "
+                "--live-read-only"
+            )
+
         gate = evaluate_live_gate(
-            feature="negative_net_targets_fee",
+            feature=(
+                "negative_net_targets_read_only"
+            ),
             env_enabled=(
-                bool(settings.LIFECYCLE_WORKERS_PRODUCTION_LIVE_ENABLED)
-                and bool(settings.NEGATIVE_NET_TARGETS_ALLOW_LIVE_FEE)
+                bool(
+                    settings
+                    .LIFECYCLE_WORKERS_PRODUCTION_LIVE_ENABLED
+                )
+                and bool(
+                    settings
+                    .NEGATIVE_NET_TARGETS_ALLOW_LIVE_FEE
+                )
             ),
             cli_enabled=True,
         )
+
         if not gate.allowed:
             log.info(
-                "Negative-net targets live fee gate blocked. No changes. gate=%s",
+                "Negative-net targets live "
+                "read-only gate blocked. "
+                "No Bybit call and no DB changes. "
+                "gate=%s",
                 gate.to_dict(),
             )
             return None
 
-        return _resolve_bybit_withdrawal_fee(args)
+        return (
+            None,
+            _build_master_bybit_client(),
+            True,
+        )
 
-    return _resolve_bybit_withdrawal_fee(args)
+    return (
+        _resolve_mock_bybit_withdrawal_fee(
+            args
+        ),
+        None,
+        False,
+    )
 
 
 def _find_candidate_batch_ids(
@@ -185,7 +259,11 @@ def _find_candidate_batch_ids(
 def _run_once(
     args: argparse.Namespace,
     *,
-    bybit_withdrawal_fee_usdt: Decimal,
+    bybit_withdrawal_fee_usdt: (
+        Decimal | None
+    ),
+    bybit_client: BybitV5Client | None,
+    live_read_only: bool,
 ) -> int:
     db = SessionLocal()
 
@@ -201,10 +279,18 @@ def _run_once(
         )
 
         log.info(
-            "Negative-net targets worker run_once started fund_code=%s "
-            "dry_run=%s mock_bybit_withdrawal_fee_usdt=%s candidate_batches=%s",
+            "Negative-net targets worker "
+            "run_once started fund_code=%s "
+            "dry_run=%s mode=%s "
+            "mock_withdrawal_fee_usdt=%s "
+            "candidate_batches=%s",
             args.fund_code,
             args.dry_run,
+            (
+                "bybit_live_read_only"
+                if live_read_only
+                else "mock"
+            ),
             bybit_withdrawal_fee_usdt,
             candidate_batch_ids,
         )
@@ -222,11 +308,18 @@ def _run_once(
         for batch_id in candidate_batch_ids:
             total_count += 1
 
-            result = calculate_and_store_negative_net_targets(
-                db,
-                settlement_batch_id=batch_id,
-                bybit_withdrawal_fee_usdt=bybit_withdrawal_fee_usdt,
-                use_live_bybit_withdrawal_fee=False,
+            result = (
+                calculate_and_store_negative_net_targets(
+                    db,
+                    settlement_batch_id=batch_id,
+                    bybit_withdrawal_fee_usdt=(
+                        bybit_withdrawal_fee_usdt
+                    ),
+                    bybit_client=bybit_client,
+                    use_live_bybit_withdrawal_fee=(
+                        live_read_only
+                    ),
+                )
             )
 
             if result.ok:
@@ -258,8 +351,14 @@ def _run_once(
         else:
             db.commit()
             log.info(
-                "Negative-net targets worker mock/local changes committed "
+                "Negative-net targets worker "
+                "changes committed mode=%s "
                 "ok=%s failed=%s total=%s",
+                (
+                    "bybit_live_read_only"
+                    if live_read_only
+                    else "mock"
+                ),
                 ok_count,
                 failed_count,
                 total_count,
@@ -285,27 +384,53 @@ def main() -> int:
     parser = _build_parser()
     args = parser.parse_args()
 
-    bybit_withdrawal_fee_usdt = _validate_stage23_1_args(args)
-    if bybit_withdrawal_fee_usdt is None:
+    validated = _validate_stage23_1_args(
+        args
+    )
+
+    if validated is None:
         return 0
 
+    (
+        bybit_withdrawal_fee_usdt,
+        bybit_client,
+        live_read_only,
+    ) = validated
+
     log.info(
-        "%s negative-net targets worker started. "
-        "Safe by default. No real Bybit calls, Bybit transfers, "
-        "no BSC transfers, no accounting finalization, no server deploy.",
+        "%s negative-net targets worker "
+        "started mode=%s. "
+        "Live read-only mode permits only "
+        "GET /v5/asset/coin/query-info. "
+        "No Bybit POST, transfer, withdrawal, "
+        "trade, BSC transaction, accounting "
+        "finalization or server deploy.",
         STAGE_NAME,
+        (
+            "bybit_live_read_only"
+            if live_read_only
+            else "mock"
+        ),
     )
 
     if args.run_once:
         return _run_once(
             args,
-            bybit_withdrawal_fee_usdt=bybit_withdrawal_fee_usdt,
+            bybit_withdrawal_fee_usdt=(
+                bybit_withdrawal_fee_usdt
+            ),
+            bybit_client=bybit_client,
+            live_read_only=live_read_only,
         )
 
     while True:
         code = _run_once(
             args,
-            bybit_withdrawal_fee_usdt=bybit_withdrawal_fee_usdt,
+            bybit_withdrawal_fee_usdt=(
+                bybit_withdrawal_fee_usdt
+            ),
+            bybit_client=bybit_client,
+            live_read_only=live_read_only,
         )
 
         if code != 0:

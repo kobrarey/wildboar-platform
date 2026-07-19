@@ -27,11 +27,13 @@ from app.settlement.accounting_service import (
     validate_settlement_share_state_before_external,
 )
 from app.settlement.batch_repository import get_or_create_settlement_batch
-from app.settlement.buy_reserve_service import (
-    BuyReserveReleaseError,
-    release_buy_reserve_if_safe,
+from app.settlement.negative_failure_service import (
+    fail_negative_batch_pre_external,
 )
-from app.settlement.pricing_lock import PricingLockError, lock_pricing_for_fund, unlock_pricing_for_fund
+from app.settlement.pricing_lock import (
+    PricingLockError,
+    lock_pricing_for_fund,
+)
 from app.settlement.statuses import (
     BATCH_STATUS_CREATED,
     BATCH_STATUS_FAILED,
@@ -655,77 +657,34 @@ def create_settlement_batch_for_fund(
         SettlementShareQuantityError,
     ) as exc:
         error_text = str(exc)
+        attach_time = utcnow()
 
-        _mark_share_quantity_failed_requires_review(
-            batch=batch,
-            orders=orders,
+        for order in orders:
+            order.settlement_batch_id = batch.id
+            order.settlement_locked_at = (
+                order.settlement_locked_at
+                or attach_time
+            )
+            db.add(order)
+
+        db.add(batch)
+        db.flush()
+
+        fail_negative_batch_pre_external(
+            db,
+            settlement_batch_id=int(batch.id),
             error=error_text,
+            source=(
+                "settlement_batch_share_validation"
+            ),
         )
-
-        db.add(batch)
-        for order in orders:
-            db.add(order)
-        db.flush()
-
-        for order in orders:
-            if order.side != ORDER_SIDE_BUY:
-                continue
-
-            try:
-                release_buy_reserve_if_safe(
-                    db,
-                    order_id=int(order.id),
-                    reason=(
-                        "pre_external_validation_failed:"
-                        f"{error_text}"
-                    ),
-                )
-            except BuyReserveReleaseError as reserve_exc:
-                reserve_error = (
-                    f"reserve_release_blocked={reserve_exc}"
-                )
-                current_error = str(
-                    order.error or error_text
-                ).strip()
-
-                if reserve_error not in current_error:
-                    order.error = (
-                        f"{current_error}; {reserve_error}"
-                        if current_error
-                        else reserve_error
-                    )
-
-                db.add(order)
-
-        try:
-            unlock_pricing_for_fund(
-                db,
-                fund_id=fund.id,
-                batch_id=batch.id,
-            )
-            batch.pricing_unlocked_at = utcnow()
-            batch.updated_at = utcnow()
-        except Exception as unlock_exc:
-            log.exception(
-                "Failed to unlock pricing after share quantity failure: %s",
-                unlock_exc,
-            )
-            batch.error = (
-                f"{error_text}; pricing unlock failed: "
-                f"{unlock_exc}"
-            )
-
-        db.add(batch)
-        for order in orders:
-            db.add(order)
-        db.flush()
 
         return SettlementBatchResult(
             fund_id=fund.id,
             fund_code=fund.code,
             settlement_date=settlement_date,
             batch_id=batch.id,
-            status=BATCH_STATUS_FAILED_REQUIRES_REVIEW,
+            status=str(batch.status),
             orders_count=len(orders),
             buy_orders_count=sum(
                 1
@@ -737,14 +696,18 @@ def create_settlement_batch_for_fund(
                 for order in orders
                 if order.side == ORDER_SIDE_REDEEM
             ),
-            total_buy_usdt=_dec(batch.total_buy_usdt),
+            total_buy_usdt=_dec(
+                batch.total_buy_usdt
+            ),
             total_redeem_shares=_dec(
                 batch.total_redeem_shares
             ),
             total_redeem_usdt=_dec(
                 batch.total_redeem_usdt
             ),
-            net_cash_usdt=_dec(batch.net_cash_usdt),
+            net_cash_usdt=_dec(
+                batch.net_cash_usdt
+            ),
             planned_shares_to_issue=_dec(
                 batch.planned_shares_to_issue
             ),
@@ -755,39 +718,91 @@ def create_settlement_batch_for_fund(
                 batch.planned_net_shares_change
             ),
             message=(
-                "Share quantity validation failed; "
-                "batch requires review."
+                "Pre-external share validation failed; "
+                "safe reserve recovery was applied."
             ),
         )
 
-    except (SettlementPriceError, PricingLockError, SettlementBatchError) as exc:
+    except (
+        SettlementPriceError,
+        PricingLockError,
+        SettlementBatchError,
+    ) as exc:
         error_text = str(exc)
-        _mark_batch_failed(batch, error=error_text)
+        attach_time = utcnow()
 
-        try:
-            unlock_pricing_for_fund(
-                db,
-                fund_id=fund.id,
-                batch_id=batch.id,
+        for order in orders:
+            order.settlement_batch_id = batch.id
+            order.settlement_locked_at = (
+                order.settlement_locked_at
+                or attach_time
             )
-            batch.pricing_unlocked_at = utcnow()
-            batch.updated_at = utcnow()
-        except Exception as unlock_exc:
-            log.exception("Failed to unlock pricing after batch failure: %s", unlock_exc)
-            batch.error = f"{error_text}; pricing unlock failed: {unlock_exc}"
+            db.add(order)
 
         db.add(batch)
         db.flush()
 
+        fail_negative_batch_pre_external(
+            db,
+            settlement_batch_id=int(batch.id),
+            error=error_text,
+            source=(
+                "settlement_batch_pre_external"
+            ),
+        )
+
         _send_batch_alert(
             "❌ Settlement batch failed\n"
             f"Fund: {fund.code}\n"
-            f"Settlement date: {settlement_date.isoformat()}\n"
+            f"Settlement date: "
+            f"{settlement_date.isoformat()}\n"
             f"Batch ID: {batch.id}\n"
             f"Error: {batch.error or error_text}"
         )
 
-        raise
+        return SettlementBatchResult(
+            fund_id=int(fund.id),
+            fund_code=str(fund.code),
+            settlement_date=settlement_date,
+            batch_id=int(batch.id),
+            status=str(batch.status),
+            orders_count=len(orders),
+            buy_orders_count=sum(
+                1
+                for order in orders
+                if order.side == ORDER_SIDE_BUY
+            ),
+            redeem_orders_count=sum(
+                1
+                for order in orders
+                if order.side == ORDER_SIDE_REDEEM
+            ),
+            total_buy_usdt=_dec(
+                batch.total_buy_usdt
+            ),
+            total_redeem_shares=_dec(
+                batch.total_redeem_shares
+            ),
+            total_redeem_usdt=_dec(
+                batch.total_redeem_usdt
+            ),
+            net_cash_usdt=_dec(
+                batch.net_cash_usdt
+            ),
+            planned_shares_to_issue=_dec(
+                batch.planned_shares_to_issue
+            ),
+            planned_shares_to_redeem=_dec(
+                batch.planned_shares_to_redeem
+            ),
+            planned_net_shares_change=_dec(
+                batch.planned_net_shares_change
+            ),
+            message=(
+                "Controlled pre-external settlement "
+                "failure; safe reserve recovery was applied."
+            ),
+        )
 
 
 def run_settlement_batches_once(
