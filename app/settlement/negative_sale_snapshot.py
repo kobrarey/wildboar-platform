@@ -27,14 +27,49 @@ class NegativeSaleAsset:
     notional_usd: Decimal | None
     redeemable_usdt: Decimal | None
     instrument_status: str | None
-    raw: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(
+        default_factory=dict
+    )
+
+    position_side: str | None = None
+    position_idx: int | None = None
+    close_side: str | None = None
+
+    exposure_notional_usdt: (
+        Decimal | None
+    ) = None
+    expected_cash_delta_usdt: (
+        Decimal | None
+    ) = None
+    confirmed_cash_delta_usdt: (
+        Decimal | None
+    ) = None
+
+    instrument_info: dict[
+        str,
+        Any,
+    ] = field(default_factory=dict)
+
+    requires_fund_to_unified_transfer: (
+        bool
+    ) = False
+    use_for_deficit_cover: bool | None = None
+    eligibility_reason: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         raw = asdict(self)
+
         for key, value in list(raw.items()):
             if isinstance(value, Decimal):
                 raw[key] = str(value)
-        raw["raw"] = _json_dict(raw["raw"])
+
+        raw["raw"] = _json_dict(
+            raw["raw"]
+        )
+        raw["instrument_info"] = _json_dict(
+            raw["instrument_info"]
+        )
+
         return raw
 
 
@@ -46,31 +81,93 @@ class NegativeSaleSnapshot:
     usdt_earn_redeemable: Decimal
 
     spot_holdings: list[NegativeSaleAsset]
-    non_stable_earn_holdings: list[NegativeSaleAsset]
-    perp_future_positions: list[NegativeSaleAsset]
+    non_stable_earn_holdings: list[
+        NegativeSaleAsset
+    ]
+    perp_future_positions: list[
+        NegativeSaleAsset
+    ]
     long_options: list[NegativeSaleAsset]
     short_options: list[NegativeSaleAsset]
 
-    total_portfolio_value_usdt: Decimal | None
+    total_portfolio_value_usdt: (
+        Decimal | None
+    )
     snapshot_ts: datetime
     raw_snapshot_json: dict[str, Any]
 
-    def usdt_earn_used_as_buffer(self) -> Decimal:
+    funding_wallet_non_stable_assets: list[
+        NegativeSaleAsset
+    ] = field(default_factory=list)
+
+    snapshot_complete: bool = True
+    completeness_reasons: tuple[
+        str,
+        ...,
+    ] = ()
+    required_endpoints: tuple[
+        str,
+        ...,
+    ] = ()
+    successful_endpoints: tuple[
+        str,
+        ...,
+    ] = ()
+    failed_endpoints: tuple[
+        str,
+        ...,
+    ] = ()
+    suppressed_errors: tuple[
+        dict[str, Any],
+        ...,
+    ] = ()
+
+    captured_at: datetime | None = None
+    source_account: str | None = None
+    fund_id: int | None = None
+    fund_code: str | None = None
+
+    usdt_earn_redeemable_known: (
+        bool
+    ) = True
+
+    def usdt_earn_used_as_buffer(
+        self,
+    ) -> Decimal:
+        if not self.usdt_earn_redeemable_known:
+            return ZERO
+
         return max(
-            min(self.usdt_earn_available, self.usdt_earn_redeemable),
+            min(
+                self.usdt_earn_available,
+                self.usdt_earn_redeemable,
+            ),
             ZERO,
         )
 
-    def total_cash_like_available_usdt(self) -> Decimal:
+    def total_cash_like_available_usdt(
+        self,
+    ) -> Decimal:
+        """
+        Cash usable by the task-2 sale flow.
+
+        FUND account USDT remains visible in
+        diagnostics, but cannot reduce the
+        required UNIFIED balance before the
+        task-3 internal transfer state machine.
+        """
+
         return (
             self.unified_usdt_available
-            + self.fund_wallet_usdt_available
             + self.usdt_earn_used_as_buffer()
         )
 
-    def all_assets(self) -> list[NegativeSaleAsset]:
+    def all_assets(
+        self,
+    ) -> list[NegativeSaleAsset]:
         return [
             *self.spot_holdings,
+            *self.funding_wallet_non_stable_assets,
             *self.non_stable_earn_holdings,
             *self.perp_future_positions,
             *self.long_options,
@@ -78,32 +175,105 @@ class NegativeSaleSnapshot:
         ]
 
     def to_dict(self) -> dict[str, Any]:
+        effective_captured_at = (
+            self.captured_at
+            or self.snapshot_ts
+        )
+
         return {
-            "unified_usdt_available": str(self.unified_usdt_available),
-            "fund_wallet_usdt_available": str(self.fund_wallet_usdt_available),
-            "usdt_earn_available": str(self.usdt_earn_available),
-            "usdt_earn_redeemable": str(self.usdt_earn_redeemable),
-            "usdt_earn_used_as_buffer": str(self.usdt_earn_used_as_buffer()),
-            "cash_like_available_for_plan": str(self.total_cash_like_available_usdt()),
-            "total_cash_like_available_usdt": str(self.total_cash_like_available_usdt()),
-            "spot_holdings": [item.to_dict() for item in self.spot_holdings],
+            "snapshot_complete": (
+                self.snapshot_complete
+            ),
+            "completeness_reasons": list(
+                self.completeness_reasons
+            ),
+            "required_endpoints": list(
+                self.required_endpoints
+            ),
+            "successful_endpoints": list(
+                self.successful_endpoints
+            ),
+            "failed_endpoints": list(
+                self.failed_endpoints
+            ),
+            "suppressed_errors": [
+                _json_dict(row)
+                for row
+                in self.suppressed_errors
+            ],
+            "captured_at": (
+                effective_captured_at.isoformat()
+            ),
+            "source_account": (
+                self.source_account
+            ),
+            "fund_id": self.fund_id,
+            "fund_code": self.fund_code,
+            "unified_usdt_available": str(
+                self.unified_usdt_available
+            ),
+            "fund_wallet_usdt_available": str(
+                self.fund_wallet_usdt_available
+            ),
+            "usdt_earn_available": str(
+                self.usdt_earn_available
+            ),
+            "usdt_earn_redeemable": str(
+                self.usdt_earn_redeemable
+            ),
+            "usdt_earn_redeemable_known": (
+                self.usdt_earn_redeemable_known
+            ),
+            "usdt_earn_used_as_buffer": str(
+                self.usdt_earn_used_as_buffer()
+            ),
+            "cash_like_available_for_plan": str(
+                self.total_cash_like_available_usdt()
+            ),
+            "total_cash_like_available_usdt": str(
+                self.total_cash_like_available_usdt()
+            ),
+            "spot_holdings": [
+                item.to_dict()
+                for item in self.spot_holdings
+            ],
+            "funding_wallet_non_stable_assets": [
+                item.to_dict()
+                for item
+                in self.funding_wallet_non_stable_assets
+            ],
             "non_stable_earn_holdings": [
                 item.to_dict()
-                for item in self.non_stable_earn_holdings
+                for item
+                in self.non_stable_earn_holdings
             ],
             "perp_future_positions": [
                 item.to_dict()
-                for item in self.perp_future_positions
+                for item
+                in self.perp_future_positions
             ],
-            "long_options": [item.to_dict() for item in self.long_options],
-            "short_options": [item.to_dict() for item in self.short_options],
+            "long_options": [
+                item.to_dict()
+                for item in self.long_options
+            ],
+            "short_options": [
+                item.to_dict()
+                for item in self.short_options
+            ],
             "total_portfolio_value_usdt": (
-                str(self.total_portfolio_value_usdt)
-                if self.total_portfolio_value_usdt is not None
+                str(
+                    self.total_portfolio_value_usdt
+                )
+                if self.total_portfolio_value_usdt
+                is not None
                 else None
             ),
-            "snapshot_ts": self.snapshot_ts.isoformat(),
-            "raw_snapshot_json": _json_dict(self.raw_snapshot_json),
+            "snapshot_ts": (
+                self.snapshot_ts.isoformat()
+            ),
+            "raw_snapshot_json": _json_dict(
+                self.raw_snapshot_json
+            ),
         }
 
 
@@ -126,6 +296,86 @@ def optional_dec(value: Any) -> Decimal | None:
         return None
 
     return dec(value)
+
+
+def optional_int(
+    value: Any,
+) -> int | None:
+    if value is None or value == "":
+        return None
+
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def bool_value(
+    value: Any,
+    *,
+    default: bool,
+) -> bool:
+    if value is None:
+        return default
+
+    if isinstance(value, bool):
+        return value
+
+    text = str(value).strip().lower()
+
+    if text in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return True
+
+    if text in {
+        "0",
+        "false",
+        "no",
+        "off",
+    }:
+        return False
+
+    return default
+
+
+def string_tuple(
+    value: Any,
+) -> tuple[str, ...]:
+    if value is None:
+        return ()
+
+    rows = (
+        value
+        if isinstance(value, list | tuple)
+        else [value]
+    )
+
+    result: list[str] = []
+
+    for row in rows:
+        text = str(row).strip()
+
+        if text:
+            result.append(text)
+
+    return tuple(result)
+
+
+def dict_tuple(
+    value: Any,
+) -> tuple[dict[str, Any], ...]:
+    if not isinstance(value, list | tuple):
+        return ()
+
+    return tuple(
+        dict(row)
+        for row in value
+        if isinstance(row, dict)
+    )
 
 
 def _json_value(value: Any) -> Any:
@@ -270,7 +520,33 @@ def _asset_from_raw(
     )
     category = _first(raw_item, ["category", "product_type"], default_category)
     location = _first(raw_item, ["location", "account", "account_type"], default_location)
-    side = _normalize_side(_first(raw_item, ["side", "position_side"], default_side))
+    position_side = _normalize_side(
+        _first(
+            raw_item,
+            [
+                "position_side",
+                "side",
+            ],
+            default_side,
+        )
+    )
+    side = position_side
+
+    close_side = _normalize_side(
+        _first(
+            raw_item,
+            ["close_side"],
+        )
+    )
+    position_idx = optional_int(
+        _first(
+            raw_item,
+            [
+                "position_idx",
+                "positionIdx",
+            ],
+        )
+    )
 
     qty = optional_dec(
         _first(raw_item, ["qty", "quantity", "free", "wallet_balance", "walletBalance"])
@@ -316,8 +592,61 @@ def _asset_from_raw(
     )
     instrument_status = _first(
         raw_item,
-        ["instrument_status", "status", "symbol_status"],
-        "trading",
+        [
+            "instrument_status",
+            "symbol_status",
+        ],
+        None,
+    )
+
+    exposure_notional_usdt = optional_dec(
+        _first(
+            raw_item,
+            [
+                "exposure_notional_usdt",
+                "exposure_notional_usd",
+            ],
+        )
+    )
+
+    if exposure_notional_usdt is None:
+        exposure_notional_usdt = (
+            notional_usd
+        )
+
+    expected_cash_delta_usdt = (
+        optional_dec(
+            _first(
+                raw_item,
+                [
+                    "expected_cash_delta_usdt",
+                ],
+            )
+        )
+    )
+    confirmed_cash_delta_usdt = (
+        optional_dec(
+            _first(
+                raw_item,
+                [
+                    "confirmed_cash_delta_usdt",
+                ],
+            )
+        )
+    )
+
+    instrument_info_raw = _first(
+        raw_item,
+        ["instrument_info"],
+        {},
+    )
+    instrument_info = (
+        dict(instrument_info_raw)
+        if isinstance(
+            instrument_info_raw,
+            dict,
+        )
+        else {}
     )
 
     return NegativeSaleAsset(
@@ -334,6 +663,56 @@ def _asset_from_raw(
         redeemable_usdt=redeemable_usdt,
         instrument_status=str(instrument_status) if instrument_status is not None else None,
         raw=dict(raw_item),
+        position_side=position_side,
+        position_idx=position_idx,
+        close_side=close_side,
+        exposure_notional_usdt=(
+            exposure_notional_usdt
+        ),
+        expected_cash_delta_usdt=(
+            expected_cash_delta_usdt
+        ),
+        confirmed_cash_delta_usdt=(
+            confirmed_cash_delta_usdt
+        ),
+        instrument_info=instrument_info,
+        requires_fund_to_unified_transfer=(
+            bool_value(
+                _first(
+                    raw_item,
+                    [
+                        "requires_fund_to_unified_transfer",
+                    ],
+                ),
+                default=False,
+            )
+        ),
+        use_for_deficit_cover=(
+            bool_value(
+                _first(
+                    raw_item,
+                    ["use_for_deficit_cover"],
+                ),
+                default=False,
+            )
+            if "use_for_deficit_cover"
+            in raw_item
+            else None
+        ),
+        eligibility_reason=(
+            str(
+                _first(
+                    raw_item,
+                    ["eligibility_reason"],
+                )
+            )
+            if _first(
+                raw_item,
+                ["eligibility_reason"],
+            )
+            is not None
+            else None
+        ),
     )
 
 
@@ -442,6 +821,19 @@ def normalize_negative_sale_snapshot(raw_snapshot: dict[str, Any]) -> NegativeSa
         nested_paths=["assets.spot_holdings", "assets.spot"],
         default=[],
     )
+    funding_wallet_non_stable_raw = (
+        _value_from(
+            raw_snapshot,
+            flat_keys=[
+                "funding_wallet_non_stable",
+                "funding_wallet_non_stable_assets",
+            ],
+            nested_paths=[
+                "assets.funding_wallet_non_stable",
+            ],
+            default=[],
+        )
+    )
     non_stable_earn_raw = _value_from(
         raw_snapshot,
         flat_keys=[
@@ -504,6 +896,16 @@ def normalize_negative_sale_snapshot(raw_snapshot: dict[str, Any]) -> NegativeSa
             default_category="spot",
             default_location="UNIFIED",
         ),
+        funding_wallet_non_stable_assets=(
+            _assets_from_raw_list(
+                funding_wallet_non_stable_raw,
+                asset_type=(
+                    "funding_wallet_asset"
+                ),
+                default_category="spot",
+                default_location="FUND",
+            )
+        ),
         non_stable_earn_holdings=_assets_from_raw_list(
             non_stable_earn_raw,
             asset_type="non_stable_earn",
@@ -533,6 +935,108 @@ def normalize_negative_sale_snapshot(raw_snapshot: dict[str, Any]) -> NegativeSa
         total_portfolio_value_usdt=total_portfolio_value_usdt,
         snapshot_ts=_snapshot_ts(raw_snapshot),
         raw_snapshot_json=dict(raw_snapshot),
+        snapshot_complete=bool_value(
+            _first(
+                raw_snapshot,
+                ["snapshot_complete"],
+            ),
+            default=True,
+        ),
+        completeness_reasons=string_tuple(
+            _first(
+                raw_snapshot,
+                ["completeness_reasons"],
+                [],
+            )
+        ),
+        required_endpoints=string_tuple(
+            _first(
+                raw_snapshot,
+                ["required_endpoints"],
+                [],
+            )
+        ),
+        successful_endpoints=string_tuple(
+            _first(
+                raw_snapshot,
+                ["successful_endpoints"],
+                [],
+            )
+        ),
+        failed_endpoints=string_tuple(
+            _first(
+                raw_snapshot,
+                ["failed_endpoints"],
+                [],
+            )
+        ),
+        suppressed_errors=dict_tuple(
+            _first(
+                raw_snapshot,
+                ["suppressed_errors"],
+                [],
+            )
+        ),
+        captured_at=_snapshot_ts(
+            {
+                "snapshot_ts": _first(
+                    raw_snapshot,
+                    [
+                        "captured_at",
+                        "snapshot_ts",
+                    ],
+                )
+            }
+        ),
+        source_account=(
+            str(
+                _first(
+                    raw_snapshot,
+                    ["source_account"],
+                )
+            )
+            if _first(
+                raw_snapshot,
+                ["source_account"],
+            )
+            is not None
+            else None
+        ),
+        fund_id=optional_int(
+            _first(
+                raw_snapshot,
+                ["fund_id"],
+            )
+        ),
+        fund_code=(
+            str(
+                _first(
+                    raw_snapshot,
+                    ["fund_code"],
+                )
+            )
+            if _first(
+                raw_snapshot,
+                ["fund_code"],
+            )
+            is not None
+            else None
+        ),
+        usdt_earn_redeemable_known=(
+            bool_value(
+                _value_from(
+                    raw_snapshot,
+                    flat_keys=[
+                        "usdt_earn_redeemable_known",
+                    ],
+                    nested_paths=[
+                        "cash.usdt_earn_redeemable_known",
+                    ],
+                    default=True,
+                ),
+                default=True,
+            )
+        ),
     )
 
 

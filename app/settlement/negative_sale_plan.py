@@ -19,6 +19,17 @@ from app.settlement.negative_sale_snapshot import (
     NegativeSaleSnapshot,
     dec,
 )
+from app.settlement.negative_sale_planning_policy import (
+    DERIVATIVE_REDUCTION_POLICY_VERSION,
+    NegativeSalePlanningPolicyError,
+    ProportionalDerivativeReduction,
+    compute_proportional_derivative_reduction,
+    derivative_close_side,
+    derivative_raw_target_qty,
+    is_derivative_asset,
+    normalize_asset_order_quantity,
+    normalize_position_side,
+)
 from app.settlement.statuses import (
     BATCH_STATUS_FAILED_REQUIRES_REVIEW,
     BATCH_STATUS_NEGATIVE_NET_SALE_PLANNED,
@@ -77,6 +88,22 @@ class SaleLegPlan:
     error: str | None = None
     raw: dict[str, Any] = field(default_factory=dict)
 
+    position_side: str | None = None
+    close_side: str | None = None
+    position_idx: int | None = None
+
+    exposure_notional_usdt: (
+        Decimal | None
+    ) = None
+    confirmed_cash_delta_usdt: (
+        Decimal | None
+    ) = None
+
+    order_quantity_preflight: dict[
+        str,
+        Any,
+    ] = field(default_factory=dict)
+
     def to_dict(self) -> dict[str, Any]:
         raw = asdict(self)
 
@@ -109,6 +136,11 @@ class NegativeSalePlanComputation:
     expected_shortage_usdt: Decimal
     expected_surplus_usdt: Decimal
     largest_extra_sale_buffer_pct: Decimal
+
+    derivative_reduction_json: dict[
+        str,
+        Any,
+    ]
 
     legs: list[SaleLegPlan]
     plan_json: dict[str, Any]
@@ -195,18 +227,217 @@ def _max_zero(value: Decimal) -> Decimal:
     return value if value > ZERO else ZERO
 
 
-def _is_trading_status(status: str | None) -> bool:
-    if status is None:
-        return True
+def _is_live_bybit_snapshot(
+    snapshot: NegativeSaleSnapshot,
+) -> bool:
+    raw = snapshot.raw_snapshot_json
 
-    raw = str(status).strip().lower()
-    return raw in {
-        "",
-        "trading",
-        "normal",
-        "online",
-        "active",
-    }
+    if not isinstance(raw, dict):
+        return False
+
+    return (
+        str(raw.get("source") or "")
+        .strip()
+        .lower()
+        == "bybit_readonly"
+    )
+
+
+def _asset_position_side(
+    asset: NegativeSaleAsset,
+) -> str | None:
+    return normalize_position_side(
+        asset.position_side
+        or asset.side
+    )
+
+
+def _asset_close_side(
+    asset: NegativeSaleAsset,
+) -> str:
+    if is_derivative_asset(asset):
+        return derivative_close_side(
+            _asset_position_side(asset)
+        )
+
+    return "Sell"
+
+
+def _safe_asset_close_side(
+    asset: NegativeSaleAsset,
+) -> str | None:
+    try:
+        return _asset_close_side(asset)
+    except (
+        NegativeSalePlanningPolicyError,
+        ValueError,
+    ):
+        return None
+
+
+def _asset_available_qty(
+    asset: NegativeSaleAsset,
+) -> Decimal | None:
+    value = (
+        asset.qty
+        if asset.qty is not None
+        else asset.size
+    )
+
+    if value is None:
+        return None
+
+    return dec(value)
+
+
+def _asset_instrument_preflight_complete(
+    asset: NegativeSaleAsset,
+) -> bool:
+    info = asset.instrument_info
+
+    if not isinstance(info, dict):
+        return False
+
+    return (
+        info.get("preflight_complete")
+        is True
+    )
+
+
+def _asset_instrument_reasons(
+    asset: NegativeSaleAsset,
+) -> list[str]:
+    info = asset.instrument_info
+
+    if not isinstance(info, dict):
+        return [
+            "instrument_snapshot_missing"
+        ]
+
+    raw_reasons = info.get(
+        "completeness_reasons"
+    )
+
+    if not isinstance(
+        raw_reasons,
+        list | tuple,
+    ):
+        return []
+
+    return [
+        str(reason)
+        for reason in raw_reasons
+    ]
+
+
+def _normalize_asset_target_qty(
+    *,
+    asset: NegativeSaleAsset,
+    requested_qty: Decimal,
+    strict_instrument_preflight: bool,
+) -> tuple[
+    Decimal | None,
+    dict[str, Any],
+]:
+    available_qty = _asset_available_qty(
+        asset
+    )
+    close_side = _asset_close_side(
+        asset
+    )
+
+    if (
+        not strict_instrument_preflight
+        and not asset.instrument_info
+    ):
+        capped = (
+            min(
+                requested_qty,
+                available_qty,
+            )
+            if available_qty is not None
+            else requested_qty
+        )
+
+        return (
+            capped,
+            {
+                "eligible": capped > ZERO,
+                "legacy_mock_without_instrument": True,
+                "requested_qty": str(
+                    requested_qty
+                ),
+                "available_qty": (
+                    str(available_qty)
+                    if available_qty is not None
+                    else None
+                ),
+                "normalized_qty": str(
+                    capped
+                ),
+                "slices": (
+                    [str(capped)]
+                    if capped > ZERO
+                    else []
+                ),
+                "reasons": (
+                    []
+                    if capped > ZERO
+                    else [
+                        "qty_not_positive",
+                    ]
+                ),
+            },
+        )
+
+    try:
+        normalized = (
+            normalize_asset_order_quantity(
+                asset=asset,
+                requested_qty=requested_qty,
+                available_qty=available_qty,
+                close_side=close_side,
+            )
+        )
+    except Exception as exc:
+        return (
+            None,
+            {
+                "eligible": False,
+                "requested_qty": str(
+                    requested_qty
+                ),
+                "available_qty": (
+                    str(available_qty)
+                    if available_qty is not None
+                    else None
+                ),
+                "normalized_qty": "0",
+                "slices": [],
+                "reasons": [str(exc)],
+            },
+        )
+
+    return (
+        (
+            normalized.normalized_qty
+            if normalized.eligible
+            else None
+        ),
+        normalized.to_dict(),
+    )
+
+
+def _is_trading_status(
+    status: str | None,
+) -> bool:
+    if status is None:
+        return False
+
+    return (
+        str(status).strip().lower()
+        == "trading"
+    )
 
 
 def _map_symbol_from_coin(coin: str | None, symbol: str | None) -> str | None:
@@ -223,19 +454,31 @@ def _map_symbol_from_coin(coin: str | None, symbol: str | None) -> str | None:
     return f"{clean}USDT"
 
 
-def _asset_value(asset: NegativeSaleAsset) -> Decimal:
+def _asset_value(
+    asset: NegativeSaleAsset,
+) -> Decimal:
+    if is_derivative_asset(asset):
+        return ZERO
+
     value = dec(asset.usd_value)
 
     if value > ZERO:
         return value
 
-    if asset.redeemable_usdt is not None:
-        return dec(asset.redeemable_usdt)
-
-    if asset.notional_usd is not None:
-        return dec(asset.notional_usd)
+    if (
+        asset.asset_type
+        == "non_stable_earn"
+        and asset.redeemable_usdt
+        is not None
+    ):
+        return max(
+            dec(asset.redeemable_usdt),
+            ZERO,
+        )
 
     return ZERO
+
+
 def _cash_like_leg(
     *,
     leg_type: str,
@@ -305,9 +548,24 @@ def _build_cash_like_legs(snapshot: NegativeSaleSnapshot) -> list[SaleLegPlan]:
             _cash_like_leg(
                 leg_type="fund_wallet_usdt_cash",
                 location="FUND_WALLET",
-                amount_usdt=snapshot.fund_wallet_usdt_available,
-                status=SALE_LEG_STATUS_CASH_AVAILABLE,
-                reason="Fund wallet USDT cash reduces sale target.",
+                amount_usdt=(
+                    snapshot
+                    .fund_wallet_usdt_available
+                ),
+                target_cash_usdt=ZERO,
+                expected_cash_delta_usdt=ZERO,
+                status=(
+                    SALE_LEG_STATUS_SKIPPED_NOT_ELIGIBLE
+                ),
+                reason=(
+                    "requires_fund_to_unified_"
+                    "transfer_task3"
+                ),
+                eligible=False,
+                use_for_deficit_cover=False,
+                instrument_status=(
+                    "requires_task3_transfer"
+                ),
             )
         )
 
@@ -422,41 +680,159 @@ def _asset_margin_required(asset: NegativeSaleAsset) -> bool:
     }
 
 
-def _asset_eligible_for_deficit_cover(asset: NegativeSaleAsset) -> bool:
-    if asset.asset_type == "short_option":
+def _asset_eligible_for_deficit_cover(
+    asset: NegativeSaleAsset,
+) -> bool:
+    if (
+        asset.requires_fund_to_unified_transfer
+        or (
+            asset.location or ""
+        ).upper()
+        in {
+            "FUND",
+            "FUND_WALLET",
+        }
+    ):
+        return False
+
+    if is_derivative_asset(asset):
+        return False
+
+    if (
+        asset.use_for_deficit_cover
+        is False
+    ):
         return False
 
     return asset.asset_type in {
         "spot",
         "non_stable_earn",
-        "perp_future",
-        "long_option",
     }
 
 
-def _asset_skip_reason(asset: NegativeSaleAsset) -> tuple[str, str] | None:
-    value = _asset_value(asset)
-
-    if value <= ZERO:
-        return (
-            SALE_LEG_STATUS_SKIPPED_ZERO_VALUE,
-            "Asset has zero or negative USD value.",
-        )
-
-    symbol = _map_symbol_from_coin(asset.coin, asset.symbol)
-    if symbol is None and asset.asset_type not in {"short_option"}:
+def _asset_skip_reason(
+    asset: NegativeSaleAsset,
+    *,
+    strict_instrument_preflight: bool,
+) -> tuple[str, str] | None:
+    if (
+        asset.requires_fund_to_unified_transfer
+        or (
+            asset.location or ""
+        ).upper()
+        in {
+            "FUND",
+            "FUND_WALLET",
+        }
+    ):
         return (
             SALE_LEG_STATUS_SKIPPED_NOT_ELIGIBLE,
-            "Asset cannot be mapped to a tradable symbol.",
+            (
+                asset.eligibility_reason
+                or (
+                    "requires_fund_to_unified_"
+                    "transfer_task3"
+                )
+            ),
         )
 
-    if not _is_trading_status(asset.instrument_status):
+    if not is_derivative_asset(asset):
+        value = _asset_value(asset)
+
+        if value <= ZERO:
+            return (
+                SALE_LEG_STATUS_SKIPPED_ZERO_VALUE,
+                (
+                    "Asset has zero or negative "
+                    "cash-generating USD value."
+                ),
+            )
+
+    symbol = _map_symbol_from_coin(
+        asset.coin,
+        asset.symbol,
+    )
+
+    if symbol is None:
+        return (
+            SALE_LEG_STATUS_SKIPPED_NOT_ELIGIBLE,
+            (
+                "Asset cannot be mapped to "
+                "a tradable symbol."
+            ),
+        )
+
+    if strict_instrument_preflight:
+        if not _is_trading_status(
+            asset.instrument_status
+        ):
+            return (
+                SALE_LEG_STATUS_SKIPPED_SYMBOL_NOT_TRADING,
+                (
+                    "Instrument status is not "
+                    f"Trading: {asset.instrument_status!r}"
+                ),
+            )
+
+        if not (
+            _asset_instrument_preflight_complete(
+                asset
+            )
+        ):
+            return (
+                SALE_LEG_STATUS_SKIPPED_NOT_ELIGIBLE,
+                (
+                    "Instrument preflight is "
+                    "incomplete: "
+                    + ",".join(
+                        _asset_instrument_reasons(
+                            asset
+                        )
+                    )
+                ),
+            )
+
+    elif (
+        asset.instrument_status is not None
+        and not _is_trading_status(
+            asset.instrument_status
+        )
+    ):
         return (
             SALE_LEG_STATUS_SKIPPED_SYMBOL_NOT_TRADING,
-            f"Instrument is not trading: {asset.instrument_status}",
+            (
+                "Instrument is not trading: "
+                f"{asset.instrument_status}"
+            ),
         )
 
+    if is_derivative_asset(asset):
+        try:
+            _asset_close_side(asset)
+        except (
+            NegativeSalePlanningPolicyError,
+            ValueError,
+        ) as exc:
+            return (
+                SALE_LEG_STATUS_SKIPPED_NOT_ELIGIBLE,
+                (
+                    "Derivative side cannot be "
+                    f"closed safely: {exc}"
+                ),
+            )
+
+        if _asset_available_qty(asset) is None:
+            return (
+                SALE_LEG_STATUS_SKIPPED_NOT_ELIGIBLE,
+                (
+                    "Derivative current position "
+                    "size is missing."
+                ),
+            )
+
     return None
+
+
 def _target_qty_for_asset(
     *,
     asset: NegativeSaleAsset,
@@ -481,21 +857,62 @@ def _build_skipped_asset_leg(
     asset: NegativeSaleAsset,
     status: str,
     reason: str,
+    order_quantity_preflight: (
+        dict[str, Any] | None
+    ) = None,
 ) -> SaleLegPlan:
-    value = _asset_value(asset)
+    close_side = _safe_asset_close_side(
+        asset
+    )
+    position_side = (
+        _asset_position_side(asset)
+        if is_derivative_asset(asset)
+        else None
+    )
+
+    current_value = (
+        max(dec(asset.usd_value), ZERO)
+        if is_derivative_asset(asset)
+        else _asset_value(asset)
+    )
+
+    preflight = dict(
+        order_quantity_preflight or {}
+    )
+
+    raw = asset.to_dict()
+    raw.update(
+        {
+            "position_side": position_side,
+            "close_side": close_side,
+            "position_idx": (
+                asset.position_idx
+            ),
+            "order_quantity_preflight": (
+                preflight
+            ),
+        }
+    )
 
     return SaleLegPlan(
         leg_group=_asset_leg_group(asset),
-        leg_type=_asset_sale_leg_type(asset),
+        leg_type=_asset_sale_leg_type(
+            asset
+        ),
         coin=asset.coin,
-        symbol=_map_symbol_from_coin(asset.coin, asset.symbol),
+        symbol=_map_symbol_from_coin(
+            asset.coin,
+            asset.symbol,
+        ),
         category=asset.category,
-        side=asset.side,
+        side=close_side or asset.side,
         location=asset.location,
         current_qty=asset.qty,
         current_size=asset.size,
-        current_usd_value=value,
-        current_notional_usd=asset.notional_usd,
+        current_usd_value=current_value,
+        current_notional_usd=(
+            asset.notional_usd
+        ),
         source_weight=None,
         target_cash_usdt=ZERO,
         target_qty=None,
@@ -503,14 +920,42 @@ def _build_skipped_asset_leg(
         eligible=False,
         eligibility_reason=reason,
         use_for_deficit_cover=False,
-        instrument_status=asset.instrument_status,
-        min_order_passed=False if status == SALE_LEG_STATUS_SKIPPED_MIN_ORDER else None,
-        liquidity_check_required=_asset_liquidity_required(asset),
-        margin_guard_required=_asset_margin_required(asset),
-        planned_execution_mode="mock_plan_only",
+        instrument_status=(
+            asset.instrument_status
+        ),
+        min_order_passed=(
+            False
+            if status
+            == SALE_LEG_STATUS_SKIPPED_MIN_ORDER
+            else None
+        ),
+        liquidity_check_required=(
+            _asset_liquidity_required(
+                asset
+            )
+        ),
+        margin_guard_required=(
+            _asset_margin_required(asset)
+        ),
+        planned_execution_mode=(
+            "mock_plan_only"
+        ),
         status=status,
         error=None,
-        raw=asset.to_dict(),
+        raw=raw,
+        position_side=position_side,
+        close_side=close_side,
+        position_idx=asset.position_idx,
+        exposure_notional_usdt=(
+            asset.exposure_notional_usdt
+            if asset.exposure_notional_usdt
+            is not None
+            else asset.notional_usd
+        ),
+        confirmed_cash_delta_usdt=None,
+        order_quantity_preflight=(
+            preflight
+        ),
     )
 
 
@@ -519,91 +964,250 @@ def _build_planned_asset_leg(
     asset: NegativeSaleAsset,
     source_weight: Decimal,
     target_cash_usdt: Decimal,
+    target_qty: Decimal | None = None,
+    expected_cash_delta_usdt: (
+        Decimal | None
+    ) = None,
+    use_for_deficit_cover: (
+        bool | None
+    ) = None,
+    reason: str | None = None,
+    order_quantity_preflight: (
+        dict[str, Any] | None
+    ) = None,
 ) -> SaleLegPlan:
-    value = _asset_value(asset)
-    use_for_deficit_cover = _asset_eligible_for_deficit_cover(asset)
+    derivative = is_derivative_asset(
+        asset
+    )
+    close_side = _asset_close_side(asset)
+    position_side = (
+        _asset_position_side(asset)
+        if derivative
+        else None
+    )
 
-    if asset.asset_type == "short_option":
-        expected_cash_delta_usdt = ZERO
-        target_cash_usdt = ZERO
-        target_qty = None
-        reason = (
-            "Short option buyback is planned for audit only and is not used "
-            "for deficit cover by default because cash effect is uncertain."
+    resolved_use_for_deficit_cover = (
+        _asset_eligible_for_deficit_cover(
+            asset
         )
-    else:
-        expected_cash_delta_usdt = target_cash_usdt
+        if use_for_deficit_cover is None
+        else bool(use_for_deficit_cover)
+    )
+
+    if target_qty is None and (
+        target_cash_usdt > ZERO
+        and not derivative
+    ):
         target_qty = _target_qty_for_asset(
             asset=asset,
-            target_cash_usdt=target_cash_usdt,
-            value_usdt=value,
+            target_cash_usdt=(
+                target_cash_usdt
+            ),
+            value_usdt=_asset_value(asset),
         )
-        reason = "Eligible cash-generating source for negative-net sale plan."
+
+    resolved_expected_cash = (
+        expected_cash_delta_usdt
+        if expected_cash_delta_usdt
+        is not None
+        else (
+            target_cash_usdt
+            if resolved_use_for_deficit_cover
+            else ZERO
+        )
+    )
+
+    current_value = (
+        max(dec(asset.usd_value), ZERO)
+        if derivative
+        else _asset_value(asset)
+    )
+
+    preflight = dict(
+        order_quantity_preflight or {}
+    )
+
+    raw = asset.to_dict()
+    raw.update(
+        {
+            "position_side": position_side,
+            "close_side": close_side,
+            "position_idx": (
+                asset.position_idx
+            ),
+            "reduce_only": derivative,
+            "market_unit": (
+                "baseCoin"
+                if asset.asset_type
+                in {
+                    "spot",
+                    "non_stable_earn",
+                }
+                else None
+            ),
+            "order_quantity_preflight": (
+                preflight
+            ),
+        }
+    )
 
     return SaleLegPlan(
         leg_group=_asset_leg_group(asset),
-        leg_type=_asset_sale_leg_type(asset),
+        leg_type=_asset_sale_leg_type(
+            asset
+        ),
         coin=asset.coin,
-        symbol=_map_symbol_from_coin(asset.coin, asset.symbol),
+        symbol=_map_symbol_from_coin(
+            asset.coin,
+            asset.symbol,
+        ),
         category=asset.category,
-        side=asset.side,
+        side=close_side,
         location=asset.location,
         current_qty=asset.qty,
         current_size=asset.size,
-        current_usd_value=value,
-        current_notional_usd=asset.notional_usd,
-        source_weight=source_weight if use_for_deficit_cover else None,
-        target_cash_usdt=target_cash_usdt,
-        target_qty=target_qty,
-        expected_cash_delta_usdt=expected_cash_delta_usdt,
-        eligible=True,
-        eligibility_reason=reason,
-        use_for_deficit_cover=use_for_deficit_cover,
-        instrument_status=asset.instrument_status,
-        min_order_passed=(
-            target_cash_usdt >= MIN_PLANNED_SALE_LEG_USDT
-            if use_for_deficit_cover
+        current_usd_value=current_value,
+        current_notional_usd=(
+            asset.notional_usd
+        ),
+        source_weight=(
+            source_weight
+            if resolved_use_for_deficit_cover
             else None
         ),
-        liquidity_check_required=_asset_liquidity_required(asset),
-        margin_guard_required=_asset_margin_required(asset),
-        planned_execution_mode=_asset_planned_execution_mode(asset),
+        target_cash_usdt=(
+            target_cash_usdt
+        ),
+        target_qty=target_qty,
+        expected_cash_delta_usdt=(
+            resolved_expected_cash
+        ),
+        eligible=True,
+        eligibility_reason=(
+            reason
+            or (
+                "Eligible cash-generating "
+                "source for negative-net "
+                "sale plan."
+            )
+        ),
+        use_for_deficit_cover=(
+            resolved_use_for_deficit_cover
+        ),
+        instrument_status=(
+            asset.instrument_status
+        ),
+        min_order_passed=(
+            bool(
+                preflight.get(
+                    "eligible",
+                    True,
+                )
+            )
+        ),
+        liquidity_check_required=(
+            _asset_liquidity_required(
+                asset
+            )
+        ),
+        margin_guard_required=(
+            _asset_margin_required(asset)
+        ),
+        planned_execution_mode=(
+            _asset_planned_execution_mode(
+                asset
+            )
+        ),
         status=SALE_LEG_STATUS_PLANNED,
         error=None,
-        raw=asset.to_dict(),
+        raw=raw,
+        position_side=position_side,
+        close_side=close_side,
+        position_idx=asset.position_idx,
+        exposure_notional_usdt=(
+            asset.exposure_notional_usdt
+            if asset.exposure_notional_usdt
+            is not None
+            else asset.notional_usd
+        ),
+        confirmed_cash_delta_usdt=None,
+        order_quantity_preflight=(
+            preflight
+        ),
     )
 
 
-def _collect_deficit_cover_assets(snapshot: NegativeSaleSnapshot) -> list[NegativeSaleAsset]:
-    assets: list[NegativeSaleAsset] = []
-
-    for asset in snapshot.all_assets():
-        if not _asset_eligible_for_deficit_cover(asset):
-            continue
-
-        if _asset_skip_reason(asset) is not None:
-            continue
-
-        assets.append(asset)
-
-    return assets
+def _derivative_assets(
+    snapshot: NegativeSaleSnapshot,
+) -> list[NegativeSaleAsset]:
+    return [
+        *snapshot.perp_future_positions,
+        *snapshot.long_options,
+        *snapshot.short_options,
+    ]
 
 
-def _build_asset_sale_legs(
+def _cash_deficit_assets(
+    snapshot: NegativeSaleSnapshot,
+) -> list[NegativeSaleAsset]:
+    return [
+        *snapshot.non_stable_earn_holdings,
+        *snapshot.spot_holdings,
+        *snapshot.funding_wallet_non_stable_assets,
+    ]
+
+
+def _preflight_skip_status(
+    preflight: dict[str, Any],
+) -> str:
+    reasons = [
+        str(reason).lower()
+        for reason in (
+            preflight.get("reasons")
+            or []
+        )
+    ]
+
+    if any(
+        (
+            "min" in reason
+            or "below" in reason
+            or "zero_after_round_down"
+            in reason
+        )
+        for reason in reasons
+    ):
+        return (
+            SALE_LEG_STATUS_SKIPPED_MIN_ORDER
+        )
+
+    return (
+        SALE_LEG_STATUS_SKIPPED_NOT_ELIGIBLE
+    )
+
+
+def _build_derivative_reduction_legs(
     *,
     snapshot: NegativeSaleSnapshot,
-    sale_target_usdt: Decimal,
+    derivative_reduction: (
+        ProportionalDerivativeReduction
+    ),
 ) -> list[SaleLegPlan]:
     legs: list[SaleLegPlan] = []
+    strict = _is_live_bybit_snapshot(
+        snapshot
+    )
 
-    if sale_target_usdt <= ZERO:
-        return legs
+    for asset in _derivative_assets(
+        snapshot
+    ):
+        skip = _asset_skip_reason(
+            asset,
+            strict_instrument_preflight=(
+                strict
+            ),
+        )
 
-    eligible_sources = _collect_deficit_cover_assets(snapshot)
-    total_eligible_value = sum((_asset_value(item) for item in eligible_sources), ZERO)
-
-    for asset in snapshot.all_assets():
-        skip = _asset_skip_reason(asset)
         if skip is not None:
             status, reason = skip
             legs.append(
@@ -615,58 +1219,416 @@ def _build_asset_sale_legs(
             )
             continue
 
-        if asset.asset_type == "short_option":
+        current_size = (
+            _asset_available_qty(asset)
+        )
+
+        if current_size is None:
             legs.append(
-                _build_planned_asset_leg(
+                _build_skipped_asset_leg(
                     asset=asset,
-                    source_weight=ZERO,
-                    target_cash_usdt=ZERO,
+                    status=(
+                        SALE_LEG_STATUS_SKIPPED_NOT_ELIGIBLE
+                    ),
+                    reason=(
+                        "Derivative current "
+                        "position size is missing."
+                    ),
                 )
             )
             continue
 
-        if not _asset_eligible_for_deficit_cover(asset):
+        try:
+            raw_target_qty = (
+                derivative_raw_target_qty(
+                    current_size=current_size,
+                    net_redeem_ratio=(
+                        derivative_reduction
+                        .net_redeem_ratio
+                    ),
+                )
+            )
+        except NegativeSalePlanningPolicyError as exc:
             legs.append(
                 _build_skipped_asset_leg(
                     asset=asset,
-                    status=SALE_LEG_STATUS_SKIPPED_NOT_ELIGIBLE,
-                    reason="Asset type is not eligible for deficit cover.",
+                    status=(
+                        SALE_LEG_STATUS_SKIPPED_NOT_ELIGIBLE
+                    ),
+                    reason=(
+                        "Derivative target "
+                        f"calculation failed: {exc}"
+                    ),
+                )
+            )
+            continue
+
+        if raw_target_qty <= ZERO:
+            legs.append(
+                _build_skipped_asset_leg(
+                    asset=asset,
+                    status=(
+                        SALE_LEG_STATUS_SKIPPED_ZERO_VALUE
+                    ),
+                    reason=(
+                        "Derivative reduction "
+                        "target is zero under "
+                        f"{DERIVATIVE_REDUCTION_POLICY_VERSION}."
+                    ),
+                    order_quantity_preflight={
+                        "eligible": False,
+                        "requested_qty": str(
+                            raw_target_qty
+                        ),
+                        "normalized_qty": "0",
+                        "slices": [],
+                        "reasons": [
+                            "net_redeem_ratio_zero",
+                        ],
+                    },
+                )
+            )
+            continue
+
+        (
+            normalized_qty,
+            preflight,
+        ) = _normalize_asset_target_qty(
+            asset=asset,
+            requested_qty=raw_target_qty,
+            strict_instrument_preflight=(
+                strict
+            ),
+        )
+
+        if (
+            normalized_qty is None
+            or normalized_qty <= ZERO
+        ):
+            legs.append(
+                _build_skipped_asset_leg(
+                    asset=asset,
+                    status=(
+                        _preflight_skip_status(
+                            preflight
+                        )
+                    ),
+                    reason=(
+                        "Derivative quantity "
+                        "preflight failed: "
+                        + ",".join(
+                            str(reason)
+                            for reason in (
+                                preflight.get(
+                                    "reasons"
+                                )
+                                or []
+                            )
+                        )
+                    ),
+                    order_quantity_preflight=(
+                        preflight
+                    ),
+                )
+            )
+            continue
+
+        legs.append(
+            _build_planned_asset_leg(
+                asset=asset,
+                source_weight=ZERO,
+                target_cash_usdt=ZERO,
+                target_qty=normalized_qty,
+                expected_cash_delta_usdt=ZERO,
+                use_for_deficit_cover=False,
+                reason=(
+                    "Derivative position is "
+                    "reduced proportionally under "
+                    f"{DERIVATIVE_REDUCTION_POLICY_VERSION}; "
+                    "derivative notional is not "
+                    "expected cash."
+                ),
+                order_quantity_preflight=(
+                    preflight
+                ),
+            )
+        )
+
+    return legs
+
+
+def _collect_deficit_cover_assets(
+    snapshot: NegativeSaleSnapshot,
+    *,
+    strict_instrument_preflight: bool,
+) -> list[NegativeSaleAsset]:
+    assets: list[NegativeSaleAsset] = []
+
+    for asset in [
+        *snapshot.non_stable_earn_holdings,
+        *snapshot.spot_holdings,
+    ]:
+        if not (
+            _asset_eligible_for_deficit_cover(
+                asset
+            )
+        ):
+            continue
+
+        if (
+            _asset_skip_reason(
+                asset,
+                strict_instrument_preflight=(
+                    strict_instrument_preflight
+                ),
+            )
+            is not None
+        ):
+            continue
+
+        assets.append(asset)
+
+    return assets
+
+
+def _planned_spot_cash_from_preflight(
+    *,
+    target_cash_usdt: Decimal,
+    preflight: dict[str, Any],
+) -> Decimal:
+    normalized_notional = (
+        preflight.get(
+            "normalized_notional"
+        )
+    )
+
+    if (
+        normalized_notional is None
+        or normalized_notional == ""
+    ):
+        return target_cash_usdt
+
+    normalized_value = dec(
+        normalized_notional
+    )
+
+    return max(
+        min(
+            target_cash_usdt,
+            normalized_value,
+        ),
+        ZERO,
+    )
+
+
+def _build_cash_deficit_legs(
+    *,
+    snapshot: NegativeSaleSnapshot,
+    sale_target_usdt: Decimal,
+) -> list[SaleLegPlan]:
+    legs: list[SaleLegPlan] = []
+
+    if sale_target_usdt <= ZERO:
+        return legs
+
+    strict = _is_live_bybit_snapshot(
+        snapshot
+    )
+
+    eligible_sources = (
+        _collect_deficit_cover_assets(
+            snapshot,
+            strict_instrument_preflight=(
+                strict
+            ),
+        )
+    )
+
+    total_eligible_value = sum(
+        (
+            _asset_value(item)
+            for item in eligible_sources
+        ),
+        ZERO,
+    )
+
+    for asset in _cash_deficit_assets(
+        snapshot
+    ):
+        skip = _asset_skip_reason(
+            asset,
+            strict_instrument_preflight=(
+                strict
+            ),
+        )
+
+        if skip is not None:
+            status, reason = skip
+            legs.append(
+                _build_skipped_asset_leg(
+                    asset=asset,
+                    status=status,
+                    reason=reason,
+                )
+            )
+            continue
+
+        if not (
+            _asset_eligible_for_deficit_cover(
+                asset
+            )
+        ):
+            legs.append(
+                _build_skipped_asset_leg(
+                    asset=asset,
+                    status=(
+                        SALE_LEG_STATUS_SKIPPED_NOT_ELIGIBLE
+                    ),
+                    reason=(
+                        asset.eligibility_reason
+                        or (
+                            "Asset is not eligible "
+                            "for task-2 deficit cover."
+                        )
+                    ),
                 )
             )
             continue
 
         value = _asset_value(asset)
+
         if total_eligible_value <= ZERO:
             legs.append(
                 _build_skipped_asset_leg(
                     asset=asset,
-                    status=SALE_LEG_STATUS_SKIPPED_NOT_ELIGIBLE,
-                    reason="No eligible positive-value source exists.",
-                )
-            )
-            continue
-
-        source_weight = value / total_eligible_value
-        target_cash_usdt = min(value, sale_target_usdt * source_weight)
-
-        if target_cash_usdt <= ZERO:
-            legs.append(
-                _build_skipped_asset_leg(
-                    asset=asset,
-                    status=SALE_LEG_STATUS_SKIPPED_ZERO_VALUE,
-                    reason="Calculated target cash is zero.",
-                )
-            )
-            continue
-
-        if target_cash_usdt < MIN_PLANNED_SALE_LEG_USDT:
-            legs.append(
-                _build_skipped_asset_leg(
-                    asset=asset,
-                    status=SALE_LEG_STATUS_SKIPPED_MIN_ORDER,
+                    status=(
+                        SALE_LEG_STATUS_SKIPPED_NOT_ELIGIBLE
+                    ),
                     reason=(
-                        "Calculated target cash is below Stage 23.2 "
-                        f"minimum planning threshold {MIN_PLANNED_SALE_LEG_USDT} USDT."
+                        "No eligible positive-value "
+                        "cash-generating source exists."
+                    ),
+                )
+            )
+            continue
+
+        source_weight = (
+            value / total_eligible_value
+        )
+        target_cash = min(
+            value,
+            sale_target_usdt
+            * source_weight,
+        )
+
+        if target_cash <= ZERO:
+            legs.append(
+                _build_skipped_asset_leg(
+                    asset=asset,
+                    status=(
+                        SALE_LEG_STATUS_SKIPPED_ZERO_VALUE
+                    ),
+                    reason=(
+                        "Calculated cash target "
+                        "is zero."
+                    ),
+                )
+            )
+            continue
+
+        raw_target_qty = (
+            _target_qty_for_asset(
+                asset=asset,
+                target_cash_usdt=(
+                    target_cash
+                ),
+                value_usdt=value,
+            )
+        )
+
+        if (
+            raw_target_qty is None
+            or raw_target_qty <= ZERO
+        ):
+            legs.append(
+                _build_skipped_asset_leg(
+                    asset=asset,
+                    status=(
+                        SALE_LEG_STATUS_SKIPPED_NOT_ELIGIBLE
+                    ),
+                    reason=(
+                        "Cash-generating asset "
+                        "quantity is missing."
+                    ),
+                )
+            )
+            continue
+
+        (
+            normalized_qty,
+            preflight,
+        ) = _normalize_asset_target_qty(
+            asset=asset,
+            requested_qty=raw_target_qty,
+            strict_instrument_preflight=(
+                strict
+            ),
+        )
+
+        if (
+            normalized_qty is None
+            or normalized_qty <= ZERO
+        ):
+            legs.append(
+                _build_skipped_asset_leg(
+                    asset=asset,
+                    status=(
+                        _preflight_skip_status(
+                            preflight
+                        )
+                    ),
+                    reason=(
+                        "Cash-generating quantity "
+                        "preflight failed: "
+                        + ",".join(
+                            str(reason)
+                            for reason in (
+                                preflight.get(
+                                    "reasons"
+                                )
+                                or []
+                            )
+                        )
+                    ),
+                    order_quantity_preflight=(
+                        preflight
+                    ),
+                )
+            )
+            continue
+
+        expected_cash = (
+            _planned_spot_cash_from_preflight(
+                target_cash_usdt=(
+                    target_cash
+                ),
+                preflight=preflight,
+            )
+        )
+
+        if expected_cash <= ZERO:
+            legs.append(
+                _build_skipped_asset_leg(
+                    asset=asset,
+                    status=(
+                        SALE_LEG_STATUS_SKIPPED_MIN_ORDER
+                    ),
+                    reason=(
+                        "Normalized expected cash "
+                        "is zero."
+                    ),
+                    order_quantity_preflight=(
+                        preflight
                     ),
                 )
             )
@@ -676,11 +1638,106 @@ def _build_asset_sale_legs(
             _build_planned_asset_leg(
                 asset=asset,
                 source_weight=source_weight,
-                target_cash_usdt=target_cash_usdt,
+                target_cash_usdt=(
+                    target_cash
+                ),
+                target_qty=normalized_qty,
+                expected_cash_delta_usdt=(
+                    expected_cash
+                ),
+                use_for_deficit_cover=True,
+                reason=(
+                    "Earn/spot source is planned "
+                    "for the remaining cash deficit "
+                    "after derivative reductions and "
+                    "confirmed UNIFIED balance refresh."
+                ),
+                order_quantity_preflight=(
+                    preflight
+                ),
             )
         )
 
     return legs
+
+
+def _build_asset_sale_legs(
+    *,
+    snapshot: NegativeSaleSnapshot,
+    sale_target_usdt: Decimal,
+    derivative_reduction: (
+        ProportionalDerivativeReduction
+    ),
+) -> list[SaleLegPlan]:
+    derivative_legs = (
+        _build_derivative_reduction_legs(
+            snapshot=snapshot,
+            derivative_reduction=(
+                derivative_reduction
+            ),
+        )
+    )
+
+    cash_deficit_legs = (
+        _build_cash_deficit_legs(
+            snapshot=snapshot,
+            sale_target_usdt=(
+                sale_target_usdt
+            ),
+        )
+    )
+
+    return [
+        *derivative_legs,
+        *cash_deficit_legs,
+    ]
+
+
+def _derivative_reduction_for_settlement(
+    settlement_batch: FundSettlementBatch,
+) -> ProportionalDerivativeReduction:
+    planned_change = getattr(
+        settlement_batch,
+        "planned_net_shares_change",
+        None,
+    )
+    shares_before = getattr(
+        settlement_batch,
+        "shares_outstanding_before",
+        None,
+    )
+
+    if planned_change is None:
+        raise NegativeSalePlanError(
+            "planned_net_shares_change "
+            "is required for derivative "
+            "reduction planning"
+        )
+
+    if shares_before is None:
+        raise NegativeSalePlanError(
+            "shares_outstanding_before "
+            "is required for derivative "
+            "reduction planning"
+        )
+
+    try:
+        return (
+            compute_proportional_derivative_reduction(
+                planned_net_shares_change=(
+                    planned_change
+                ),
+                shares_outstanding_before=(
+                    shares_before
+                ),
+            )
+        )
+    except NegativeSalePlanningPolicyError as exc:
+        raise NegativeSalePlanError(
+            "derivative_reduction_policy_"
+            f"failed: {exc}"
+        ) from exc
+
 def _compute_negative_sale_plan(
     *,
     settlement_batch: FundSettlementBatch,
@@ -691,6 +1748,12 @@ def _compute_negative_sale_plan(
     total_net_user_payout_usdt = dec(settlement_batch.total_net_user_payout_usdt)
     total_partial_month_fee_usdt = dec(settlement_batch.total_partial_month_fee_usdt)
     bybit_withdrawal_fee_usdt = dec(settlement_batch.bybit_withdrawal_fee_usdt)
+
+    derivative_reduction = (
+        _derivative_reduction_for_settlement(
+            settlement_batch
+        )
+    )
 
     unified_usdt_available = snapshot.unified_usdt_available
     fund_wallet_usdt_available = snapshot.fund_wallet_usdt_available
@@ -703,7 +1766,6 @@ def _compute_negative_sale_plan(
     sale_target_usdt = _max_zero(
         required_master_usdt
         - unified_usdt_available
-        - fund_wallet_usdt_available
         - usdt_earn_used_as_buffer
     )
 
@@ -711,6 +1773,9 @@ def _compute_negative_sale_plan(
     asset_sale_legs = _build_asset_sale_legs(
         snapshot=snapshot,
         sale_target_usdt=sale_target_usdt,
+        derivative_reduction=(
+            derivative_reduction
+        ),
     )
 
     legs = [*cash_like_legs, *asset_sale_legs]
@@ -733,14 +1798,37 @@ def _compute_negative_sale_plan(
     )
 
     plan_json = {
+        "policy": {
+            "derivative_reduction": (
+                derivative_reduction.to_dict()
+            ),
+            "derivative_reduction_policy_version": (
+                DERIVATIVE_REDUCTION_POLICY_VERSION
+            ),
+            "execution_sequence": [
+                "derivative_reductions",
+                "confirmed_unified_usdt_refresh",
+                "earn_and_spot_deficit_cover",
+            ],
+            "fund_wallet_cash_usable_in_task2": False,
+            "derivative_close_side_matrix": {
+                "long_or_buy_position": "Sell",
+                "short_or_sell_position": "Buy",
+            },
+            "derivative_reduce_only": True,
+            "spot_market_unit": "baseCoin",
+        },
         "formula": {
             "sale_target_usdt": (
                 "max(required_master_usdt - unified_usdt_available "
-                "- fund_wallet_usdt_available - usdt_earn_used_as_buffer, 0)"
+                "- usdt_earn_used_as_buffer, 0)"
             ),
             "required_master_usdt": str(required_master_usdt),
             "unified_usdt_available": str(unified_usdt_available),
             "fund_wallet_usdt_available": str(fund_wallet_usdt_available),
+            "fund_wallet_usdt_excluded_reason": (
+                "requires_fund_to_unified_transfer_task3"
+            ),
             "usdt_earn_available": str(usdt_earn_available),
             "usdt_earn_redeemable": str(usdt_earn_redeemable),
             "usdt_earn_used_as_buffer": str(usdt_earn_used_as_buffer),
@@ -750,6 +1838,8 @@ def _compute_negative_sale_plan(
         "targets": {
             "sale_target_usdt": str(sale_target_usdt),
             "planned_sale_usdt": str(planned_sale_usdt),
+            "derivative_notional_included_in_planned_sale": False,
+            "derivative_expected_cash_before_balance_refresh": "0",
             "expected_shortage_usdt": str(expected_shortage_usdt),
             "expected_surplus_usdt": str(expected_surplus_usdt),
             "largest_extra_sale_buffer_pct": str(largest_extra_sale_buffer_pct),
@@ -789,6 +1879,9 @@ def _compute_negative_sale_plan(
         expected_shortage_usdt=expected_shortage_usdt,
         expected_surplus_usdt=expected_surplus_usdt,
         largest_extra_sale_buffer_pct=largest_extra_sale_buffer_pct,
+        derivative_reduction_json=(
+            derivative_reduction.to_dict()
+        ),
         legs=legs,
         plan_json=plan_json,
     )
@@ -867,6 +1960,101 @@ def _validate_settlement_batch_for_sale_plan(batch: FundSettlementBatch) -> None
             "withdrawal_request_amount_usdt must be non-negative"
         )
 
+
+def _validate_snapshot_for_sale_plan(
+    *,
+    settlement_batch: FundSettlementBatch,
+    fund: Fund,
+    snapshot: NegativeSaleSnapshot,
+) -> None:
+    if not _is_live_bybit_snapshot(
+        snapshot
+    ):
+        return
+
+    if not snapshot.snapshot_complete:
+        reasons = list(
+            snapshot.completeness_reasons
+        )
+        failed = list(
+            snapshot.failed_endpoints
+        )
+
+        raise NegativeSalePlanError(
+            "live_negative_sale_snapshot_"
+            "incomplete: "
+            f"reasons={reasons}, "
+            f"failed_endpoints={failed}"
+        )
+
+    if snapshot.captured_at is None:
+        raise NegativeSalePlanError(
+            "live_negative_sale_snapshot_"
+            "captured_at_missing"
+        )
+
+    if not snapshot.source_account:
+        raise NegativeSalePlanError(
+            "live_negative_sale_snapshot_"
+            "source_account_missing"
+        )
+
+    if snapshot.fund_id is None:
+        raise NegativeSalePlanError(
+            "live_negative_sale_snapshot_"
+            "fund_id_missing"
+        )
+
+    if int(snapshot.fund_id) != int(
+        settlement_batch.fund_id
+    ):
+        raise NegativeSalePlanError(
+            "live_negative_sale_snapshot_"
+            "fund_id_mismatch: "
+            f"snapshot={snapshot.fund_id}, "
+            f"settlement="
+            f"{settlement_batch.fund_id}"
+        )
+
+    if snapshot.fund_code is None:
+        raise NegativeSalePlanError(
+            "live_negative_sale_snapshot_"
+            "fund_code_missing"
+        )
+
+    if str(snapshot.fund_code) != str(
+        fund.code
+    ):
+        raise NegativeSalePlanError(
+            "live_negative_sale_snapshot_"
+            "fund_code_mismatch: "
+            f"snapshot={snapshot.fund_code}, "
+            f"fund={fund.code}"
+        )
+
+    required = set(
+        snapshot.required_endpoints
+    )
+    successful = set(
+        snapshot.successful_endpoints
+    )
+
+    if not required:
+        raise NegativeSalePlanError(
+            "live_negative_sale_snapshot_"
+            "required_endpoints_missing"
+        )
+
+    missing_success = sorted(
+        required - successful
+    )
+
+    if missing_success:
+        raise NegativeSalePlanError(
+            "live_negative_sale_snapshot_"
+            "required_endpoints_not_confirmed: "
+            f"{missing_success}"
+        )
 
 def _get_or_create_sale_batch(
     db: Session,
@@ -1091,6 +2279,14 @@ def create_negative_sale_plan(
             now=now,
         )
 
+        _validate_snapshot_for_sale_plan(
+            settlement_batch=(
+                settlement_batch
+            ),
+            fund=fund,
+            snapshot=snapshot,
+        )
+
         computation = _compute_negative_sale_plan(
             settlement_batch=settlement_batch,
             snapshot=snapshot,
@@ -1140,7 +2336,16 @@ def create_negative_sale_plan(
             diagnostics={
                 "sale_target_formula": (
                     "max(required_master_usdt - unified_usdt_available "
-                    "- fund_wallet_usdt_available - usdt_earn_used_as_buffer, 0)"
+                    "- usdt_earn_used_as_buffer, 0)"
+                ),
+                "fund_wallet_usdt_available_diagnostic": str(
+                    computation
+                    .fund_wallet_usdt_available
+                ),
+                "fund_wallet_usdt_usable_in_task2": False,
+                "derivative_reduction": (
+                    computation
+                    .derivative_reduction_json
                 ),
                 "usdt_earn_available": str(computation.usdt_earn_available),
                 "usdt_earn_redeemable": str(computation.usdt_earn_redeemable),

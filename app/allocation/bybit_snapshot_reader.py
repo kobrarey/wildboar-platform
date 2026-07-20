@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from decimal import Decimal
+from collections.abc import Callable
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -23,7 +24,14 @@ from app.allocation.snapshot_service import (
     normalize_side,
     normalize_symbol,
 )
+from app.allocation.bybit_snapshot_completeness import (
+    SnapshotEndpointMatrix,
+)
 from app.bybit.client import BybitApiError, BybitV5Client
+from app.bybit.instruments import (
+    BybitInstrumentInfo,
+    query_instrument_info,
+)
 from app.bybit.credentials import get_active_fund_bybit_client
 from app.models import Fund
 
@@ -50,7 +58,10 @@ class BybitReadonlyRawData:
     inverse_positions: list[dict[str, Any]]
     option_positions: list[dict[str, Any]]
     earn_positions: list[dict[str, Any]]
+    instruments: dict[str, BybitInstrumentInfo]
     suppressed_errors: list[dict[str, Any]]
+    endpoint_matrix: SnapshotEndpointMatrix
+    captured_at: datetime
 
 
 def utcnow() -> datetime:
@@ -88,8 +99,95 @@ def _abs_dec(value: Any) -> Decimal:
     return abs(dec(value))
 
 
+def _optional_dec(
+    value: Any,
+) -> Decimal | None:
+    if value is None or value == "":
+        return None
+
+    return dec(value)
+
+
+def _optional_int(
+    value: Any,
+) -> int | None:
+    if value is None or value == "":
+        return None
+
+    try:
+        return int(str(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _first_present(
+    data: dict[str, Any],
+    keys: tuple[str, ...],
+) -> tuple[str | None, Any]:
+    for key in keys:
+        if (
+            key in data
+            and data[key] is not None
+            and data[key] != ""
+        ):
+            return key, data[key]
+
+    return None, None
+
+
+def _instrument_lookup_key(
+    *,
+    category: str,
+    symbol: str,
+) -> str:
+    return (
+        f"{str(category).strip().lower()}:"
+        f"{str(symbol).strip().upper()}"
+    )
+
+
+def _instrument_endpoint_key(
+    *,
+    category: str,
+    symbol: str,
+) -> str:
+    return (
+        f"instruments:{str(category).strip().lower()}:"
+        f"{str(symbol).strip().upper()}"
+    )
+
+
 def _bybit_error_text(exc: Exception) -> str:
     return str(exc).lower()
+
+
+def _required_call(
+    *,
+    matrix: SnapshotEndpointMatrix,
+    endpoint_key: str,
+    call: Callable[[], Any],
+    default: Any,
+) -> Any:
+    matrix.require(endpoint_key)
+
+    try:
+        result = call()
+    except Exception as exc:
+        matrix.mark_failure(
+            endpoint_key,
+            error=exc,
+            suppressed=True,
+        )
+        log.warning(
+            "Required Bybit snapshot endpoint failed "
+            "endpoint_key=%s error=%s",
+            endpoint_key,
+            exc,
+        )
+        return default
+
+    matrix.mark_success(endpoint_key)
+    return result
 
 
 def _is_noncritical_earn_error(exc: Exception) -> bool:
@@ -120,34 +218,30 @@ def _safe_earn_call(
     client: BybitV5Client,
     *,
     category: str,
-    suppressed_errors: list[dict[str, Any]],
+    matrix: SnapshotEndpointMatrix,
 ) -> list[dict[str, Any]]:
-    try:
+    endpoint_key = f"earn:{category}"
+
+    def call() -> list[dict[str, Any]]:
         payload = client.get(
             "/v5/earn/position",
             {
                 "category": category,
             },
         )
-        return _list_from_result(payload, "list", "rows", "data")
-    except Exception as exc:
-        if _is_noncritical_earn_error(exc):
-            suppressed_errors.append(
-                {
-                    "endpoint": "/v5/earn/position",
-                    "category": category,
-                    "error": str(exc),
-                    "suppressed": True,
-                }
-            )
-            log.info(
-                "Bybit Earn endpoint skipped category=%s reason=%s",
-                category,
-                exc,
-            )
-            return []
+        return _list_from_result(
+            payload,
+            "list",
+            "rows",
+            "data",
+        )
 
-        raise
+    return _required_call(
+        matrix=matrix,
+        endpoint_key=endpoint_key,
+        call=call,
+        default=[],
+    )
 
 
 def _public_get(client: BybitV5Client, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -268,74 +362,97 @@ def _fetch_positions(
     *,
     inverse_coins: list[str],
     option_coins: list[str],
+    matrix: SnapshotEndpointMatrix,
 ) -> tuple[
     list[dict[str, Any]],
     list[dict[str, Any]],
     list[dict[str, Any]],
     list[dict[str, Any]],
 ]:
-    linear_usdt = _tag_position_rows(
-        _paginate_get(
-            client,
-            "/v5/position/list",
-            {
-                "category": "linear",
-                "settleCoin": "USDT",
-            },
-        ),
+    def fetch_rows(
+        *,
+        endpoint_key: str,
+        params: dict[str, Any],
+        category: str,
+    ) -> list[dict[str, Any]]:
+        rows = _required_call(
+            matrix=matrix,
+            endpoint_key=endpoint_key,
+            call=lambda: _paginate_get(
+                client,
+                "/v5/position/list",
+                params,
+            ),
+            default=[],
+        )
+
+        return _tag_position_rows(
+            rows,
+            category=category,
+        )
+
+    linear_usdt = fetch_rows(
+        endpoint_key="positions:linear:USDT",
+        params={
+            "category": "linear",
+            "settleCoin": "USDT",
+        },
         category="linear",
     )
-    linear_usdc = _tag_position_rows(
-        _paginate_get(
-            client,
-            "/v5/position/list",
-            {
-                "category": "linear",
-                "settleCoin": "USDC",
-            },
-        ),
+
+    linear_usdc = fetch_rows(
+        endpoint_key="positions:linear:USDC",
+        params={
+            "category": "linear",
+            "settleCoin": "USDC",
+        },
         category="linear",
     )
 
     inverse: list[dict[str, Any]] = []
+
     for coin in inverse_coins:
         inverse.extend(
-            _tag_position_rows(
-                _paginate_get(
-                    client,
-                    "/v5/position/list",
-                    {
-                        "category": "inverse",
-                        "settleCoin": coin,
-                    },
+            fetch_rows(
+                endpoint_key=(
+                    f"positions:inverse:{coin}"
                 ),
+                params={
+                    "category": "inverse",
+                    "settleCoin": coin,
+                },
                 category="inverse",
             )
         )
 
     options: list[dict[str, Any]] = []
+
     for coin in option_coins:
         options.extend(
-            _tag_position_rows(
-                _paginate_get(
-                    client,
-                    "/v5/position/list",
-                    {
-                        "category": "option",
-                        "baseCoin": coin,
-                    },
+            fetch_rows(
+                endpoint_key=(
+                    f"positions:option:{coin}"
                 ),
+                params={
+                    "category": "option",
+                    "baseCoin": coin,
+                },
                 category="option",
             )
         )
 
-    return linear_usdt, linear_usdc, inverse, options
+    return (
+        linear_usdt,
+        linear_usdc,
+        inverse,
+        options,
+    )
 
 
 def _fetch_earn_positions(
     client: BybitV5Client,
     *,
-    suppressed_errors: list[dict[str, Any]],
+    matrix: SnapshotEndpointMatrix,
 ) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
 
@@ -343,8 +460,9 @@ def _fetch_earn_positions(
         category_rows = _safe_earn_call(
             client,
             category=category,
-            suppressed_errors=suppressed_errors,
+            matrix=matrix,
         )
+
         for row in category_rows:
             item = dict(row)
             item["_wb_earn_category"] = category
@@ -612,6 +730,53 @@ def _holding_from_earn_row(
             "total_amount",
         )
     )
+
+    available_key, available_raw = (
+        _first_present(
+            row,
+            (
+                "availableAmount",
+                "available_amount",
+                "available",
+            ),
+        )
+    )
+    redeemable_key, redeemable_raw = (
+        _first_present(
+            row,
+            (
+                "redeemableAmount",
+                "redeemable_amount",
+                "redeemable",
+                "redeemableUsdt",
+                "redeemable_usdt",
+            ),
+        )
+    )
+    locked_key, locked_raw = (
+        _first_present(
+            row,
+            (
+                "lockedAmount",
+                "locked_amount",
+                "locked",
+            ),
+        )
+    )
+
+    available_amount = _optional_dec(
+        available_raw
+    )
+    redeemable_amount = _optional_dec(
+        redeemable_raw
+    )
+    locked_amount = _optional_dec(
+        locked_raw
+    )
+    redeemable_known = (
+        redeemable_key is not None
+    )
+
     usd_value = dec(
         get_any(
             row,
@@ -680,8 +845,66 @@ def _holding_from_earn_row(
         product=product,
         product_category=product_category,
         extra={
-            "apr": dec(get_any(row, "apr", "annualRate", "annual_rate")),
-            "status": get_any(row, "status", default=""),
+            "apr": dec(
+                get_any(
+                    row,
+                    "apr",
+                    "annualRate",
+                    "annual_rate",
+                )
+            ),
+            "status": get_any(
+                row,
+                "status",
+                default="",
+            ),
+            "total_amount": amount,
+            "available_amount": available_amount,
+            "available_amount_source": (
+                available_key
+            ),
+            "redeemable_amount": (
+                redeemable_amount
+            ),
+            "redeemable_usdt": (
+                redeemable_amount
+                if coin == "USDT"
+                and redeemable_known
+                else None
+            ),
+            "redeemable_amount_source": (
+                redeemable_key
+            ),
+            "redeemable_known": (
+                redeemable_known
+            ),
+            "locked_amount": locked_amount,
+            "locked_amount_source": (
+                locked_key
+            ),
+            "product_id": get_any(
+                row,
+                "productId",
+                "product_id",
+            ),
+            "product_category": (
+                product_category
+            ),
+            "product_status": get_any(
+                row,
+                "status",
+                default="",
+            ),
+            "precision": get_any(
+                row,
+                "precision",
+                "amountPrecision",
+                "amount_precision",
+                "minAccuracy",
+            ),
+            "source_endpoint": (
+                "/v5/earn/position"
+            ),
             "source": "bybit_earn",
         },
     )
@@ -696,6 +919,35 @@ def _holding_from_position(row: dict[str, Any]) -> AllocationSnapshotHolding | N
     mark_price = dec(get_any(row, "markPrice", "mark_price"))
     position_value = dec(get_any(row, "positionValue", "position_value", "notionalUsd", "notional_usd"))
     leverage = dec(get_any(row, "leverage"))
+
+    position_idx = _optional_int(
+        get_any(
+            row,
+            "positionIdx",
+            "position_idx",
+        )
+    )
+    settle_coin = normalize_coin(
+        get_any(
+            row,
+            "settleCoin",
+            "settle_coin",
+        )
+    )
+    position_im = _optional_dec(
+        get_any(
+            row,
+            "positionIM",
+            "position_im",
+        )
+    )
+    position_mm = _optional_dec(
+        get_any(
+            row,
+            "positionMM",
+            "position_mm",
+        )
+    )
 
     if size == 0 and position_value == 0:
         return None
@@ -747,6 +999,12 @@ def _holding_from_position(row: dict[str, Any]) -> AllocationSnapshotHolding | N
             "cum_realised_pnl": dec(get_any(row, "cumRealisedPnl", "cum_realised_pnl")),
             "source": "bybit_position",
             "contract_type": contract_type,
+            "position_side": side,
+            "position_idx": position_idx,
+            "position_value": position_value,
+            "settle_coin": settle_coin,
+            "position_im": position_im,
+            "position_mm": position_mm,
         },
     )
 
@@ -785,8 +1043,240 @@ def _build_holdings_from_raw(raw: BybitReadonlyRawData) -> list[AllocationSnapsh
         if holding is not None:
             holdings.append(holding)
 
-    return holdings
+    return [
+        _attach_instrument_info(
+            holding,
+            instruments=raw.instruments,
+        )
+        for holding in holdings
+    ]
 
+
+def _collect_required_instrument_specs(
+    *,
+    unified_wallet: dict[str, Any],
+    funding_wallet: dict[str, Any],
+    earn_positions: list[dict[str, Any]],
+    position_rows: list[dict[str, Any]],
+) -> list[tuple[str, str]]:
+    specs: set[tuple[str, str]] = set()
+
+    def add(
+        category: str | None,
+        symbol: str | None,
+    ) -> None:
+        normalized_category = str(
+            category or ""
+        ).strip().lower()
+        normalized_symbol = normalize_symbol(
+            symbol
+        )
+
+        if (
+            normalized_category
+            and normalized_symbol
+        ):
+            specs.add(
+                (
+                    normalized_category,
+                    normalized_symbol,
+                )
+            )
+
+    for row in _unified_coin_rows(
+        unified_wallet
+    ):
+        coin = normalize_coin(
+            get_any(row, "coin", "currency")
+        )
+
+        if coin and not _is_stablecoin(coin):
+            add(
+                "spot",
+                infer_spot_symbol(
+                    coin,
+                    get_any(row, "symbol"),
+                ),
+            )
+
+    for row in _funding_coin_rows(
+        funding_wallet
+    ):
+        coin = normalize_coin(
+            get_any(row, "coin", "currency")
+        )
+
+        if coin and not _is_stablecoin(coin):
+            add(
+                "spot",
+                infer_spot_symbol(
+                    coin,
+                    get_any(row, "symbol"),
+                ),
+            )
+
+    for row in earn_positions:
+        coin = normalize_coin(
+            get_any(row, "coin", "currency")
+        )
+
+        if coin and not _is_stablecoin(coin):
+            add(
+                "spot",
+                infer_spot_symbol(
+                    coin,
+                    get_any(row, "symbol"),
+                ),
+            )
+
+    for row in position_rows:
+        add(
+            str(
+                get_any(
+                    row,
+                    "category",
+                    "_wb_endpoint_category",
+                    default="",
+                )
+                or ""
+            ),
+            normalize_symbol(
+                get_any(row, "symbol")
+            ),
+        )
+
+    return sorted(specs)
+
+
+def _fetch_required_instruments(
+    client: BybitV5Client,
+    *,
+    specs: list[tuple[str, str]],
+    matrix: SnapshotEndpointMatrix,
+    captured_at: datetime,
+) -> dict[str, BybitInstrumentInfo]:
+    instruments: dict[
+        str,
+        BybitInstrumentInfo,
+    ] = {}
+
+    for category, symbol in specs:
+        endpoint_key = _instrument_endpoint_key(
+            category=category,
+            symbol=symbol,
+        )
+        matrix.require(endpoint_key)
+
+        try:
+            info = query_instrument_info(
+                client,
+                category=category,
+                symbol=symbol,
+                captured_at=captured_at,
+            )
+        except Exception as exc:
+            matrix.mark_failure(
+                endpoint_key,
+                error=exc,
+                suppressed=True,
+                metadata={
+                    "category": category,
+                    "symbol": symbol,
+                },
+            )
+            continue
+
+        lookup_key = _instrument_lookup_key(
+            category=category,
+            symbol=symbol,
+        )
+        instruments[lookup_key] = info
+
+        if info.preflight_complete:
+            matrix.mark_success(endpoint_key)
+        else:
+            matrix.mark_failure(
+                endpoint_key,
+                error=(
+                    "instrument_preflight_incomplete:"
+                    + ",".join(
+                        info.completeness_reasons
+                    )
+                ),
+                suppressed=True,
+                metadata={
+                    "category": category,
+                    "symbol": symbol,
+                },
+            )
+
+    return instruments
+
+
+def _holding_instrument_category(
+    holding: AllocationSnapshotHolding,
+) -> str | None:
+    if holding.leg_group in {
+        "spot",
+        "funding_wallet",
+        "earn",
+    }:
+        return "spot"
+
+    category = str(
+        holding.category or ""
+    ).strip().lower()
+
+    return category or None
+
+
+def _attach_instrument_info(
+    holding: AllocationSnapshotHolding,
+    *,
+    instruments: dict[
+        str,
+        BybitInstrumentInfo,
+    ],
+) -> AllocationSnapshotHolding:
+    category = _holding_instrument_category(
+        holding
+    )
+    symbol = normalize_symbol(
+        holding.symbol
+    )
+
+    if not category or not symbol:
+        return holding
+
+    key = _instrument_lookup_key(
+        category=category,
+        symbol=symbol,
+    )
+    info = instruments.get(key)
+
+    if info is None:
+        return holding
+
+    extra = dict(holding.extra)
+    extra.update(
+        {
+            "instrument_status": info.status,
+            "instrument_preflight_complete": (
+                info.preflight_complete
+            ),
+            "instrument_completeness_reasons": (
+                list(
+                    info.completeness_reasons
+                )
+            ),
+            "instrument_info": info.to_dict(),
+        }
+    )
+
+    return replace(
+        holding,
+        extra=extra,
+    )
 
 def _fetch_bybit_readonly_raw_data(
     client: BybitV5Client,
@@ -794,11 +1284,35 @@ def _fetch_bybit_readonly_raw_data(
     inverse_coins: list[str],
     option_coins: list[str],
 ) -> BybitReadonlyRawData:
-    suppressed_errors: list[dict[str, Any]] = []
+    captured_at = utcnow()
+    matrix = SnapshotEndpointMatrix()
 
-    unified_wallet = _fetch_unified_wallet(client)
-    funding_wallet = _fetch_funding_wallet(client)
-    spot_tickers = _fetch_spot_tickers(client)
+    unified_wallet = _required_call(
+        matrix=matrix,
+        endpoint_key="wallet:UNIFIED",
+        call=lambda: _fetch_unified_wallet(
+            client
+        ),
+        default={},
+    )
+
+    funding_wallet = _required_call(
+        matrix=matrix,
+        endpoint_key="wallet:FUND",
+        call=lambda: _fetch_funding_wallet(
+            client
+        ),
+        default={},
+    )
+
+    spot_tickers = _required_call(
+        matrix=matrix,
+        endpoint_key="tickers:spot",
+        call=lambda: _fetch_spot_tickers(
+            client
+        ),
+        default={},
+    )
 
     (
         linear_usdt_positions,
@@ -809,23 +1323,58 @@ def _fetch_bybit_readonly_raw_data(
         client,
         inverse_coins=inverse_coins,
         option_coins=option_coins,
+        matrix=matrix,
     )
 
     earn_positions = _fetch_earn_positions(
         client,
-        suppressed_errors=suppressed_errors,
+        matrix=matrix,
+    )
+
+    all_position_rows = [
+        *linear_usdt_positions,
+        *linear_usdc_positions,
+        *inverse_positions,
+        *option_positions,
+    ]
+
+    instrument_specs = (
+        _collect_required_instrument_specs(
+            unified_wallet=unified_wallet,
+            funding_wallet=funding_wallet,
+            earn_positions=earn_positions,
+            position_rows=all_position_rows,
+        )
+    )
+
+    instruments = (
+        _fetch_required_instruments(
+            client,
+            specs=instrument_specs,
+            matrix=matrix,
+            captured_at=captured_at,
+        )
     )
 
     return BybitReadonlyRawData(
         unified_wallet=unified_wallet,
         funding_wallet=funding_wallet,
         spot_tickers=spot_tickers,
-        linear_usdt_positions=linear_usdt_positions,
-        linear_usdc_positions=linear_usdc_positions,
+        linear_usdt_positions=(
+            linear_usdt_positions
+        ),
+        linear_usdc_positions=(
+            linear_usdc_positions
+        ),
         inverse_positions=inverse_positions,
         option_positions=option_positions,
         earn_positions=earn_positions,
-        suppressed_errors=suppressed_errors,
+        instruments=instruments,
+        suppressed_errors=list(
+            matrix.suppressed_errors
+        ),
+        endpoint_matrix=matrix,
+        captured_at=captured_at,
     )
 
 
@@ -884,34 +1433,126 @@ def build_allocation_snapshot_from_bybit(
     risk = _risk_from_unified_wallet(raw.unified_wallet)
     holdings = _build_holdings_from_raw(raw)
 
+    endpoint_matrix_json = (
+        raw.endpoint_matrix.to_dict(
+            captured_at=raw.captured_at,
+        )
+    )
+
     raw_summary_json = {
-        "unified_wallet": json_safe(raw.unified_wallet),
-        "funding_wallet": json_safe(raw.funding_wallet),
-        "spot_tickers_count": len(raw.spot_tickers),
+        "snapshot_complete": (
+            raw.endpoint_matrix.snapshot_complete
+        ),
+        "completeness_reasons": list(
+            raw.endpoint_matrix
+            .completeness_reasons
+        ),
+        "required_endpoints": list(
+            raw.endpoint_matrix
+            .required_endpoints
+        ),
+        "successful_endpoints": list(
+            raw.endpoint_matrix
+            .successful_endpoints
+        ),
+        "failed_endpoints": list(
+            raw.endpoint_matrix
+            .failed_endpoints
+        ),
+        "captured_at": (
+            raw.captured_at.isoformat()
+        ),
+        "source_account": (
+            f"fund:{fund_id}:UNIFIED"
+        ),
+        "fund_id": fund_id,
+        "fund_code": fund_code,
+        "endpoint_matrix": (
+            endpoint_matrix_json
+        ),
+        "unified_wallet": json_safe(
+            raw.unified_wallet
+        ),
+        "funding_wallet": json_safe(
+            raw.funding_wallet
+        ),
+        "spot_tickers_count": len(
+            raw.spot_tickers
+        ),
         "positions_count": {
-            "linear_usdt": len(raw.linear_usdt_positions),
-            "linear_usdc": len(raw.linear_usdc_positions),
-            "inverse": len(raw.inverse_positions),
-            "option": len(raw.option_positions),
+            "linear_usdt": len(
+                raw.linear_usdt_positions
+            ),
+            "linear_usdc": len(
+                raw.linear_usdc_positions
+            ),
+            "inverse": len(
+                raw.inverse_positions
+            ),
+            "option": len(
+                raw.option_positions
+            ),
         },
-        "earn_positions_count": len(raw.earn_positions),
-        "suppressed_errors": json_safe(raw.suppressed_errors),
-        "read_only_endpoints": [
+        "earn_positions_count": len(
+            raw.earn_positions
+        ),
+        "instruments_count": len(
+            raw.instruments
+        ),
+        "instruments": {
+            key: info.to_dict()
+            for key, info
+            in raw.instruments.items()
+        },
+        "suppressed_errors": json_safe(
+            raw.suppressed_errors
+        ),
+        "read_only_paths": [
             "/v5/account/wallet-balance",
-            "/v5/asset/transfer/query-account-coins-balance",
+            (
+                "/v5/asset/transfer/"
+                "query-account-coins-balance"
+            ),
             "/v5/market/tickers",
             "/v5/position/list",
             "/v5/earn/position",
+            "/v5/market/instruments-info",
         ],
     }
 
     return AllocationSnapshot(
         fund_id=fund_id,
         fund_code=fund_code,
-        snapshot_ts=utcnow(),
+        snapshot_ts=raw.captured_at,
         account_type="UNIFIED",
         risk=risk,
         holdings=holdings,
         raw_summary_json=raw_summary_json,
         snapshot_source="bybit_readonly",
+        snapshot_complete=(
+            raw.endpoint_matrix.snapshot_complete
+        ),
+        completeness_reasons=(
+            raw.endpoint_matrix
+            .completeness_reasons
+        ),
+        required_endpoints=(
+            raw.endpoint_matrix
+            .required_endpoints
+        ),
+        successful_endpoints=(
+            raw.endpoint_matrix
+            .successful_endpoints
+        ),
+        failed_endpoints=(
+            raw.endpoint_matrix
+            .failed_endpoints
+        ),
+        suppressed_errors=tuple(
+            raw.suppressed_errors
+        ),
+        captured_at=raw.captured_at,
+        source_account=(
+            f"fund:{fund_id}:UNIFIED"
+        ),
     )

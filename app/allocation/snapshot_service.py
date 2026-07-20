@@ -103,6 +103,18 @@ class AllocationSnapshot:
     raw_summary_json: dict[str, Any]
     snapshot_source: str = "mock_fixture"
 
+    snapshot_complete: bool = True
+    completeness_reasons: tuple[str, ...] = ()
+    required_endpoints: tuple[str, ...] = ()
+    successful_endpoints: tuple[str, ...] = ()
+    failed_endpoints: tuple[str, ...] = ()
+    suppressed_errors: tuple[
+        dict[str, Any],
+        ...,
+    ] = ()
+    captured_at: datetime | None = None
+    source_account: str | None = None
+
     @property
     def total_equity_usdt(self) -> Decimal:
         return self.risk.total_equity_usdt
@@ -125,30 +137,86 @@ class AllocationSnapshot:
 
     def raw_cash_usdt(self) -> Decimal:
         total = Decimal("0")
+
         for holding in self.holdings:
-            if holding.leg_group == "cash" and (holding.coin or "").upper() in STABLECOINS:
+            if (
+                holding.leg_group == "cash"
+                and (holding.coin or "").upper()
+                in STABLECOINS
+            ):
                 total += dec(holding.usd_value)
+
         return total
 
-    def holdings_by_group(self) -> dict[str, int]:
+    def holdings_by_group(
+        self,
+    ) -> dict[str, int]:
         out: dict[str, int] = {}
+
         for holding in self.holdings:
-            out[holding.leg_group] = out.get(holding.leg_group, 0) + 1
+            out[holding.leg_group] = (
+                out.get(holding.leg_group, 0)
+                + 1
+            )
+
         return out
 
     def to_dict(self) -> dict[str, Any]:
+        effective_captured_at = (
+            self.captured_at
+            or self.snapshot_ts
+        )
+
         return {
             "fund_id": self.fund_id,
             "fund_code": self.fund_code,
-            "snapshot_ts": self.snapshot_ts.isoformat(),
+            "snapshot_ts": (
+                self.snapshot_ts.isoformat()
+            ),
+            "captured_at": (
+                effective_captured_at.isoformat()
+            ),
             "account_type": self.account_type,
-            "snapshot_source": self.snapshot_source,
+            "source_account": (
+                self.source_account
+                or self.account_type
+            ),
+            "snapshot_source": (
+                self.snapshot_source
+            ),
+            "snapshot_complete": (
+                self.snapshot_complete
+            ),
+            "completeness_reasons": list(
+                self.completeness_reasons
+            ),
+            "required_endpoints": list(
+                self.required_endpoints
+            ),
+            "successful_endpoints": list(
+                self.successful_endpoints
+            ),
+            "failed_endpoints": list(
+                self.failed_endpoints
+            ),
+            "suppressed_errors": json_safe(
+                self.suppressed_errors
+            ),
             "risk": self.risk.to_dict(),
-            "holdings": [holding.to_dict() for holding in self.holdings],
-            "raw_summary_json": json_safe(self.raw_summary_json),
+            "holdings": [
+                holding.to_dict()
+                for holding in self.holdings
+            ],
+            "raw_summary_json": json_safe(
+                self.raw_summary_json
+            ),
             "derived": {
-                "raw_cash_usdt": decimal_to_str(self.raw_cash_usdt()),
-                "holdings_by_group": self.holdings_by_group(),
+                "raw_cash_usdt": decimal_to_str(
+                    self.raw_cash_usdt()
+                ),
+                "holdings_by_group": (
+                    self.holdings_by_group()
+                ),
             },
         }
 
