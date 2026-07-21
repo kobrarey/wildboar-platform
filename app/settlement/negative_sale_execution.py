@@ -45,6 +45,7 @@ from app.settlement.statuses import (
     BATCH_STATUS_NEGATIVE_NET_SALE_EXECUTED,
     BATCH_STATUS_NEGATIVE_NET_SALE_PLANNED,
     BATCH_STATUS_NEGATIVE_NET_SALE_PROCESSING,
+    BATCH_STATUS_PENDING_CONFIRMATION,
     SALE_BATCH_STATUS_SALE_EXECUTION_COMPLETED,
     SALE_BATCH_STATUS_SALE_EXECUTION_COMPLETED_WITH_EXTRA_SALE,
     SALE_BATCH_STATUS_SALE_EXECUTION_FAILED_REQUIRES_REVIEW,
@@ -670,11 +671,30 @@ def prepare_negative_sale_live_execution(
         legs=legs,
     )
 
-    sale_batch.status = SALE_BATCH_STATUS_SALE_EXECUTION_PROCESSING
-    sale_batch.execution_started_at = sale_batch.execution_started_at or now
-    sale_batch.updated_at = now
+    is_initial_transition = (
+        sale_batch.status
+        == SALE_BATCH_STATUS_SALE_PLAN_CREATED
+        and settlement_batch.status
+        == BATCH_STATUS_NEGATIVE_NET_SALE_PLANNED
+    )
 
-    settlement_batch.status = BATCH_STATUS_NEGATIVE_NET_SALE_PROCESSING
+    if is_initial_transition:
+        sale_batch.status = (
+            SALE_BATCH_STATUS_SALE_EXECUTION_PROCESSING
+        )
+        settlement_batch.status = (
+            BATCH_STATUS_NEGATIVE_NET_SALE_PROCESSING
+        )
+
+    # On restart, PROCESSING and
+    # PENDING_CONFIRMATION are preserved.
+    # The state machine must reconcile
+    # durable evidence before any new POST.
+    sale_batch.execution_started_at = (
+        sale_batch.execution_started_at
+        or now
+    )
+    sale_batch.updated_at = now
     settlement_batch.updated_at = now
 
     db.add(sale_batch)
@@ -914,32 +934,77 @@ def _validate_sale_execution_input(
     *,
     sale_batch: FundNegativeSaleBatch,
     settlement_batch: FundSettlementBatch,
-    legs: list[FundNegativeSaleLeg],
+    legs: list[
+        FundNegativeSaleLeg
+    ],
 ) -> None:
-    if sale_batch.status != SALE_BATCH_STATUS_SALE_PLAN_CREATED:
+    status_pair = (
+        str(sale_batch.status),
+        str(settlement_batch.status),
+    )
+
+    allowed_status_pairs = {
+        (
+            SALE_BATCH_STATUS_SALE_PLAN_CREATED,
+            BATCH_STATUS_NEGATIVE_NET_SALE_PLANNED,
+        ),
+        (
+            SALE_BATCH_STATUS_SALE_EXECUTION_PROCESSING,
+            BATCH_STATUS_NEGATIVE_NET_SALE_PROCESSING,
+        ),
+        (
+            SALE_BATCH_STATUS_SALE_EXECUTION_PROCESSING,
+            BATCH_STATUS_PENDING_CONFIRMATION,
+        ),
+    }
+
+    if status_pair not in (
+        allowed_status_pairs
+    ):
         raise NegativeSaleExecutionError(
-            f"Sale batch status must be {SALE_BATCH_STATUS_SALE_PLAN_CREATED}, "
-            f"got {sale_batch.status}"
+            "Unsupported negative-sale "
+            "resume status pair: "
+            f"sale_batch={status_pair[0]}, "
+            "settlement_batch="
+            f"{status_pair[1]}"
         )
 
-    if settlement_batch.status != BATCH_STATUS_NEGATIVE_NET_SALE_PLANNED:
+    if (
+        sale_batch.settlement_batch_id
+        != settlement_batch.id
+    ):
         raise NegativeSaleExecutionError(
-            f"Settlement batch status must be {BATCH_STATUS_NEGATIVE_NET_SALE_PLANNED}, "
-            f"got {settlement_batch.status}"
+            "Sale batch "
+            "settlement_batch_id mismatch"
         )
 
-    if sale_batch.settlement_batch_id != settlement_batch.id:
-        raise NegativeSaleExecutionError("Sale batch settlement_batch_id mismatch")
+    if (
+        sale_batch.fund_id
+        != settlement_batch.fund_id
+    ):
+        raise NegativeSaleExecutionError(
+            "Sale batch fund_id mismatch"
+        )
 
-    if sale_batch.fund_id != settlement_batch.fund_id:
-        raise NegativeSaleExecutionError("Sale batch fund_id mismatch")
-
-    if dec(sale_batch.required_master_usdt) <= ZERO:
-        raise NegativeSaleExecutionError("Sale batch required_master_usdt must be positive")
+    if (
+        dec(
+            sale_batch
+            .required_master_usdt
+        )
+        <= ZERO
+    ):
+        raise NegativeSaleExecutionError(
+            "Sale batch "
+            "required_master_usdt "
+            "must be positive"
+        )
 
     if not legs:
-        raise NegativeSaleExecutionError("Sale batch has no sale legs")
-    
+        raise NegativeSaleExecutionError(
+            "Sale batch has no sale legs"
+        )
+
+
 def _leg_symbol_key(leg: FundNegativeSaleLeg) -> str:
     symbol = _optional_str(leg.symbol)
     if symbol is None:
@@ -1142,12 +1207,44 @@ def leg_has_execution_result(leg: FundNegativeSaleLeg) -> bool:
     return False
 
 
-def planned_executable_leg(leg: FundNegativeSaleLeg) -> bool:
+def planned_executable_leg(
+    leg: FundNegativeSaleLeg,
+) -> bool:
+    if (
+        leg.status
+        != SALE_LEG_STATUS_PLANNED
+    ):
+        return False
+
+    if leg_has_execution_result(leg):
+        return False
+
+    category = str(
+        leg.category
+        or ""
+    ).strip().lower()
+
+    if category in {
+        "linear",
+        "inverse",
+        "option",
+    }:
+        # Derivative reduction is measured
+        # by confirmed quantity, never by
+        # expected cash.
+        return (
+            dec(leg.target_qty)
+            > ZERO
+        )
+
     return (
-        leg.status == SALE_LEG_STATUS_PLANNED
-        and bool(leg.use_for_deficit_cover)
-        and dec(leg.target_cash_usdt) > ZERO
-        and not leg_has_execution_result(leg)
+        bool(
+            leg.use_for_deficit_cover
+        )
+        and dec(
+            leg.target_cash_usdt
+        )
+        > ZERO
     )
 
 

@@ -154,6 +154,12 @@ class Settings(BaseSettings):
     NEGATIVE_NET_SALE_MAX_ACTIVE_STRATEGY_ORDERS: int = 5
     NEGATIVE_NET_SALE_ALLOW_LIVE_EXECUTION: bool = False
 
+    # Task 2/3: bounded live correction rounds.
+    # BUFFER_PCT is stored as a ratio:
+    # Decimal("0.10") means 10%.
+    NEGATIVE_NET_LIVE_CORRECTION_MAX_ROUNDS: int = 2
+    NEGATIVE_NET_LIVE_CORRECTION_BUFFER_PCT: Decimal = Decimal("0.10")
+
     # --- stage 23.4: negative-net Bybit master flow mock/preflight ---
     NEGATIVE_NET_BYBIT_FLOW_MOCK_ONLY: bool = True
     NEGATIVE_NET_BYBIT_FLOW_ALLOW_LIVE: bool = False
