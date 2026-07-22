@@ -368,7 +368,15 @@ def test_transferable_balance_is_only_cash_source(
         )
     )
 
-    assert result.action == "balance_check"
+    assert (
+        result.action
+        == "review_required"
+    )
+    assert result.reason == (
+        "no_eligible_spot_"
+        "correction_source"
+    )
+    assert result.requires_review is True
     assert (
         result.confirmed_available_usdt
         == Decimal("80")

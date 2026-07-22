@@ -626,6 +626,641 @@ def _confirmed_balance_state(
     )
 
 
+def _confirmed_exec_qty_for_intent(
+    intent: dict[str, Any],
+) -> Decimal:
+    summary = (
+        prepared_intent_runtime_summary(
+            intent
+        )
+    )
+
+    return _decimal(
+        summary["aggregate_exec_qty"],
+        field_name="aggregate_exec_qty",
+    )
+
+
+def _total_confirmed_exec_qty_for_leg(
+    leg: FundNegativeSaleLeg,
+) -> Decimal:
+    try:
+        history = (
+            validated_terminal_intent_history(
+                getattr(
+                    leg,
+                    "mock_execution_json",
+                    None,
+                )
+            )
+        )
+    except Exception as exc:
+        raise NegativeSaleLiveBatchServiceError(
+            "Cannot recover confirmed "
+            "execution history: "
+            f"leg_id={leg.id}, error={exc}"
+        ) from exc
+
+    total = ZERO
+
+    for entry in history:
+        intent = entry.get("intent")
+
+        if not isinstance(intent, dict):
+            raise NegativeSaleLiveBatchServiceError(
+                "Archived correction entry "
+                "has no intent dict: "
+                f"leg_id={leg.id}"
+            )
+
+        total += (
+            _confirmed_exec_qty_for_intent(
+                intent
+            )
+        )
+
+    active_intent = _validated_intent(
+        leg
+    )
+
+    if active_intent is not None:
+        total += (
+            _confirmed_exec_qty_for_intent(
+                active_intent
+            )
+        )
+
+    return total
+
+
+def _remaining_spot_qty(
+    *,
+    sale_batch: FundNegativeSaleBatch,
+    leg: FundNegativeSaleLeg,
+) -> Decimal:
+    plan_leg = _plan_snapshot(
+        sale_batch=sale_batch,
+        leg=leg,
+    )
+
+    current_qty_raw = plan_leg.get(
+        "current_qty"
+    )
+
+    if current_qty_raw is None:
+        raise NegativeSaleLiveBatchServiceError(
+            "Spot correction source has no "
+            "snapshot current_qty: "
+            f"leg_id={leg.id}"
+        )
+
+    current_qty = _decimal(
+        current_qty_raw,
+        field_name="current_qty",
+    )
+    confirmed_exec_qty = (
+        _total_confirmed_exec_qty_for_leg(
+            leg
+        )
+    )
+
+    if confirmed_exec_qty > current_qty:
+        raise NegativeSaleLiveBatchServiceError(
+            "Confirmed sold quantity exceeds "
+            "snapshot quantity: "
+            f"leg_id={leg.id}, "
+            f"current_qty={current_qty}, "
+            f"confirmed_exec_qty="
+            f"{confirmed_exec_qty}"
+        )
+
+    return current_qty - confirmed_exec_qty
+
+
+def _query_spot_best_bid(
+    client: BybitV5Client,
+    *,
+    symbol: str,
+) -> Decimal:
+    normalized_symbol = str(
+        symbol
+    ).strip().upper()
+
+    public_get = getattr(
+        client,
+        "public_get",
+        None,
+    )
+
+    params = {
+        "category": "spot",
+        "symbol": normalized_symbol,
+    }
+
+    response = (
+        public_get(
+            "/v5/market/tickers",
+            params,
+        )
+        if callable(public_get)
+        else client.get(
+            "/v5/market/tickers",
+            params,
+        )
+    )
+
+    if not isinstance(response, dict):
+        raise NegativeSaleLiveBatchServiceError(
+            "Spot ticker response must be "
+            "a dict"
+        )
+
+    if response.get("retCode") not in {
+        None,
+        0,
+        "0",
+    }:
+        raise NegativeSaleLiveBatchServiceError(
+            "Spot ticker query failed: "
+            f"symbol={normalized_symbol}, "
+            f"retCode={response.get('retCode')}"
+        )
+
+    result = response.get("result")
+
+    if not isinstance(result, dict):
+        raise NegativeSaleLiveBatchServiceError(
+            "Spot ticker result must be "
+            "a dict"
+        )
+
+    rows = result.get("list")
+
+    if not isinstance(rows, list):
+        raise NegativeSaleLiveBatchServiceError(
+            "Spot ticker result.list must "
+            "be a list"
+        )
+
+    matching_rows = [
+        row
+        for row in rows
+        if isinstance(row, dict)
+        and str(
+            row.get("symbol")
+            or ""
+        ).strip().upper()
+        == normalized_symbol
+    ]
+
+    if len(matching_rows) != 1:
+        raise NegativeSaleLiveBatchServiceError(
+            "Spot ticker response must "
+            "contain exactly one matching "
+            f"symbol: {normalized_symbol}"
+        )
+
+    best_bid = _decimal(
+        matching_rows[0].get(
+            "bid1Price"
+        ),
+        field_name="bid1Price",
+    )
+
+    if best_bid <= ZERO:
+        raise NegativeSaleLiveBatchServiceError(
+            "Spot bid1Price must be "
+            f"positive: {normalized_symbol}"
+        )
+
+    return best_bid
+
+
+def _spot_correction_sources(
+    *,
+    client: BybitV5Client,
+    sale_batch: FundNegativeSaleBatch,
+    legs: list[FundNegativeSaleLeg],
+) -> list[dict[str, Any]]:
+    sources: list[
+        dict[str, Any]
+    ] = []
+
+    for leg in legs:
+        plan_leg = _plan_snapshot(
+            sale_batch=sale_batch,
+            leg=leg,
+        )
+
+        category = str(
+            plan_leg.get("category")
+            or leg.category
+            or ""
+        ).strip().lower()
+
+        if category != "spot":
+            continue
+
+        if plan_leg.get("eligible") is not True:
+            continue
+
+        if (
+            plan_leg.get(
+                "use_for_deficit_cover"
+            )
+            is not True
+        ):
+            continue
+
+        raw = plan_leg.get("raw")
+        raw = (
+            dict(raw)
+            if isinstance(raw, dict)
+            else {}
+        )
+
+        requires_transfer = (
+            plan_leg.get(
+                "requires_fund_to_unified_transfer"
+            )
+            is True
+            or raw.get(
+                "requires_fund_to_unified_transfer"
+            )
+            is True
+        )
+
+        if requires_transfer:
+            continue
+
+        location = str(
+            plan_leg.get("location")
+            or leg.location
+            or ""
+        ).strip().upper() or None
+
+        if location in {
+            "FUND",
+            "FUND_WALLET",
+            "FUNDING",
+            "FUNDING_WALLET",
+        }:
+            continue
+
+        symbol = str(
+            plan_leg.get("symbol")
+            or leg.symbol
+            or ""
+        ).strip().upper()
+
+        if not symbol:
+            raise NegativeSaleLiveBatchServiceError(
+                "Eligible spot correction "
+                "source has no symbol: "
+                f"leg_id={leg.id}"
+            )
+
+        remaining_qty = (
+            _remaining_spot_qty(
+                sale_batch=sale_batch,
+                leg=leg,
+            )
+        )
+
+        if remaining_qty <= ZERO:
+            continue
+
+        best_bid = _query_spot_best_bid(
+            client,
+            symbol=symbol,
+        )
+        remaining_value = (
+            remaining_qty * best_bid
+        )
+
+        if remaining_value <= ZERO:
+            continue
+
+        sources.append(
+            {
+                "source_key": (
+                    f"sale-leg:{int(leg.id)}"
+                ),
+                "leg_id": int(leg.id),
+                "symbol": symbol,
+                "category": "spot",
+                "asset_type": str(
+                    raw.get("asset_type")
+                    or "spot"
+                ).strip().lower(),
+                "location": location,
+                "eligible": True,
+                "use_for_deficit_cover": True,
+                "requires_fund_to_unified_transfer": (
+                    False
+                ),
+                "remaining_qty": str(
+                    remaining_qty
+                ),
+                "best_bid": str(
+                    best_bid
+                ),
+                "remaining_sellable_usdt": (
+                    str(remaining_value)
+                ),
+            }
+        )
+
+    return sources
+
+
+def _prepare_spot_correction_round(
+    db: Session,
+    *,
+    client: BybitV5Client,
+    sale_batch: FundNegativeSaleBatch,
+    legs: list[FundNegativeSaleLeg],
+    decision: CorrectionRoundDecision,
+    confirmed_available_usdt: Decimal,
+    now: datetime,
+) -> dict[str, Any] | None:
+    if (
+        not decision.allowed
+        or decision.next_round is None
+    ):
+        return None
+
+    source_rows = _spot_correction_sources(
+        client=client,
+        sale_batch=sale_batch,
+        legs=legs,
+    )
+
+    selected = (
+        select_largest_eligible_spot_source(
+            source_rows
+        )
+    )
+
+    if selected is None:
+        return None
+
+    selected_leg_id = int(
+        selected.raw["leg_id"]
+    )
+
+    selected_leg = next(
+        (
+            leg
+            for leg in legs
+            if int(leg.id)
+            == selected_leg_id
+        ),
+        None,
+    )
+
+    if selected_leg is None:
+        raise NegativeSaleLiveBatchServiceError(
+            "Selected correction leg "
+            "cannot be recovered"
+        )
+
+    remaining_qty = _decimal(
+        selected.raw["remaining_qty"],
+        field_name="remaining_qty",
+    )
+    best_bid = _decimal(
+        selected.raw["best_bid"],
+        field_name="best_bid",
+    )
+    buffer_pct = _decimal(
+        settings
+        .NEGATIVE_NET_LIVE_CORRECTION_BUFFER_PCT,
+        field_name=(
+            "NEGATIVE_NET_LIVE_"
+            "CORRECTION_BUFFER_PCT"
+        ),
+    )
+
+    correction_target = (
+        compute_spot_correction_target_usdt(
+            shortage_usdt=(
+                decision.shortage_usdt
+            ),
+            remaining_sellable_usdt=(
+                selected
+                .remaining_sellable_usdt
+            ),
+            oversell_cap_usdt=(
+                selected
+                .remaining_sellable_usdt
+            ),
+            buffer_pct=buffer_pct,
+        )
+    )
+
+    if correction_target <= ZERO:
+        return None
+
+    requested_qty = min(
+        correction_target / best_bid,
+        remaining_qty,
+    )
+
+    instrument = query_instrument_info(
+        client,
+        category="spot",
+        symbol=selected.symbol,
+        captured_at=now,
+    )
+
+    if not instrument.trading:
+        raise NegativeSaleLiveBatchServiceError(
+            "Correction instrument is not "
+            f"trading: {selected.symbol}"
+        )
+
+    if not instrument.preflight_complete:
+        raise NegativeSaleLiveBatchServiceError(
+            "Correction instrument filters "
+            "are incomplete: "
+            f"symbol={selected.symbol}, "
+            "reasons="
+            f"{list(instrument.completeness_reasons)}"
+        )
+
+    normalized = normalize_order_quantity(
+        instrument=instrument,
+        requested_qty=requested_qty,
+        available_qty=remaining_qty,
+        price=best_bid,
+    )
+
+    if (
+        not normalized.eligible
+        or normalized.normalized_qty
+        <= ZERO
+        or not normalized.slices
+    ):
+        raise NegativeSaleLiveBatchServiceError(
+            "Correction quantity failed "
+            "instrument normalization: "
+            f"symbol={selected.symbol}, "
+            f"reasons={list(normalized.reasons)}"
+        )
+
+    target_cash = (
+        normalized.normalized_notional
+    )
+
+    if (
+        target_cash is None
+        or target_cash <= ZERO
+    ):
+        raise NegativeSaleLiveBatchServiceError(
+            "Correction normalized notional "
+            "must be positive"
+        )
+
+    plan_leg = _plan_snapshot(
+        sale_batch=sale_batch,
+        leg=selected_leg,
+    )
+
+    close_side = str(
+        plan_leg.get("close_side")
+        or plan_leg.get("side")
+        or selected_leg.side
+        or ""
+    ).strip()
+
+    if close_side.lower() != "sell":
+        raise NegativeSaleLiveBatchServiceError(
+            "Spot correction close_side "
+            "must be Sell"
+        )
+
+    try:
+        new_intent = (
+            build_negative_sale_order_intent(
+                sale_batch_id=int(
+                    sale_batch.id
+                ),
+                leg_id=int(
+                    selected_leg.id
+                ),
+                execution_round=int(
+                    decision.next_round
+                ),
+                category="spot",
+                symbol=selected.symbol,
+                position_side=None,
+                close_side="Sell",
+                position_idx=None,
+                reduce_only=None,
+                market_unit="baseCoin",
+                requested_qty=(
+                    requested_qty
+                ),
+                normalized_qty=(
+                    normalized
+                    .normalized_qty
+                ),
+                target_cash_usdt=(
+                    target_cash
+                ),
+                slices=normalized.slices,
+                instrument_snapshot=(
+                    instrument.to_dict()
+                ),
+                position_snapshot={
+                    "correction_policy": (
+                        decision.policy_version
+                    ),
+                    "source_key": (
+                        selected.source_key
+                    ),
+                    "remaining_qty_before_round": (
+                        str(remaining_qty)
+                    ),
+                    "best_bid": str(
+                        best_bid
+                    ),
+                    "confirmed_available_usdt": (
+                        str(
+                            confirmed_available_usdt
+                        )
+                    ),
+                    "shortage_usdt": str(
+                        decision.shortage_usdt
+                    ),
+                },
+                prepared_at=now,
+            )
+        ).to_dict()
+    except NegativeSaleOrderIntentError as exc:
+        raise NegativeSaleLiveBatchServiceError(
+            "Correction intent creation "
+            f"failed: {exc}"
+        ) from exc
+
+    if selected_leg.suborders_json is None:
+        persist_new_correction_intent_without_previous(
+            db,
+            leg=selected_leg,
+            new_intent=new_intent,
+            now=now,
+        )
+    else:
+        archive_terminal_intent_and_activate_next_round(
+            db,
+            leg=selected_leg,
+            new_intent=new_intent,
+            now=now,
+        )
+
+    return {
+        "leg_id": int(
+            selected_leg.id
+        ),
+        "execution_round": int(
+            decision.next_round
+        ),
+        "source_key": selected.source_key,
+        "symbol": selected.symbol,
+        "remaining_qty_before_round": (
+            str(remaining_qty)
+        ),
+        "best_bid": str(best_bid),
+        "correction_target_usdt": (
+            str(correction_target)
+        ),
+        "target_cash_usdt": str(
+            target_cash
+        ),
+        "requested_qty": str(
+            requested_qty
+        ),
+        "normalized_qty": str(
+            normalized.normalized_qty
+        ),
+        "slices": [
+            str(value)
+            for value in normalized.slices
+        ],
+        "intent_fingerprint": (
+            new_intent[
+                "intent_fingerprint"
+            ]
+        ),
+        "posted": False,
+        "no_transfer": True,
+        "no_withdrawal": True,
+        "no_bsc_action": True,
+        "no_final_accounting": True,
+    }
+
+
 def _resume_candidate_phase_once(
     db: Session,
     *,
@@ -937,6 +1572,94 @@ def resume_negative_sale_order_batch_once(
             completed_rounds
         ),
     )
+
+    if decision.allowed:
+        correction = (
+            _prepare_spot_correction_round(
+                db,
+                client=client,
+                sale_batch=sale_batch,
+                legs=legs,
+                decision=decision,
+                confirmed_available_usdt=(
+                    final_available
+                ),
+                now=effective_now,
+            )
+        )
+
+        if correction is None:
+            return NegativeSaleLiveBatchStepResult(
+                sale_batch_id=int(
+                    sale_batch.id
+                ),
+                settlement_batch_id=int(
+                    settlement_batch.id
+                ),
+                action="review_required",
+                reason=(
+                    "no_eligible_spot_"
+                    "correction_source"
+                ),
+                candidate_leg_count=len(
+                    candidates
+                ),
+                active_leg_id=None,
+                posted=False,
+                all_order_legs_terminal=True,
+                has_pending_action=False,
+                requires_review=True,
+                confirmed_available_usdt=(
+                    final_available
+                ),
+                shortage_usdt=(
+                    final_shortage
+                ),
+                correction_decision=(
+                    decision.to_dict()
+                ),
+                transferable_balance=(
+                    final_balance.to_dict()
+                ),
+                leg_step=None,
+            )
+
+        return NegativeSaleLiveBatchStepResult(
+            sale_batch_id=int(
+                sale_batch.id
+            ),
+            settlement_batch_id=int(
+                settlement_batch.id
+            ),
+            action="correction_prepared",
+            reason=(
+                "spot_correction_intent_"
+                "prepared"
+            ),
+            candidate_leg_count=len(
+                candidates
+            ),
+            active_leg_id=int(
+                correction["leg_id"]
+            ),
+            posted=False,
+            all_order_legs_terminal=False,
+            has_pending_action=False,
+            requires_review=False,
+            confirmed_available_usdt=(
+                final_available
+            ),
+            shortage_usdt=(
+                final_shortage
+            ),
+            correction_decision=(
+                decision.to_dict()
+            ),
+            transferable_balance=(
+                final_balance.to_dict()
+            ),
+            leg_step=correction,
+        )
 
     return NegativeSaleLiveBatchStepResult(
         sale_batch_id=int(
