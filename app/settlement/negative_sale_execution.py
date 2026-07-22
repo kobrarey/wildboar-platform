@@ -71,6 +71,14 @@ from app.settlement.statuses import (
     SALE_LEG_STATUS_USDT_EARN_REDEEM_MOCKED,
 )
 
+from app.settlement.negative_sale_balance_reconciliation import (
+    NEGATIVE_SALE_BALANCE_RECONCILIATION_SCHEMA,
+    NegativeSaleBalanceReconciliationError,
+    append_confirmed_balance_refresh,
+)
+from app.settlement.negative_sale_balance_refresh_service import (
+    resume_negative_sale_balance_refresh_once,
+)
 from app.settlement.negative_sale_execution_types import (
     HUNDRED,
     ONE,
@@ -858,6 +866,127 @@ def _append_negative_sale_live_step_audit(
     )
 
 
+def _balance_reconciliation_identity(
+    step: NegativeSaleLiveBatchStepResult,
+) -> tuple[
+    str,
+    int | None,
+    str | None,
+]:
+    action_name = str(
+        step.action or ""
+    ).strip()
+
+    if not action_name:
+        raise NegativeSaleExecutionError(
+            "Negative sale live step has "
+            "no action"
+        )
+
+    if action_name != "balance_refresh":
+        return (
+            f"state_machine_{action_name}",
+            (
+                int(step.active_leg_id)
+                if step.active_leg_id
+                is not None
+                else None
+            ),
+            None,
+        )
+
+    leg_step = step.leg_step
+
+    if not isinstance(leg_step, dict):
+        raise NegativeSaleExecutionError(
+            "Balance refresh step has no "
+            "leg_step metadata"
+        )
+
+    raw_action = leg_step.get(
+        "balance_refresh_action"
+    )
+
+    if not isinstance(raw_action, dict):
+        raise NegativeSaleExecutionError(
+            "Balance refresh action metadata "
+            "is missing"
+        )
+
+    action_type = str(
+        raw_action.get("action_type")
+        or ""
+    ).strip()
+
+    if action_type not in {
+        "earn_terminal_confirmed",
+        "order_terminal_confirmed",
+    }:
+        raise NegativeSaleExecutionError(
+            "Unsupported terminal balance "
+            "refresh action_type: "
+            f"{action_type!r}"
+        )
+
+    raw_leg_id = raw_action.get(
+        "active_leg_id"
+    )
+
+    if isinstance(raw_leg_id, bool):
+        raise NegativeSaleExecutionError(
+            "Balance refresh active_leg_id "
+            "must not be bool"
+        )
+
+    try:
+        active_leg_id = int(
+            raw_leg_id
+        )
+    except (
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise NegativeSaleExecutionError(
+            "Balance refresh active_leg_id "
+            "must be int"
+        ) from exc
+
+    if active_leg_id <= 0:
+        raise NegativeSaleExecutionError(
+            "Balance refresh active_leg_id "
+            "must be positive"
+        )
+
+    if (
+        step.active_leg_id is None
+        or int(step.active_leg_id)
+        != active_leg_id
+    ):
+        raise NegativeSaleExecutionError(
+            "Balance refresh active_leg_id "
+            "does not match step"
+        )
+
+    order_link_id = str(
+        raw_action.get(
+            "order_link_id"
+        )
+        or ""
+    ).strip()
+
+    if not order_link_id:
+        raise NegativeSaleExecutionError(
+            "Balance refresh action has no "
+            "order_link_id"
+        )
+
+    return (
+        action_type,
+        active_leg_id,
+        order_link_id,
+    )
+
+
 def apply_negative_sale_live_batch_step(
     db: Session,
     *,
@@ -881,6 +1010,12 @@ def apply_negative_sale_live_batch_step(
     )
     confirmed_shortage = (
         step.shortage_usdt
+    )
+
+    balance_before_usdt = getattr(
+        sale_batch,
+        "final_available_usdt",
+        None,
     )
 
     if confirmed_available is not None:
@@ -925,42 +1060,95 @@ def apply_negative_sale_live_batch_step(
             confirmed_surplus
         )
 
-        sale_batch.reconciliation_json = {
-            "schema": (
-                "negative_sale_confirmed_"
-                "transferable_balance_v1"
-            ),
-            "cash_source": (
-                "confirmed_transferable_"
-                "usdt"
-            ),
-            "required_master_usdt": str(
-                required_master_usdt
-            ),
-            "confirmed_available_usdt": (
-                str(
-                    confirmed_available
+        transferable_balance = (
+            step.transferable_balance
+        )
+
+        if isinstance(
+            transferable_balance,
+            dict,
+        ):
+            (
+                reconciliation_action_type,
+                reconciliation_leg_id,
+                reconciliation_order_link_id,
+            ) = (
+                _balance_reconciliation_identity(
+                    step
                 )
-            ),
-            "confirmed_shortage_usdt": (
-                str(
-                    confirmed_shortage
+            )
+
+            try:
+                sale_batch.reconciliation_json = (
+                    append_confirmed_balance_refresh(
+                        existing_reconciliation_json=(
+                            getattr(
+                                sale_batch,
+                                "reconciliation_json",
+                                None,
+                            )
+                        ),
+                        required_master_usdt=(
+                            required_master_usdt
+                        ),
+                        balance_before_usdt=(
+                            balance_before_usdt
+                        ),
+                        balance_after_usdt=(
+                            confirmed_available
+                        ),
+                        transferable_balance=(
+                            transferable_balance
+                        ),
+                        action_type=(
+                            reconciliation_action_type
+                        ),
+                        active_leg_id=(
+                            reconciliation_leg_id
+                        ),
+                        order_link_id=(
+                            reconciliation_order_link_id
+                        ),
+                        captured_at=now,
+                    )
                 )
-            ),
-            "confirmed_surplus_usdt": (
-                str(
-                    confirmed_surplus
-                )
-            ),
-            "transferable_balance": (
-                step.transferable_balance
-            ),
-            "correction_decision": (
-                step.correction_decision
-            ),
-            "no_derivative_exec_value_"
-            "as_cash": True,
-        }
+            except (
+                NegativeSaleBalanceReconciliationError
+            ) as exc:
+                raise NegativeSaleExecutionError(
+                    "Negative sale confirmed "
+                    "balance persistence failed: "
+                    f"{exc}"
+                ) from exc
+
+        elif step.action == "balance_refresh":
+            raise NegativeSaleExecutionError(
+                "Terminal balance refresh has "
+                "no transferable balance payload"
+            )
+
+        elif (
+            isinstance(
+                getattr(
+                    sale_batch,
+                    "reconciliation_json",
+                    None,
+                ),
+                dict,
+            )
+            and sale_batch
+            .reconciliation_json
+            .get("schema")
+            == (
+                NEGATIVE_SALE_BALANCE_RECONCILIATION_SCHEMA
+            )
+        ):
+            # A step may reuse a previously
+            # confirmed amount without issuing
+            # a new balance GET. Preserve the
+            # existing durable reconciliation
+            # history unchanged.
+            pass
 
     successful_balance_check = (
         step.action == "balance_check"
@@ -1249,21 +1437,17 @@ def execute_negative_sale_plan_live(
     # before any Bybit HTTP request.
     db.commit()
 
-    # Earn redemption has priority over
-    # trading sale legs. The Earn service
-    # performs at most one durable runtime
-    # step in this executor invocation:
+    # A terminal external action must be
+    # followed by a separate read-only
+    # transferable-USDT refresh cycle.
     #
-    # prepare
-    # submit/ACK
-    # confirmation
-    # review
-    #
-    # Trading execution is reached only
-    # after Earn has no active step.
-    earn_step = (
-        resume_negative_sale_earn_once(
-            db,
+    # This barrier always runs before any
+    # Earn or order routing. Therefore a
+    # terminal confirmation and a subsequent
+    # external POST can never happen in the
+    # same executor invocation.
+    balance_refresh_step = (
+        resume_negative_sale_balance_refresh_once(
             client=client,
             sale_batch=sale_batch,
             settlement_batch=(
@@ -1274,11 +1458,16 @@ def execute_negative_sale_plan_live(
         )
     )
 
-    if earn_step is not None:
-        step = earn_step
+    if balance_refresh_step is not None:
+        step = balance_refresh_step
+
     else:
-        step = (
-            resume_negative_sale_order_batch_once(
+        # Earn redemption has priority over
+        # trading sale legs. The Earn service
+        # performs at most one durable runtime
+        # step in this invocation.
+        earn_step = (
+            resume_negative_sale_earn_once(
                 db,
                 client=client,
                 sale_batch=sale_batch,
@@ -1289,6 +1478,23 @@ def execute_negative_sale_plan_live(
                 now=effective_now,
             )
         )
+
+        if earn_step is not None:
+            step = earn_step
+
+        else:
+            step = (
+                resume_negative_sale_order_batch_once(
+                    db,
+                    client=client,
+                    sale_batch=sale_batch,
+                    settlement_batch=(
+                        settlement_batch
+                    ),
+                    legs=legs,
+                    now=effective_now,
+                )
+            )
 
     apply_negative_sale_live_batch_step(
         db,
