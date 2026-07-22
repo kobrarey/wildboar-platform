@@ -10,10 +10,12 @@ from sqlalchemy.orm import Session
 
 from app.bybit.client import BybitV5Client
 from app.bybit.instruments import (
+    BybitInstrumentInfoError,
     normalize_order_quantity,
     query_instrument_info,
 )
 from app.bybit.transferable_balance import (
+    BybitTransferableBalanceError,
     query_unified_transferable_balance,
 )
 from app.config import settings
@@ -36,6 +38,10 @@ from app.settlement.negative_sale_execution_types import (
 from app.settlement.negative_sale_live_leg_service import (
     NegativeSaleLiveLegStepResult,
     resume_live_leg_once,
+)
+from app.settlement.negative_sale_live_preflight import (
+    NegativeSaleLivePreflightError,
+    build_live_negative_sale_preflight,
 )
 from app.settlement.negative_sale_live_persistence import (
     archive_terminal_intent_and_activate_next_round,
@@ -841,6 +847,7 @@ def _spot_correction_sources(
     client: BybitV5Client,
     sale_batch: FundNegativeSaleBatch,
     legs: list[FundNegativeSaleLeg],
+    now: datetime,
 ) -> list[dict[str, Any]]:
     sources: list[
         dict[str, Any]
@@ -914,29 +921,166 @@ def _spot_correction_sources(
         ).strip().upper()
 
         if not symbol:
-            raise NegativeSaleLiveBatchServiceError(
-                "Eligible spot correction "
-                "source has no symbol: "
-                f"leg_id={leg.id}"
+            raise (
+                NegativeSaleLiveBatchServiceError(
+                    "Eligible spot correction "
+                    "source has no symbol: "
+                    f"leg_id={leg.id}"
+                )
             )
 
-        remaining_qty = (
+        snapshot_remaining_qty = (
             _remaining_spot_qty(
                 sale_batch=sale_batch,
                 leg=leg,
             )
         )
 
-        if remaining_qty <= ZERO:
+        if snapshot_remaining_qty <= ZERO:
+            continue
+
+        try:
+            instrument = query_instrument_info(
+                client,
+                category="spot",
+                symbol=symbol,
+                captured_at=now,
+            )
+        except BybitInstrumentInfoError as exc:
+            raise (
+                NegativeSaleLiveBatchServiceError(
+                    "Correction source "
+                    "instrument query failed: "
+                    f"symbol={symbol}, "
+                    f"error={exc}"
+                )
+            ) from exc
+
+        if not instrument.trading:
+            raise (
+                NegativeSaleLiveBatchServiceError(
+                    "Correction source "
+                    "instrument is not trading: "
+                    f"{symbol}"
+                )
+            )
+
+        if not instrument.preflight_complete:
+            raise (
+                NegativeSaleLiveBatchServiceError(
+                    "Correction source "
+                    "instrument filters are "
+                    "incomplete: "
+                    f"symbol={symbol}, "
+                    "reasons="
+                    f"{list(instrument.completeness_reasons)}"
+                )
+            )
+
+        base_coin = str(
+            instrument.base_coin or ""
+        ).strip().upper()
+
+        if not base_coin:
+            raise (
+                NegativeSaleLiveBatchServiceError(
+                    "Correction source "
+                    "instrument has no base coin: "
+                    f"symbol={symbol}"
+                )
+            )
+
+        try:
+            transferable_balance = (
+                query_unified_transferable_balance(
+                    client,
+                    coin=base_coin,
+                    destination_account_type=(
+                        "FUND"
+                    ),
+                )
+            )
+        except (
+            BybitTransferableBalanceError
+        ) as exc:
+            raise (
+                NegativeSaleLiveBatchServiceError(
+                    "Correction source live "
+                    "balance query failed: "
+                    f"symbol={symbol}, "
+                    f"base_coin={base_coin}, "
+                    f"error={exc}"
+                )
+            ) from exc
+
+        confirmed_live_qty = (
+            transferable_balance
+            .confirmed_transferable_amount
+        )
+
+        live_available_qty = min(
+            snapshot_remaining_qty,
+            confirmed_live_qty,
+        )
+
+        if live_available_qty <= ZERO:
             continue
 
         best_bid = _query_spot_best_bid(
             client,
             symbol=symbol,
         )
-        remaining_value = (
-            remaining_qty * best_bid
+
+        try:
+            capacity = normalize_order_quantity(
+                instrument=instrument,
+                requested_qty=(
+                    live_available_qty
+                ),
+                available_qty=(
+                    live_available_qty
+                ),
+                price=best_bid,
+            )
+        except BybitInstrumentInfoError as exc:
+            raise (
+                NegativeSaleLiveBatchServiceError(
+                    "Correction source live "
+                    "capacity normalization "
+                    "failed: "
+                    f"symbol={symbol}, "
+                    f"error={exc}"
+                )
+            ) from exc
+
+        if (
+            not capacity.eligible
+            or capacity.normalized_qty
+            <= ZERO
+            or not capacity.slices
+        ):
+            # A real balance can legitimately
+            # be below current min-order or
+            # precision requirements. Such a
+            # source is not correction-eligible.
+            continue
+
+        live_sellable_qty = (
+            capacity.normalized_qty
         )
+
+        remaining_value = (
+            capacity.normalized_notional
+        )
+
+        if (
+            remaining_value is None
+            or remaining_value <= ZERO
+        ):
+            remaining_value = (
+                live_sellable_qty
+                * best_bid
+            )
 
         if remaining_value <= ZERO:
             continue
@@ -959,14 +1103,41 @@ def _spot_correction_sources(
                 "requires_fund_to_unified_transfer": (
                     False
                 ),
+                # Keep remaining_qty for the
+                # existing correction policy,
+                # but make it the live,
+                # normalized sellable amount.
                 "remaining_qty": str(
-                    remaining_qty
+                    live_sellable_qty
                 ),
+                "snapshot_remaining_qty": str(
+                    snapshot_remaining_qty
+                ),
+                "confirmed_live_qty": str(
+                    confirmed_live_qty
+                ),
+                "live_available_qty": str(
+                    live_available_qty
+                ),
+                "live_sellable_qty": str(
+                    live_sellable_qty
+                ),
+                "base_coin": base_coin,
                 "best_bid": str(
                     best_bid
                 ),
                 "remaining_sellable_usdt": (
                     str(remaining_value)
+                ),
+                "instrument_snapshot": (
+                    instrument.to_dict()
+                ),
+                "transferable_balance": (
+                    transferable_balance
+                    .to_dict()
+                ),
+                "capacity_preflight": (
+                    capacity.to_dict()
                 ),
             }
         )
@@ -994,6 +1165,7 @@ def _prepare_spot_correction_round(
         client=client,
         sale_batch=sale_batch,
         legs=legs,
+        now=now,
     )
 
     selected = (
@@ -1025,14 +1197,27 @@ def _prepare_spot_correction_round(
             "cannot be recovered"
         )
 
-    remaining_qty = _decimal(
-        selected.raw["remaining_qty"],
-        field_name="remaining_qty",
+    source_live_sellable_qty = _decimal(
+        selected.raw[
+            "live_sellable_qty"
+        ],
+        field_name=(
+            "live_sellable_qty"
+        ),
     )
-    best_bid = _decimal(
+    source_best_bid = _decimal(
         selected.raw["best_bid"],
         field_name="best_bid",
     )
+    snapshot_remaining_qty = _decimal(
+        selected.raw[
+            "snapshot_remaining_qty"
+        ],
+        field_name=(
+            "snapshot_remaining_qty"
+        ),
+    )
+
     buffer_pct = _decimal(
         settings
         .NEGATIVE_NET_LIVE_CORRECTION_BUFFER_PCT,
@@ -1062,82 +1247,134 @@ def _prepare_spot_correction_round(
     if correction_target <= ZERO:
         return None
 
-    requested_qty = min(
-        correction_target / best_bid,
-        remaining_qty,
+    source_requested_qty = min(
+        correction_target
+        / source_best_bid,
+        source_live_sellable_qty,
     )
 
-    instrument = query_instrument_info(
-        client,
-        category="spot",
-        symbol=selected.symbol,
-        captured_at=now,
-    )
-
-    if not instrument.trading:
-        raise NegativeSaleLiveBatchServiceError(
-            "Correction instrument is not "
-            f"trading: {selected.symbol}"
-        )
-
-    if not instrument.preflight_complete:
-        raise NegativeSaleLiveBatchServiceError(
-            "Correction instrument filters "
-            "are incomplete: "
-            f"symbol={selected.symbol}, "
-            "reasons="
-            f"{list(instrument.completeness_reasons)}"
-        )
-
-    normalized = normalize_order_quantity(
-        instrument=instrument,
-        requested_qty=requested_qty,
-        available_qty=remaining_qty,
-        price=best_bid,
-    )
-
-    if (
-        not normalized.eligible
-        or normalized.normalized_qty
-        <= ZERO
-        or not normalized.slices
-    ):
-        raise NegativeSaleLiveBatchServiceError(
-            "Correction quantity failed "
-            "instrument normalization: "
-            f"symbol={selected.symbol}, "
-            f"reasons={list(normalized.reasons)}"
-        )
-
-    target_cash = (
-        normalized.normalized_notional
-    )
-
-    if (
-        target_cash is None
-        or target_cash <= ZERO
-    ):
-        raise NegativeSaleLiveBatchServiceError(
-            "Correction normalized notional "
-            "must be positive"
-        )
+    if source_requested_qty <= ZERO:
+        return None
 
     plan_leg = _plan_snapshot(
         sale_batch=sale_batch,
         leg=selected_leg,
     )
 
-    close_side = str(
+    planned_close_side = str(
         plan_leg.get("close_side")
         or plan_leg.get("side")
         or selected_leg.side
         or ""
     ).strip()
 
-    if close_side.lower() != "sell":
-        raise NegativeSaleLiveBatchServiceError(
-            "Spot correction close_side "
-            "must be Sell"
+    if (
+        planned_close_side.lower()
+        != "sell"
+    ):
+        raise (
+            NegativeSaleLiveBatchServiceError(
+                "Spot correction close_side "
+                "must be Sell"
+            )
+        )
+
+    try:
+        live_preflight = (
+            build_live_negative_sale_preflight(
+                client,
+                category="spot",
+                symbol=selected.symbol,
+                requested_qty=(
+                    source_requested_qty
+                ),
+                planned_close_side=(
+                    planned_close_side
+                ),
+                captured_at=now,
+            )
+        )
+    except (
+        NegativeSaleLivePreflightError
+    ) as exc:
+        raise (
+            NegativeSaleLiveBatchServiceError(
+                "Correction final live "
+                "preflight failed: "
+                f"symbol={selected.symbol}, "
+                f"error={exc}"
+            )
+        ) from exc
+
+    if live_preflight.category != "spot":
+        raise (
+            NegativeSaleLiveBatchServiceError(
+                "Correction live preflight "
+                "category must be spot"
+            )
+        )
+
+    if (
+        live_preflight.symbol
+        != selected.symbol
+    ):
+        raise (
+            NegativeSaleLiveBatchServiceError(
+                "Correction live preflight "
+                "symbol mismatch"
+            )
+        )
+
+    if (
+        live_preflight.close_side
+        != "Sell"
+    ):
+        raise (
+            NegativeSaleLiveBatchServiceError(
+                "Correction live preflight "
+                "close_side must be Sell"
+            )
+        )
+
+    if (
+        live_preflight.normalized_qty
+        <= ZERO
+        or not live_preflight.slices
+    ):
+        raise (
+            NegativeSaleLiveBatchServiceError(
+                "Correction live preflight "
+                "returned no executable "
+                "quantity"
+            )
+        )
+
+    if (
+        live_preflight.normalized_qty
+        > snapshot_remaining_qty
+    ):
+        raise (
+            NegativeSaleLiveBatchServiceError(
+                "Correction live quantity "
+                "exceeds snapshot remaining "
+                "quantity"
+            )
+        )
+
+    target_cash = (
+        live_preflight
+        .normalized_notional
+    )
+
+    if (
+        target_cash is None
+        or target_cash <= ZERO
+    ):
+        raise (
+            NegativeSaleLiveBatchServiceError(
+                "Correction live normalized "
+                "notional must be positive"
+            )
         )
 
     try:
@@ -1154,37 +1391,67 @@ def _prepare_spot_correction_round(
                 ),
                 category="spot",
                 symbol=selected.symbol,
-                position_side=None,
-                close_side="Sell",
-                position_idx=None,
-                reduce_only=None,
-                market_unit="baseCoin",
+                position_side=(
+                    live_preflight
+                    .position_side
+                ),
+                close_side=(
+                    live_preflight
+                    .close_side
+                ),
+                position_idx=(
+                    live_preflight
+                    .position_idx
+                ),
+                reduce_only=(
+                    live_preflight
+                    .reduce_only
+                ),
+                market_unit=(
+                    live_preflight
+                    .market_unit
+                ),
                 requested_qty=(
-                    requested_qty
+                    live_preflight
+                    .requested_qty
                 ),
                 normalized_qty=(
-                    normalized
+                    live_preflight
                     .normalized_qty
                 ),
                 target_cash_usdt=(
                     target_cash
                 ),
-                slices=normalized.slices,
+                slices=(
+                    live_preflight.slices
+                ),
                 instrument_snapshot=(
-                    instrument.to_dict()
+                    live_preflight
+                    .instrument_snapshot
                 ),
                 position_snapshot={
+                    **dict(
+                        live_preflight
+                        .position_snapshot
+                    ),
                     "correction_policy": (
                         decision.policy_version
                     ),
                     "source_key": (
                         selected.source_key
                     ),
-                    "remaining_qty_before_round": (
-                        str(remaining_qty)
+                    "snapshot_remaining_qty": (
+                        str(
+                            snapshot_remaining_qty
+                        )
                     ),
-                    "best_bid": str(
-                        best_bid
+                    "source_live_sellable_qty": (
+                        str(
+                            source_live_sellable_qty
+                        )
+                    ),
+                    "source_best_bid": str(
+                        source_best_bid
                     ),
                     "confirmed_available_usdt": (
                         str(
@@ -1193,6 +1460,12 @@ def _prepare_spot_correction_round(
                     ),
                     "shortage_usdt": str(
                         decision.shortage_usdt
+                    ),
+                    "source_scan": dict(
+                        selected.raw
+                    ),
+                    "final_live_preflight": (
+                        live_preflight.to_dict()
                     ),
                 },
                 prepared_at=now,
@@ -1228,10 +1501,21 @@ def _prepare_spot_correction_round(
         ),
         "source_key": selected.source_key,
         "symbol": selected.symbol,
-        "remaining_qty_before_round": (
-            str(remaining_qty)
+        "snapshot_remaining_qty": str(
+            snapshot_remaining_qty
         ),
-        "best_bid": str(best_bid),
+        "source_live_sellable_qty": str(
+            source_live_sellable_qty
+        ),
+        "source_best_bid": str(
+            source_best_bid
+        ),
+        "final_live_available_qty": str(
+            live_preflight.available_qty
+        ),
+        "final_live_price": str(
+            live_preflight.price
+        ),
         "correction_target_usdt": (
             str(correction_target)
         ),
@@ -1239,15 +1523,19 @@ def _prepare_spot_correction_round(
             target_cash
         ),
         "requested_qty": str(
-            requested_qty
+            live_preflight.requested_qty
         ),
         "normalized_qty": str(
-            normalized.normalized_qty
+            live_preflight.normalized_qty
         ),
         "slices": [
             str(value)
-            for value in normalized.slices
+            for value
+            in live_preflight.slices
         ],
+        "live_preflight": (
+            live_preflight.to_dict()
+        ),
         "intent_fingerprint": (
             new_intent[
                 "intent_fingerprint"
