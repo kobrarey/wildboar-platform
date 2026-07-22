@@ -194,14 +194,21 @@ def _normalize_side(
 
         return None
 
-    if text == "buy":
+    if text in {
+        "buy",
+        "long",
+    }:
         return "Buy"
 
-    if text == "sell":
+    if text in {
+        "sell",
+        "short",
+    }:
         return "Sell"
 
     raise NegativeSaleLivePreflightError(
-        f"{field_name} must be Buy or Sell"
+        f"{field_name} must be "
+        "Buy, Sell, long, or short"
     )
 
 

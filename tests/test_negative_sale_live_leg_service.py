@@ -150,15 +150,30 @@ def _install_persistence(
     leg,
     guard_calls,
 ):
-    def fake_prepare(
-        db,
+    def fake_live_intent_builder(
+        client,
         *,
         sale_batch,
         leg,
         execution_round,
         now,
     ):
-        intent = _intent()
+        return deepcopy(
+            _intent()
+        )
+
+    def fake_prepare(
+        db,
+        *,
+        sale_batch,
+        leg,
+        execution_round,
+        prepared_intent,
+        now,
+    ):
+        intent = deepcopy(
+            prepared_intent
+        )
         leg.suborders_json = deepcopy(
             intent
         )
@@ -198,6 +213,11 @@ def _install_persistence(
             allowed=True
         )
 
+    monkeypatch.setattr(
+        service,
+        "build_live_prepared_intent_for_leg",
+        fake_live_intent_builder,
+    )
     monkeypatch.setattr(
         service,
         "persist_prepared_intent_before_submit",

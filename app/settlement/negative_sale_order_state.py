@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 from datetime import datetime
 from decimal import Decimal
 from typing import Any
@@ -449,26 +451,195 @@ def build_prepared_intent_for_leg(
     return result
 
 
+def validate_supplied_prepared_intent(
+    *,
+    sale_batch: FundNegativeSaleBatch,
+    leg: FundNegativeSaleLeg,
+    execution_round: int,
+    prepared_intent: dict[str, Any],
+) -> dict[str, Any]:
+    if not isinstance(
+        prepared_intent,
+        dict,
+    ):
+        raise NegativeSaleOrderStateError(
+            "Supplied prepared intent must "
+            "be a dict"
+        )
+
+    if leg.suborders_json is not None:
+        raise NegativeSaleOrderStateError(
+            "Sale leg already has a durable "
+            "prepared intent"
+        )
+
+    if (
+        leg.bybit_order_id
+        or leg.sent_at is not None
+        or int(
+            leg.executed_suborders or 0
+        )
+        > 0
+    ):
+        raise NegativeSaleOrderStateError(
+            "External execution evidence "
+            "exists without prepared intent"
+        )
+
+    intent = deepcopy(
+        prepared_intent
+    )
+
+    try:
+        validate_negative_sale_order_intent(
+            intent
+        )
+    except NegativeSaleOrderIntentError as exc:
+        raise NegativeSaleOrderStateError(
+            "Supplied prepared intent is "
+            f"invalid: {exc}"
+        ) from exc
+
+    identity_checks = {
+        "sale_batch_id": int(
+            sale_batch.id
+        ),
+        "leg_id": int(leg.id),
+        "execution_round": int(
+            execution_round
+        ),
+    }
+
+    for field_name, expected in (
+        identity_checks.items()
+    ):
+        actual = intent.get(
+            field_name
+        )
+
+        if (
+            isinstance(actual, bool)
+            or actual is None
+        ):
+            raise NegativeSaleOrderStateError(
+                "Supplied prepared intent "
+                f"has invalid {field_name}"
+            )
+
+        try:
+            actual_int = int(actual)
+        except (
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise NegativeSaleOrderStateError(
+                "Supplied prepared intent "
+                f"has invalid {field_name}"
+            ) from exc
+
+        if actual_int != expected:
+            raise NegativeSaleOrderStateError(
+                "Supplied prepared intent "
+                "identity mismatch: "
+                f"field={field_name}, "
+                f"expected={expected}, "
+                f"actual={actual_int}"
+            )
+
+    plan_leg = sale_leg_plan_snapshot(
+        sale_batch=sale_batch,
+        leg=leg,
+    )
+
+    expected_category = str(
+        plan_leg.get("category")
+        or leg.category
+        or ""
+    ).strip().lower()
+    actual_category = str(
+        intent.get("category")
+        or ""
+    ).strip().lower()
+
+    if (
+        not expected_category
+        or actual_category
+        != expected_category
+    ):
+        raise NegativeSaleOrderStateError(
+            "Supplied prepared intent "
+            "category mismatch"
+        )
+
+    expected_symbol = str(
+        plan_leg.get("symbol")
+        or leg.symbol
+        or ""
+    ).strip().upper()
+    actual_symbol = str(
+        intent.get("symbol")
+        or ""
+    ).strip().upper()
+
+    if (
+        not expected_symbol
+        or actual_symbol
+        != expected_symbol
+    ):
+        raise NegativeSaleOrderStateError(
+            "Supplied prepared intent "
+            "symbol mismatch"
+        )
+
+    return intent
+
+
 def persist_prepared_intent_before_submit(
     db: Session,
     *,
     sale_batch: FundNegativeSaleBatch,
     leg: FundNegativeSaleLeg,
     execution_round: int,
+    prepared_intent: (
+        dict[str, Any] | None
+    ) = None,
     now: datetime | None = None,
 ) -> dict[str, Any]:
     effective_now = now or utcnow()
 
-    intent = build_prepared_intent_for_leg(
-        sale_batch=sale_batch,
-        leg=leg,
-        execution_round=execution_round,
-        prepared_at=effective_now,
+    if prepared_intent is None:
+        intent = (
+            build_prepared_intent_for_leg(
+                sale_batch=sale_batch,
+                leg=leg,
+                execution_round=(
+                    execution_round
+                ),
+                prepared_at=effective_now,
+            )
+        )
+    else:
+        intent = (
+            validate_supplied_prepared_intent(
+                sale_batch=sale_batch,
+                leg=leg,
+                execution_round=(
+                    execution_round
+                ),
+                prepared_intent=(
+                    prepared_intent
+                ),
+            )
+        )
+
+    suborders = intent.get(
+        "suborders"
     )
 
-    suborders = intent.get("suborders")
-
-    if not isinstance(suborders, list):
+    if not isinstance(
+        suborders,
+        list,
+    ):
         raise NegativeSaleOrderStateError(
             "Prepared intent suborders "
             "must be a list"
@@ -488,6 +659,17 @@ def persist_prepared_intent_before_submit(
             "must be a dict"
         )
 
+    normalized_qty = (
+        _required_positive_decimal(
+            intent.get(
+                "normalized_qty"
+            ),
+            field_name=(
+                "intent.normalized_qty"
+            ),
+        )
+    )
+
     leg.actual_execution_mode = (
         "live_market_order"
     )
@@ -506,18 +688,26 @@ def persist_prepared_intent_before_submit(
     leg.executed_suborders = int(
         leg.executed_suborders or 0
     )
-    leg.suborders_json = intent
+
+    # The active ORM execution target must
+    # match the immutable live intent.
+    # The original economic plan remains
+    # preserved in sale_batch.plan_json.
+    leg.target_qty = normalized_qty
+
+    leg.suborders_json = deepcopy(
+        intent
+    )
     leg.updated_at = effective_now
 
     db.add(leg)
     db.flush()
 
-    # This commit is intentional. The immutable
-    # economic intent must be durable before the
-    # first external Bybit POST is attempted.
+    # Immutable live intent becomes durable
+    # before any external Bybit POST.
     db.commit()
     db.refresh(leg)
 
-    return dict(
+    return deepcopy(
         leg.suborders_json or {}
     )
