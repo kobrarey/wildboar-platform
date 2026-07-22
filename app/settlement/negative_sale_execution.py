@@ -98,6 +98,10 @@ from app.settlement.negative_sale_execution_mock import (
     load_negative_sale_execution_mock_file,
     normalize_negative_sale_execution_mock,
 )
+from app.settlement.negative_sale_live_batch_service import (
+    NegativeSaleLiveBatchStepResult,
+    resume_negative_sale_order_batch_once,
+)
 
 
 def supports_native_iceberg(category: str | None) -> bool:
@@ -711,6 +715,531 @@ def prepare_negative_sale_live_execution(
     )
 
 
+NEGATIVE_SALE_LIVE_STATE_MACHINE_SCHEMA = (
+    "negative_sale_live_state_machine_v1"
+)
+
+
+def _has_unhandled_live_earn_leg(
+    legs: list[FundNegativeSaleLeg],
+) -> bool:
+    for leg in legs:
+        leg_type = str(
+            getattr(
+                leg,
+                "leg_type",
+                None,
+            )
+            or ""
+        ).strip().lower()
+        category = str(
+            getattr(
+                leg,
+                "category",
+                None,
+            )
+            or ""
+        ).strip().lower()
+        location = str(
+            getattr(
+                leg,
+                "location",
+                None,
+            )
+            or ""
+        ).strip().lower()
+
+        is_earn = (
+            "earn" in leg_type
+            or "earn" in category
+            or "earn" in location
+        )
+
+        if not is_earn:
+            continue
+
+        if (
+            str(
+                getattr(
+                    leg,
+                    "status",
+                    None,
+                )
+                or ""
+            )
+            == SALE_LEG_STATUS_USDT_EARN_REDEEMED
+        ):
+            continue
+
+        if (
+            dec(
+                getattr(
+                    leg,
+                    "target_cash_usdt",
+                    None,
+                )
+            )
+            > ZERO
+        ):
+            return True
+
+    return False
+
+
+def _has_completed_correction_round(
+    legs: list[FundNegativeSaleLeg],
+) -> bool:
+    for leg in legs:
+        raw_round = getattr(
+            leg,
+            "execution_round",
+            None,
+        )
+
+        if raw_round in (
+            None,
+            "",
+            "initial",
+        ):
+            continue
+
+        try:
+            round_number = int(
+                raw_round
+            )
+        except (
+            TypeError,
+            ValueError,
+        ):
+            continue
+
+        if round_number > 0:
+            return True
+
+    return False
+
+
+def _executed_live_leg_count(
+    legs: list[FundNegativeSaleLeg],
+) -> int:
+    return sum(
+        1
+        for leg in legs
+        if int(
+            getattr(
+                leg,
+                "executed_suborders",
+                0,
+            )
+            or 0
+        )
+        > 0
+    )
+
+
+def _append_negative_sale_live_step_audit(
+    *,
+    sale_batch: FundNegativeSaleBatch,
+    step: NegativeSaleLiveBatchStepResult,
+    now: datetime,
+) -> None:
+    existing = (
+        dict(
+            sale_batch.execution_json
+        )
+        if isinstance(
+            sale_batch.execution_json,
+            dict,
+        )
+        else {}
+    )
+
+    same_schema = (
+        existing.get("schema")
+        == NEGATIVE_SALE_LIVE_STATE_MACHINE_SCHEMA
+    )
+
+    existing_steps = (
+        existing.get("steps")
+        if same_schema
+        else None
+    )
+
+    steps = (
+        [
+            dict(item)
+            for item in existing_steps
+            if isinstance(item, dict)
+        ]
+        if isinstance(
+            existing_steps,
+            list,
+        )
+        else []
+    )
+
+    step_dict = step.to_dict()
+
+    steps.append(
+        {
+            "recorded_at": (
+                now.isoformat()
+            ),
+            "step": step_dict,
+        }
+    )
+
+    execution_json: dict[
+        str,
+        Any,
+    ] = {
+        "schema": (
+            NEGATIVE_SALE_LIVE_STATE_MACHINE_SCHEMA
+        ),
+        "latest_step": step_dict,
+        "steps": steps,
+        "safety": {
+            "operation_guard_required": True,
+            "no_bybit_transfer": True,
+            "no_bybit_withdrawal": True,
+            "no_bsc_action": True,
+            "no_accounting_finalization": (
+                True
+            ),
+        },
+    }
+
+    if existing and not same_schema:
+        execution_json[
+            "previous_execution_json"
+        ] = existing
+
+    sale_batch.execution_json = (
+        execution_json
+    )
+
+
+def apply_negative_sale_live_batch_step(
+    db: Session,
+    *,
+    sale_batch: FundNegativeSaleBatch,
+    settlement_batch: FundSettlementBatch,
+    legs: list[FundNegativeSaleLeg],
+    step: NegativeSaleLiveBatchStepResult,
+    now: datetime,
+) -> None:
+    required_master_usdt = (
+        _max_zero(
+            dec(
+                sale_batch
+                .required_master_usdt
+            )
+        )
+    )
+
+    confirmed_available = (
+        step.confirmed_available_usdt
+    )
+    confirmed_shortage = (
+        step.shortage_usdt
+    )
+
+    if confirmed_available is not None:
+        confirmed_available = (
+            _max_zero(
+                dec(
+                    confirmed_available
+                )
+            )
+        )
+
+        if confirmed_shortage is None:
+            confirmed_shortage = (
+                _max_zero(
+                    required_master_usdt
+                    - confirmed_available
+                )
+            )
+        else:
+            confirmed_shortage = (
+                _max_zero(
+                    dec(
+                        confirmed_shortage
+                    )
+                )
+            )
+
+        confirmed_surplus = (
+            _max_zero(
+                confirmed_available
+                - required_master_usdt
+            )
+        )
+
+        sale_batch.final_available_usdt = (
+            confirmed_available
+        )
+        sale_batch.final_shortage_usdt = (
+            confirmed_shortage
+        )
+        sale_batch.final_surplus_usdt = (
+            confirmed_surplus
+        )
+
+        sale_batch.reconciliation_json = {
+            "schema": (
+                "negative_sale_confirmed_"
+                "transferable_balance_v1"
+            ),
+            "cash_source": (
+                "confirmed_transferable_"
+                "usdt"
+            ),
+            "required_master_usdt": str(
+                required_master_usdt
+            ),
+            "confirmed_available_usdt": (
+                str(
+                    confirmed_available
+                )
+            ),
+            "confirmed_shortage_usdt": (
+                str(
+                    confirmed_shortage
+                )
+            ),
+            "confirmed_surplus_usdt": (
+                str(
+                    confirmed_surplus
+                )
+            ),
+            "transferable_balance": (
+                step.transferable_balance
+            ),
+            "correction_decision": (
+                step.correction_decision
+            ),
+            "no_derivative_exec_value_"
+            "as_cash": True,
+        }
+
+    successful_balance_check = (
+        step.action == "balance_check"
+        and confirmed_shortage
+        is not None
+        and confirmed_shortage <= ZERO
+        and not step.requires_review
+    )
+
+    unresolved_terminal_shortage = (
+        step.action == "balance_check"
+        and confirmed_shortage
+        is not None
+        and confirmed_shortage > ZERO
+        and not step.has_pending_action
+    )
+
+    requires_review = (
+        step.requires_review
+        or step.action
+        == "review_required"
+        or unresolved_terminal_shortage
+    )
+
+    if requires_review:
+        sale_batch.status = (
+            SALE_BATCH_STATUS_SALE_EXECUTION_FAILED_REQUIRES_REVIEW
+        )
+        settlement_batch.status = (
+            BATCH_STATUS_FAILED_REQUIRES_REVIEW
+        )
+
+        error = (
+            "Negative sale state machine "
+            f"requires review: {step.reason}"
+        )
+
+        sale_batch.error = error
+        settlement_batch.error = error
+
+    elif successful_balance_check:
+        sale_batch.status = (
+            SALE_BATCH_STATUS_SALE_EXECUTION_COMPLETED_WITH_EXTRA_SALE
+            if _has_completed_correction_round(
+                legs
+            )
+            else SALE_BATCH_STATUS_SALE_EXECUTION_COMPLETED
+        )
+        settlement_batch.status = (
+            BATCH_STATUS_NEGATIVE_NET_SALE_EXECUTED
+        )
+
+        sale_batch.execution_completed_at = (
+            now
+        )
+        sale_batch.error = None
+        settlement_batch.error = None
+
+    elif step.has_pending_action:
+        sale_batch.status = (
+            SALE_BATCH_STATUS_SALE_EXECUTION_PROCESSING
+        )
+        settlement_batch.status = (
+            BATCH_STATUS_PENDING_CONFIRMATION
+        )
+
+        sale_batch.error = None
+        settlement_batch.error = None
+
+    else:
+        sale_batch.status = (
+            SALE_BATCH_STATUS_SALE_EXECUTION_PROCESSING
+        )
+        settlement_batch.status = (
+            BATCH_STATUS_NEGATIVE_NET_SALE_PROCESSING
+        )
+
+        sale_batch.error = None
+        settlement_batch.error = None
+
+    _append_negative_sale_live_step_audit(
+        sale_batch=sale_batch,
+        step=step,
+        now=now,
+    )
+
+    sale_batch.updated_at = now
+    settlement_batch.updated_at = now
+
+    db.add(sale_batch)
+    db.add(settlement_batch)
+    db.flush()
+
+
+def build_negative_sale_live_step_result(
+    *,
+    sale_batch: FundNegativeSaleBatch,
+    settlement_batch: FundSettlementBatch,
+    fund: Fund,
+    legs: list[FundNegativeSaleLeg],
+    status_before: str,
+    settlement_status_before: str,
+    step: NegativeSaleLiveBatchStepResult,
+) -> NegativeSaleExecutionResult:
+    final_available = (
+        step.confirmed_available_usdt
+        if step.confirmed_available_usdt
+        is not None
+        else sale_batch.final_available_usdt
+    )
+    final_shortage = (
+        step.shortage_usdt
+        if step.shortage_usdt
+        is not None
+        else sale_batch.final_shortage_usdt
+    )
+
+    final_surplus = (
+        _max_zero(
+            dec(final_available)
+            - _max_zero(
+                dec(
+                    sale_batch
+                    .required_master_usdt
+                )
+            )
+        )
+        if final_available is not None
+        else None
+    )
+
+    completed = (
+        sale_batch.status
+        in {
+            SALE_BATCH_STATUS_SALE_EXECUTION_COMPLETED,
+            SALE_BATCH_STATUS_SALE_EXECUTION_COMPLETED_WITH_EXTRA_SALE,
+        }
+    )
+
+    return NegativeSaleExecutionResult(
+        ok=(
+            completed
+            and final_shortage
+            is not None
+            and dec(
+                final_shortage
+            )
+            <= ZERO
+        ),
+        sale_batch_id=int(
+            sale_batch.id
+        ),
+        settlement_batch_id=int(
+            settlement_batch.id
+        ),
+        fund_id=int(
+            fund.id
+        ),
+        fund_code=str(
+            fund.code
+        ),
+        status_before=status_before,
+        status_after=str(
+            sale_batch.status
+        ),
+        settlement_status_before=(
+            settlement_status_before
+        ),
+        settlement_status_after=str(
+            settlement_batch.status
+        ),
+        final_available_usdt=(
+            dec(final_available)
+            if final_available
+            is not None
+            else None
+        ),
+        final_shortage_usdt=(
+            dec(final_shortage)
+            if final_shortage
+            is not None
+            else None
+        ),
+        final_surplus_usdt=(
+            final_surplus
+        ),
+        executed_leg_count=(
+            _executed_live_leg_count(
+                legs
+            )
+        ),
+        error=sale_batch.error,
+        diagnostics={
+            "mock_only": False,
+            "state_machine_schema": (
+                NEGATIVE_SALE_LIVE_STATE_MACHINE_SCHEMA
+            ),
+            "state_machine_step": (
+                step.to_dict()
+            ),
+            "bybit_order_posted": (
+                step.posted
+            ),
+            "operation_guard_required": True,
+            "confirmed_transferable_usdt_"
+            "is_cash_source": True,
+            "no_derivative_exec_value_"
+            "as_cash": True,
+            "no_bybit_transfers_or_"
+            "withdrawals": True,
+            "no_bsc_transfers": True,
+            "no_accounting_finalization": (
+                True
+            ),
+        },
+    )
+
+
 def build_negative_sale_live_result(
     *,
     sale_batch: FundNegativeSaleBatch,
@@ -761,7 +1290,7 @@ def execute_negative_sale_plan_live(
     client: BybitV5Client,
     now: datetime | None = None,
 ) -> NegativeSaleExecutionResult:
-    now = now or utcnow()
+    effective_now = now or utcnow()
 
     (
         sale_batch,
@@ -773,54 +1302,63 @@ def execute_negative_sale_plan_live(
     ) = prepare_negative_sale_live_execution(
         db,
         sale_batch_id=sale_batch_id,
-        now=now,
+        now=effective_now,
     )
 
-    required_master_usdt = _max_zero(dec(sale_batch.required_master_usdt))
-    initial_cash_usdt = cash_available_from_cash_like_legs(legs)
+    if _has_unhandled_live_earn_leg(
+        legs
+    ):
+        raise NegativeSaleExecutionError(
+            "Resumable USDT Earn redemption "
+            "is not integrated into the "
+            "negative sale state machine yet"
+        )
 
-    initial_earn_redeemed_usdt, earn_redeem_results = execute_initial_usdt_earn_redeem_live(
+    # Persist the initial PROCESSING
+    # transition and release all row locks
+    # before any Bybit HTTP request.
+    db.commit()
+
+    step = (
+        resume_negative_sale_order_batch_once(
+            db,
+            client=client,
+            sale_batch=sale_batch,
+            settlement_batch=(
+                settlement_batch
+            ),
+            legs=legs,
+            now=effective_now,
+        )
+    )
+
+    apply_negative_sale_live_batch_step(
         db,
-        client=client,
         sale_batch=sale_batch,
-        settlement_batch=settlement_batch,
+        settlement_batch=(
+            settlement_batch
+        ),
         legs=legs,
-        initial_cash_usdt=initial_cash_usdt,
-        now=now,
+        step=step,
+        now=effective_now,
     )
 
-    live_results = execute_initial_sale_legs_live(
-        db,
-        client=client,
-        sale_batch=sale_batch,
-        settlement_batch=settlement_batch,
-        legs=legs,
-        now=now,
-    )
+    db.commit()
 
-    applied = apply_live_sale_reconciliation_to_batch(
-        sale_batch=sale_batch,
-        settlement_batch=settlement_batch,
-        required_master_usdt=required_master_usdt,
-        initial_cash_usdt=initial_cash_usdt,
-        initial_earn_redeemed_usdt=initial_earn_redeemed_usdt,
-        live_results=live_results,
-        earn_redeem_results=earn_redeem_results,
-        now=now,
-    )
-
-    db.add(sale_batch)
-    db.add(settlement_batch)
-    db.flush()
-
-    return build_negative_sale_live_result(
-        sale_batch=sale_batch,
-        settlement_batch=settlement_batch,
-        fund=fund,
-        status_before=status_before,
-        settlement_status_before=settlement_status_before,
-        values=applied["values"],
-        live_results=live_results,
+    return (
+        build_negative_sale_live_step_result(
+            sale_batch=sale_batch,
+            settlement_batch=(
+                settlement_batch
+            ),
+            fund=fund,
+            legs=legs,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            step=step,
+        )
     )
 
 
