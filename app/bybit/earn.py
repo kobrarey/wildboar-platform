@@ -51,6 +51,31 @@ class BybitEarnOrder:
     raw: dict[str, Any]
 
 
+EARN_PLACE_ORDER_PATH = (
+    "/v5/earn/place-order"
+)
+EARN_ORDER_HISTORY_PATH = (
+    "/v5/earn/order"
+)
+
+EARN_ORDER_STATUS_SUCCESS = "Success"
+EARN_ORDER_STATUS_PENDING = "Pending"
+EARN_ORDER_STATUS_FAIL = "Fail"
+
+EARN_ORDER_STATUSES = {
+    EARN_ORDER_STATUS_SUCCESS,
+    EARN_ORDER_STATUS_PENDING,
+    EARN_ORDER_STATUS_FAIL,
+}
+
+
+@dataclass(frozen=True)
+class BybitEarnSubmitAck:
+    order_id: str
+    order_link_id: str
+    raw: dict[str, Any]
+
+
 def _dec(value: Any) -> Decimal:
     if value is None or value == "":
         return Decimal("0")
@@ -290,6 +315,305 @@ def total_flexible_saving_available_amount(
     )
 
 
+def _required_text(
+    value: Any,
+    *,
+    field_name: str,
+) -> str:
+    text = str(
+        value or ""
+    ).strip()
+
+    if not text:
+        raise BybitEarnError(
+            f"{field_name} must not be empty"
+        )
+
+    return text
+
+
+def _validate_order_link_id(
+    value: Any,
+) -> str:
+    order_link_id = _required_text(
+        value,
+        field_name="orderLinkId",
+    )
+
+    if len(order_link_id) > 36:
+        raise BybitEarnError(
+            "Earn orderLinkId exceeds "
+            f"36 characters: "
+            f"length={len(order_link_id)}"
+        )
+
+    return order_link_id
+
+
+def _strict_non_negative_decimal(
+    value: Any,
+    *,
+    field_name: str,
+) -> Decimal:
+    if isinstance(value, bool):
+        raise BybitEarnError(
+            f"{field_name} must not be bool"
+        )
+
+    if isinstance(value, float):
+        raise BybitEarnError(
+            f"{field_name} must not be float"
+        )
+
+    try:
+        result = Decimal(str(value))
+    except Exception as exc:
+        raise BybitEarnError(
+            f"{field_name} is not Decimal"
+        ) from exc
+
+    if not result.is_finite():
+        raise BybitEarnError(
+            f"{field_name} must be finite"
+        )
+
+    if result < Decimal("0"):
+        raise BybitEarnError(
+            f"{field_name} must be "
+            "non-negative"
+        )
+
+    return result
+
+
+def _required_result(
+    payload: Any,
+    *,
+    endpoint: str,
+) -> dict[str, Any]:
+    if not isinstance(payload, dict):
+        raise BybitEarnError(
+            f"{endpoint} response must "
+            "be a dict"
+        )
+
+    ret_code = payload.get("retCode")
+
+    if ret_code not in {
+        None,
+        0,
+        "0",
+    }:
+        raise BybitEarnError(
+            f"{endpoint} request failed: "
+            f"retCode={ret_code}, "
+            f"retMsg={payload.get('retMsg')}"
+        )
+
+    result = payload.get("result")
+
+    if not isinstance(result, dict):
+        raise BybitEarnError(
+            f"{endpoint}.result must "
+            "be a dict"
+        )
+
+    return dict(result)
+
+
+def _required_result_list(
+    payload: Any,
+    *,
+    endpoint: str,
+) -> list[dict[str, Any]]:
+    result = _required_result(
+        payload,
+        endpoint=endpoint,
+    )
+    rows = result.get("list")
+
+    if not isinstance(rows, list):
+        raise BybitEarnError(
+            f"{endpoint}.result.list "
+            "must be a list"
+        )
+
+    return [
+        dict(row)
+        for row in rows
+        if isinstance(row, dict)
+    ]
+
+
+def build_flexible_saving_redeem_payload(
+    *,
+    amount: Decimal,
+    amount_str: str,
+    product_id: str,
+    order_link_id: str,
+    coin: str = "USDT",
+    account_type: str = "FUND",
+) -> dict[str, Any]:
+    parsed_amount = (
+        _strict_non_negative_decimal(
+            amount,
+            field_name="amount",
+        )
+    )
+
+    if parsed_amount <= Decimal("0"):
+        raise BybitEarnError(
+            "Earn redeem amount must "
+            "be positive"
+        )
+
+    formatted_amount = _required_text(
+        amount_str,
+        field_name="amount_str",
+    )
+
+    if "E" in formatted_amount.upper():
+        raise BybitEarnError(
+            "Formatted Earn redeem amount "
+            "must not use scientific notation"
+        )
+
+    parsed_formatted_amount = (
+        _strict_non_negative_decimal(
+            formatted_amount,
+            field_name="amount_str",
+        )
+    )
+
+    if parsed_formatted_amount <= Decimal("0"):
+        raise BybitEarnError(
+            "Formatted Earn redeem amount "
+            "must be positive"
+        )
+
+    if (
+        parsed_formatted_amount
+        != parsed_amount
+    ):
+        raise BybitEarnError(
+            "Formatted Earn redeem amount "
+            "does not match amount"
+        )
+
+    normalized_product_id = (
+        _required_text(
+            product_id,
+            field_name="productId",
+        )
+    )
+    normalized_order_link_id = (
+        _validate_order_link_id(
+            order_link_id
+        )
+    )
+    normalized_coin = (
+        _required_text(
+            coin,
+            field_name="coin",
+        ).upper()
+    )
+    normalized_account_type = (
+        _required_text(
+            account_type,
+            field_name="accountType",
+        ).upper()
+    )
+
+    if normalized_account_type not in {
+        "FUND",
+        "UNIFIED",
+    }:
+        raise BybitEarnError(
+            "Earn accountType must be "
+            "FUND or UNIFIED"
+        )
+
+    return {
+        "category": "FlexibleSaving",
+        "orderType": "Redeem",
+        "accountType": (
+            normalized_account_type
+        ),
+        "amount": formatted_amount,
+        "coin": normalized_coin,
+        "productId": (
+            normalized_product_id
+        ),
+        "orderLinkId": (
+            normalized_order_link_id
+        ),
+    }
+
+
+def submit_flexible_saving_redeem_order(
+    client: BybitV5Client,
+    *,
+    amount: Decimal,
+    amount_str: str,
+    product_id: str,
+    order_link_id: str,
+    coin: str = "USDT",
+    account_type: str = "FUND",
+) -> BybitEarnSubmitAck:
+    request_payload = (
+        build_flexible_saving_redeem_payload(
+            amount=amount,
+            amount_str=amount_str,
+            product_id=product_id,
+            order_link_id=order_link_id,
+            coin=coin,
+            account_type=account_type,
+        )
+    )
+
+    response = client.post(
+        EARN_PLACE_ORDER_PATH,
+        request_payload,
+    )
+
+    result = _required_result(
+        response,
+        endpoint=EARN_PLACE_ORDER_PATH,
+    )
+
+    order_id = _required_text(
+        result.get("orderId"),
+        field_name="result.orderId",
+    )
+    returned_link_id = (
+        _required_text(
+            result.get("orderLinkId"),
+            field_name=(
+                "result.orderLinkId"
+            ),
+        )
+    )
+
+    if (
+        returned_link_id
+        != request_payload[
+            "orderLinkId"
+        ]
+    ):
+        raise BybitEarnError(
+            "Earn submit ACK "
+            "orderLinkId mismatch"
+        )
+
+    return BybitEarnSubmitAck(
+        order_id=order_id,
+        order_link_id=(
+            returned_link_id
+        ),
+        raw=dict(result),
+    )
+
+
 def query_earn_order_by_link_id(
     client: BybitV5Client,
     *,
@@ -297,57 +621,165 @@ def query_earn_order_by_link_id(
     category: str = "FlexibleSaving",
     product_id: str | None = None,
 ) -> BybitEarnOrder | None:
-    params: dict[str, Any] = {
-        "category": category,
-        "orderLinkId": order_link_id,
-    }
-    if product_id:
-        params["productId"] = product_id
+    normalized_link_id = (
+        _validate_order_link_id(
+            order_link_id
+        )
+    )
+    normalized_category = (
+        _required_text(
+            category,
+            field_name="category",
+        )
+    )
 
-    payload = client.get("/v5/earn/order", params)
-    rows = ((payload.get("result") or {}).get("list") or [])
-
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-
-        if str(row.get("orderLinkId") or "") != str(order_link_id):
-            continue
-
-        return BybitEarnOrder(
-            category=category,
-            coin=(
-                str(row.get("coin"))
-                if row.get("coin") not in {None, ""}
-                else None
-            ),
-            order_type=(
-                str(row.get("orderType"))
-                if row.get("orderType") not in {None, ""}
-                else None
-            ),
-            order_id=(
-                str(row.get("orderId"))
-                if row.get("orderId") not in {None, ""}
-                else None
-            ),
-            order_link_id=str(row.get("orderLinkId") or ""),
-            status=(
-                str(row.get("status"))
-                if row.get("status") not in {None, ""}
-                else None
-            ),
-            amount=_dec(row.get("orderValue")),
-            product_id=(
-                str(row.get("productId"))
-                if row.get("productId") not in {None, ""}
-                else None
-            ),
-            raw=row,
+    if normalized_category not in {
+        "FlexibleSaving",
+        "OnChain",
+    }:
+        raise BybitEarnError(
+            "Unsupported Earn category: "
+            f"{normalized_category}"
         )
 
-    return None
+    normalized_product_id = (
+        str(product_id).strip()
+        if product_id is not None
+        else None
+    )
 
+    if normalized_product_id == "":
+        normalized_product_id = None
+
+    params: dict[str, Any] = {
+        "category": normalized_category,
+        "orderLinkId": (
+            normalized_link_id
+        ),
+    }
+
+    if normalized_product_id:
+        params["productId"] = (
+            normalized_product_id
+        )
+
+    payload = client.get(
+        EARN_ORDER_HISTORY_PATH,
+        params,
+    )
+
+    rows = _required_result_list(
+        payload,
+        endpoint=(
+            EARN_ORDER_HISTORY_PATH
+        ),
+    )
+
+    matching_rows = [
+        row
+        for row in rows
+        if str(
+            row.get("orderLinkId")
+            or ""
+        ).strip()
+        == normalized_link_id
+        and (
+            normalized_product_id
+            is None
+            or str(
+                row.get("productId")
+                or ""
+            ).strip()
+            == normalized_product_id
+        )
+    ]
+
+    if not matching_rows:
+        return None
+
+    if len(matching_rows) != 1:
+        raise BybitEarnError(
+            "Earn order history returned "
+            "multiple matching rows: "
+            f"orderLinkId="
+            f"{normalized_link_id}, "
+            f"matches={len(matching_rows)}"
+        )
+
+    row = matching_rows[0]
+
+    row_order_link_id = (
+        _required_text(
+            row.get("orderLinkId"),
+            field_name=(
+                "order.orderLinkId"
+            ),
+        )
+    )
+
+    if (
+        row_order_link_id
+        != normalized_link_id
+    ):
+        raise BybitEarnError(
+            "Earn order history "
+            "orderLinkId mismatch"
+        )
+
+    order_id = _required_text(
+        row.get("orderId"),
+        field_name="order.orderId",
+    )
+    status = _required_text(
+        row.get("status"),
+        field_name="order.status",
+    )
+    order_type = _required_text(
+        row.get("orderType"),
+        field_name="order.orderType",
+    )
+
+    if order_type not in {
+        "Redeem",
+        "Stake",
+    }:
+        raise BybitEarnError(
+            "Unsupported Earn orderType: "
+            f"{order_type}"
+        )
+
+    amount = (
+        _strict_non_negative_decimal(
+            row.get("orderValue"),
+            field_name=(
+                "order.orderValue"
+            ),
+        )
+    )
+
+    return BybitEarnOrder(
+        category=normalized_category,
+        coin=(
+            str(row.get("coin"))
+            if row.get("coin")
+            not in {None, ""}
+            else None
+        ),
+        order_type=order_type,
+        order_id=order_id,
+        order_link_id=(
+            row_order_link_id
+        ),
+        status=status,
+        amount=amount,
+        product_id=(
+            str(row.get("productId"))
+            if row.get("productId")
+            not in {None, ""}
+            else None
+        ),
+        raw=dict(row),
+    )
 
 def place_flexible_saving_redeem_order(
     client: BybitV5Client,
@@ -363,74 +795,72 @@ def place_flexible_saving_redeem_order(
     target_cash_usdt: Decimal,
     needed_from_earn: Decimal,
 ) -> BybitEarnOrder:
-    if amount <= Decimal("0"):
-        raise BybitEarnError(f"Earn redeem amount must be positive: {amount}")
-
-    amount_str = str(amount_str or "").strip()
-    if not amount_str:
-        raise BybitEarnError("Formatted Earn redeem amount is empty")
-
-    if "E" in amount_str.upper():
-        raise BybitEarnError(
-            f"Formatted Earn redeem amount uses scientific notation: {amount_str}"
+    request_payload = (
+        build_flexible_saving_redeem_payload(
+            amount=amount,
+            amount_str=amount_str,
+            product_id=product_id,
+            order_link_id=order_link_id,
+            coin=coin,
+            account_type=account_type,
         )
-
-    if len(str(order_link_id)) > 36:
-        raise BybitEarnError(
-            f"Earn redeem orderLinkId is longer than 36 chars: {len(str(order_link_id))}"
-        )
+    )
 
     payload_summary = {
-        "endpoint": "/v5/earn/place-order",
-        "category": "FlexibleSaving",
-        "orderType": "Redeem",
-        "accountType": account_type,
-        "coin": coin,
-        "productId": product_id,
-        "orderLinkId_len": len(str(order_link_id)),
-        "amount": amount_str,
-        "product_precision": int(product_precision),
-        "availableAmount": str(available_amount),
-        "target_cash_usdt": str(target_cash_usdt),
-        "needed_from_earn": str(needed_from_earn),
+        "endpoint": (
+            EARN_PLACE_ORDER_PATH
+        ),
+        **request_payload,
+        "orderLinkId_len": len(
+            request_payload[
+                "orderLinkId"
+            ]
+        ),
+        "product_precision": int(
+            product_precision
+        ),
+        "availableAmount": str(
+            available_amount
+        ),
+        "target_cash_usdt": str(
+            target_cash_usdt
+        ),
+        "needed_from_earn": str(
+            needed_from_earn
+        ),
     }
 
     log.info(
-        "Bybit Earn redeem payload summary: %s",
+        "Bybit Earn redeem payload "
+        "summary: %s",
         payload_summary,
     )
 
-    payload = client.post(
-        "/v5/earn/place-order",
-        {
-            "category": "FlexibleSaving",
-            "orderType": "Redeem",
-            "accountType": account_type,
-            "amount": amount_str,
-            "coin": coin,
-            "productId": product_id,
-            "orderLinkId": order_link_id,
-        },
+    ack = (
+        submit_flexible_saving_redeem_order(
+            client,
+            amount=amount,
+            amount_str=amount_str,
+            product_id=product_id,
+            order_link_id=order_link_id,
+            coin=coin,
+            account_type=account_type,
+        )
     )
 
-    result = payload.get("result") or {}
-    order_id = str(result.get("orderId") or "")
-    returned_link_id = str(result.get("orderLinkId") or "")
-
-    if not order_id or returned_link_id != order_link_id:
-        raise BybitEarnError(
-            "Unexpected Earn redeem response: "
-            f"order_id={order_id}, order_link_id={returned_link_id}"
-        )
-
+    # ACK is not confirmation. The caller
+    # must query /v5/earn/order in a later
+    # resumable state-machine cycle.
     return BybitEarnOrder(
         category="FlexibleSaving",
-        coin=coin,
+        coin=str(coin).upper(),
         order_type="Redeem",
-        order_id=order_id,
-        order_link_id=returned_link_id,
+        order_id=ack.order_id,
+        order_link_id=(
+            ack.order_link_id
+        ),
         status=None,
         amount=amount,
         product_id=product_id,
-        raw=result,
+        raw=dict(ack.raw),
     )
