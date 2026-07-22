@@ -220,6 +220,43 @@ class FakeClient:
         path: str,
         params: dict,
     ) -> dict:
+        if (
+            path
+            == "/v5/asset/transfer/"
+            "query-account-coin-balance"
+        ):
+            coin = str(
+                params["coin"]
+            ).strip().upper()
+
+            transfer_balance = {
+                "BTC": "10",
+                "ETH": "50",
+                "USDT": "80",
+            }[coin]
+
+            return {
+                "retCode": 0,
+                "result": {
+                    "accountType": "UNIFIED",
+                    "balance": {
+                        "coin": coin,
+                        "walletBalance": (
+                            transfer_balance
+                        ),
+                        "transferBalance": (
+                            transfer_balance
+                        ),
+                        "transferSafeAmount": (
+                            transfer_balance
+                        ),
+                        "ltvTransferSafeAmount": (
+                            transfer_balance
+                        ),
+                    },
+                },
+            }
+
         symbol = params["symbol"]
 
         if path == "/v5/market/tickers":
