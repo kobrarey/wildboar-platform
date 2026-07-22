@@ -102,6 +102,9 @@ from app.settlement.negative_sale_live_batch_service import (
     NegativeSaleLiveBatchStepResult,
     resume_negative_sale_order_batch_once,
 )
+from app.settlement.negative_sale_earn_live_service import (
+    resume_negative_sale_earn_once,
+)
 
 
 def supports_native_iceberg(category: str | None) -> bool:
@@ -720,70 +723,6 @@ NEGATIVE_SALE_LIVE_STATE_MACHINE_SCHEMA = (
 )
 
 
-def _has_unhandled_live_earn_leg(
-    legs: list[FundNegativeSaleLeg],
-) -> bool:
-    for leg in legs:
-        leg_type = str(
-            getattr(
-                leg,
-                "leg_type",
-                None,
-            )
-            or ""
-        ).strip().lower()
-        category = str(
-            getattr(
-                leg,
-                "category",
-                None,
-            )
-            or ""
-        ).strip().lower()
-        location = str(
-            getattr(
-                leg,
-                "location",
-                None,
-            )
-            or ""
-        ).strip().lower()
-
-        is_earn = (
-            "earn" in leg_type
-            or "earn" in category
-            or "earn" in location
-        )
-
-        if not is_earn:
-            continue
-
-        if (
-            str(
-                getattr(
-                    leg,
-                    "status",
-                    None,
-                )
-                or ""
-            )
-            == SALE_LEG_STATUS_USDT_EARN_REDEEMED
-        ):
-            continue
-
-        if (
-            dec(
-                getattr(
-                    leg,
-                    "target_cash_usdt",
-                    None,
-                )
-            )
-            > ZERO
-        ):
-            return True
-
-    return False
 
 
 def _has_completed_correction_round(
@@ -1305,22 +1244,25 @@ def execute_negative_sale_plan_live(
         now=effective_now,
     )
 
-    if _has_unhandled_live_earn_leg(
-        legs
-    ):
-        raise NegativeSaleExecutionError(
-            "Resumable USDT Earn redemption "
-            "is not integrated into the "
-            "negative sale state machine yet"
-        )
-
     # Persist the initial PROCESSING
     # transition and release all row locks
     # before any Bybit HTTP request.
     db.commit()
 
-    step = (
-        resume_negative_sale_order_batch_once(
+    # Earn redemption has priority over
+    # trading sale legs. The Earn service
+    # performs at most one durable runtime
+    # step in this executor invocation:
+    #
+    # prepare
+    # submit/ACK
+    # confirmation
+    # review
+    #
+    # Trading execution is reached only
+    # after Earn has no active step.
+    earn_step = (
+        resume_negative_sale_earn_once(
             db,
             client=client,
             sale_batch=sale_batch,
@@ -1331,6 +1273,22 @@ def execute_negative_sale_plan_live(
             now=effective_now,
         )
     )
+
+    if earn_step is not None:
+        step = earn_step
+    else:
+        step = (
+            resume_negative_sale_order_batch_once(
+                db,
+                client=client,
+                sale_batch=sale_batch,
+                settlement_batch=(
+                    settlement_batch
+                ),
+                legs=legs,
+                now=effective_now,
+            )
+        )
 
     apply_negative_sale_live_batch_step(
         db,
