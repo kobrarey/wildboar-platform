@@ -182,9 +182,13 @@ def _apply_reconciliation(
         .aggregate_exec_qty
     )
 
-    full_execution_coverage = (
+    exact_execution_coverage = (
         confirmed_exec_qty
-        >= requested_qty
+        == requested_qty
+    )
+    over_execution_coverage = (
+        confirmed_exec_qty
+        > requested_qty
     )
 
     if order is not None:
@@ -201,9 +205,15 @@ def _apply_reconciliation(
                 _iso(now)
             )
 
-    if (
+    if over_execution_coverage:
+        # Confirmed executions above the
+        # immutable requested quantity are
+        # contradictory external evidence.
+        # Never classify this as successful.
+        status = "pending_confirmation"
+    elif (
         classification.success
-        and full_execution_coverage
+        and exact_execution_coverage
     ):
         status = "filled"
     elif classification.success:

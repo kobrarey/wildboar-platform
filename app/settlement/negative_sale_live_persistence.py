@@ -731,10 +731,10 @@ def archive_terminal_intent_and_activate_next_round(
         ]
     )
 
-    if next_round != previous_round + 1:
+    if next_round <= previous_round:
         raise NegativeSaleLivePersistenceError(
             "Correction execution_round "
-            "must increment by one"
+            "must increase"
         )
 
     for field_name in (
@@ -851,6 +851,28 @@ def archive_terminal_intent_and_activate_next_round(
 
     first = suborders[0]
 
+    next_target_cash = _decimal(
+        next_intent.get(
+            "target_cash_usdt"
+        ),
+        field_name="target_cash_usdt",
+    )
+    next_target_qty = _decimal(
+        next_intent.get(
+            "normalized_qty"
+        ),
+        field_name="normalized_qty",
+    )
+
+    if (
+        next_target_cash <= ZERO
+        or next_target_qty <= ZERO
+    ):
+        raise NegativeSaleLivePersistenceError(
+            "Correction target cash and qty "
+            "must be positive"
+        )
+
     leg.actual_execution_mode = str(
         next_intent.get(
             "actual_execution_mode"
@@ -876,13 +898,20 @@ def archive_terminal_intent_and_activate_next_round(
     leg.planned_suborders = len(
         suborders
     )
+    leg.target_cash_usdt = (
+        next_target_cash
+    )
+    leg.target_qty = next_target_qty
+    leg.expected_cash_delta_usdt = (
+        next_target_cash
+    )
     leg.executed_suborders = 0
     leg.suborders_json = next_intent
 
     leg.filled_qty = ZERO
     leg.filled_usdt = ZERO
     leg.avg_fill_price = None
-    leg.fills_ratio = ZERO
+    leg.fill_ratio = ZERO
     leg.unfilled_usdt = None
     leg.fee_usdt = ZERO
     leg.cash_delta_usdt = ZERO
@@ -893,6 +922,9 @@ def archive_terminal_intent_and_activate_next_round(
     leg.failed_at = None
     leg.execution_error = None
     leg.error = None
+    leg.status = (
+        SALE_LEG_STATUS_PENDING_CONFIRMATION
+    )
 
     existing_audit[
         "intent_history"
@@ -918,6 +950,154 @@ def archive_terminal_intent_and_activate_next_round(
     # The archived terminal intent and the
     # next immutable correction intent become
     # durable atomically before any new POST.
+    db.commit()
+    db.refresh(leg)
+
+    return deepcopy(
+        leg.suborders_json
+    )
+
+
+def persist_new_correction_intent_without_previous(
+    db: Session,
+    *,
+    leg: FundNegativeSaleLeg,
+    new_intent: dict[str, Any],
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    effective_now = now or utcnow()
+
+    if leg.id is None:
+        raise NegativeSaleLivePersistenceError(
+            "Correction leg must be persisted"
+        )
+
+    if leg.suborders_json is not None:
+        raise NegativeSaleLivePersistenceError(
+            "Correction leg already has an "
+            "active durable intent"
+        )
+
+    if (
+        leg.bybit_order_id
+        or leg.sent_at is not None
+        or int(
+            leg.executed_suborders or 0
+        )
+        > 0
+    ):
+        raise NegativeSaleLivePersistenceError(
+            "External execution evidence "
+            "exists without durable intent"
+        )
+
+    intent = deepcopy(new_intent)
+
+    try:
+        validate_negative_sale_order_intent(
+            intent
+        )
+    except NegativeSaleOrderIntentError as exc:
+        raise NegativeSaleLivePersistenceError(
+            "New correction intent is "
+            f"invalid: {exc}"
+        ) from exc
+
+    if int(intent["leg_id"]) != int(
+        leg.id
+    ):
+        raise NegativeSaleLivePersistenceError(
+            "Correction intent leg_id "
+            "mismatch"
+        )
+
+    execution_round = int(
+        intent["execution_round"]
+    )
+
+    if execution_round <= 0:
+        raise NegativeSaleLivePersistenceError(
+            "Correction execution_round "
+            "must be positive"
+        )
+
+    category = str(
+        intent.get("category")
+        or ""
+    ).strip().lower()
+
+    if category != "spot":
+        raise NegativeSaleLivePersistenceError(
+            "New correction intent must be "
+            "a spot order"
+        )
+
+    existing_audit = (
+        deepcopy(
+            leg.mock_execution_json
+        )
+        if isinstance(
+            leg.mock_execution_json,
+            dict,
+        )
+        else {}
+    )
+
+    history = (
+        validated_terminal_intent_history(
+            existing_audit
+        )
+    )
+
+    if history:
+        raise NegativeSaleLivePersistenceError(
+            "Intent history exists without "
+            "an active durable intent"
+        )
+
+    target_cash = _decimal(
+        intent.get(
+            "target_cash_usdt"
+        ),
+        field_name="target_cash_usdt",
+    )
+    target_qty = _decimal(
+        intent.get(
+            "normalized_qty"
+        ),
+        field_name="normalized_qty",
+    )
+
+    if (
+        target_cash <= ZERO
+        or target_qty <= ZERO
+    ):
+        raise NegativeSaleLivePersistenceError(
+            "Correction target cash and qty "
+            "must be positive"
+        )
+
+    leg.target_cash_usdt = target_cash
+    leg.target_qty = target_qty
+    leg.expected_cash_delta_usdt = (
+        target_cash
+    )
+
+    leg.strategy_id = None
+    leg.bybit_strategy_id = None
+    leg.error = None
+
+    apply_runtime_intent_to_leg(
+        leg=leg,
+        raw_intent=intent,
+        now=effective_now,
+    )
+
+    db.add(leg)
+    db.flush()
+
+    # The immutable correction intent becomes
+    # durable before any external Bybit POST.
     db.commit()
     db.refresh(leg)
 

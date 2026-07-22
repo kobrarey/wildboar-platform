@@ -311,3 +311,39 @@ def test_filled_status_with_full_execution_coverage_is_terminal():
         )
         is not None
     )
+
+
+def test_filled_status_with_overcovered_executions_stays_pending():
+    intent = _intent()
+    item = intent["suborders"][0]
+
+    item["status"] = "acknowledged"
+    item["order_id"] = "OID-1"
+
+    updated, reconciliation = (
+        confirm_prepared_suborder(
+            FilledOrderClient(
+                execution_qty="1.1"
+            ),
+            raw_intent=intent,
+            suborder_index=0,
+        )
+    )
+
+    updated_item = (
+        updated["suborders"][0]
+    )
+
+    assert (
+        reconciliation
+        .aggregate_exec_qty
+        == Decimal("1.1")
+    )
+    assert (
+        updated_item["status"]
+        == "pending_confirmation"
+    )
+    assert (
+        "terminal_at"
+        not in updated_item
+    )
