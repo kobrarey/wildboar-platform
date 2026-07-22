@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Sequence
 
 from cryptography.fernet import Fernet
+from sqlalchemy import and_, or_
 
 from app.bybit.client import BybitV5Client
 from app.config import settings
@@ -22,6 +23,9 @@ from app.settlement.accounting_service import (
 )
 from app.settlement.statuses import (
     BATCH_STATUS_NEGATIVE_NET_SALE_PLANNED,
+    BATCH_STATUS_NEGATIVE_NET_SALE_PROCESSING,
+    BATCH_STATUS_PENDING_CONFIRMATION,
+    SALE_BATCH_STATUS_SALE_EXECUTION_PROCESSING,
     SALE_BATCH_STATUS_SALE_PLAN_CREATED,
 )
 
@@ -85,6 +89,64 @@ def _candidate_query(db, *, fund_code: str | None = None):
     if fund_code:
         query = query.filter(Fund.code == str(fund_code))
     return query.order_by(FundNegativeSaleBatch.id.asc()).with_for_update(skip_locked=True)
+
+
+def _live_candidate_query(
+    db,
+    *,
+    fund_code: str | None = None,
+):
+    query = (
+        db.query(FundNegativeSaleBatch)
+        .join(
+            FundSettlementBatch,
+            FundSettlementBatch.id
+            == FundNegativeSaleBatch
+            .settlement_batch_id,
+        )
+        .join(
+            Fund,
+            Fund.id
+            == FundNegativeSaleBatch.fund_id,
+        )
+        .filter(
+            or_(
+                and_(
+                    FundNegativeSaleBatch.status
+                    == SALE_BATCH_STATUS_SALE_PLAN_CREATED,
+                    FundSettlementBatch.status
+                    == BATCH_STATUS_NEGATIVE_NET_SALE_PLANNED,
+                ),
+                and_(
+                    FundNegativeSaleBatch.status
+                    == SALE_BATCH_STATUS_SALE_EXECUTION_PROCESSING,
+                    FundSettlementBatch.status
+                    == BATCH_STATUS_NEGATIVE_NET_SALE_PROCESSING,
+                ),
+                and_(
+                    FundNegativeSaleBatch.status
+                    == SALE_BATCH_STATUS_SALE_EXECUTION_PROCESSING,
+                    FundSettlementBatch.status
+                    == BATCH_STATUS_PENDING_CONFIRMATION,
+                ),
+            )
+        )
+    )
+
+    if fund_code:
+        query = query.filter(
+            Fund.code == str(fund_code)
+        )
+
+    return (
+        query
+        .order_by(
+            FundNegativeSaleBatch.id.asc()
+        )
+        .with_for_update(
+            skip_locked=True
+        )
+    )
 
 
 def _decrypt_bybit_secret(value: str) -> str:
@@ -161,20 +223,46 @@ def process_one_batch(*, mock_path: str | Path, fund_code: str | None = None, dr
 def process_one_live_batch(*, fund_code: str | None = None) -> bool:
     db = SessionLocal()
     try:
-        sale_batch = _candidate_query(db, fund_code=fund_code).first()
+        sale_batch = (
+            _live_candidate_query(
+                db,
+                fund_code=fund_code,
+            )
+            .first()
+        )
+
         if sale_batch is None:
             db.rollback()
             return False
 
-        client = _build_fund_trading_bybit_client(
-            db,
-            fund_id=int(sale_batch.fund_id),
+        sale_batch_id = int(
+            sale_batch.id
+        )
+        fund_id = int(
+            sale_batch.fund_id
         )
 
-        result = execute_negative_sale_plan_live(
-            db,
-            sale_batch_id=int(sale_batch.id),
-            client=client,
+        # Release the candidate-selection row
+        # lock before credential loading and
+        # before the state machine can perform
+        # any Bybit HTTP request.
+        db.commit()
+
+        client = (
+            _build_fund_trading_bybit_client(
+                db,
+                fund_id=fund_id,
+            )
+        )
+
+        result = (
+            execute_negative_sale_plan_live(
+                db,
+                sale_batch_id=(
+                    sale_batch_id
+                ),
+                client=client,
+            )
         )
 
         db.commit()
