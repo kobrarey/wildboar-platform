@@ -171,6 +171,15 @@ class Settings(BaseSettings):
     NEGATIVE_NET_REQUIRE_INTERNAL_SETTLEMENT_WALLET_WHITELIST: bool = True
     BYBIT_MASTER_RECV_WINDOW_MS: int = 5000
 
+    # --- Task 3/3: negative cash delivery ---
+    NEGATIVE_NET_WITHDRAWAL_POLICY_VERSION: str = (
+        "bsc_exact_received_v1"
+    )
+    NEGATIVE_NET_WITHDRAWAL_FEE_MAX_AGE_SEC: int = 300
+    NEGATIVE_NET_BYBIT_RECORD_LOOKBACK_HOURS: int = 24
+    NEGATIVE_NET_BSC_INTENT_CONFIRMATIONS_REQUIRED: int = 12
+    NEGATIVE_NET_BSC_INTENT_MAX_PENDING_SEC: int = 3600
+
     # --- stage 23.5: negative-net settlement payout mock flow ---
     NEGATIVE_NET_PAYOUT_MOCK_ONLY: bool = True
     NEGATIVE_NET_PAYOUT_ALLOW_LIVE: bool = False

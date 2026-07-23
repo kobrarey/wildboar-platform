@@ -4,7 +4,7 @@ from decimal import Decimal
 from sqlalchemy import (
     Column, Integer, BigInteger, SmallInteger, String, Text, Boolean,
     DateTime, Date, ForeignKey, Numeric,
-    UniqueConstraint,
+    UniqueConstraint, Index,
 )
 from sqlalchemy import text as sa_text
 from sqlalchemy.dialects.postgresql import JSONB
@@ -989,6 +989,51 @@ class FundNegativeBybitFlow(Base):
     )
     settlement_wallet_address: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    withdrawal_policy_version: Mapped[str | None] = mapped_column(
+        String(64),
+        nullable=True,
+    )
+    coin_info_snapshot_json: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
+    universal_transfer_intent_json: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+    withdrawal_intent_json: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
+    universal_transfer_submitted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    withdrawal_submitted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    settlement_wallet_balance_before_usdt: Mapped[Decimal | None] = mapped_column(
+        Numeric(30, 10),
+        nullable=True,
+    )
+    settlement_wallet_balance_after_usdt: Mapped[Decimal | None] = mapped_column(
+        Numeric(30, 10),
+        nullable=True,
+    )
+
+    settlement_wallet_receipt_confirmations: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+    settlement_wallet_receipt_block_number: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+
     preflight_passed: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
     preflight_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     preflight_json: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
@@ -1337,6 +1382,222 @@ class FundNegativePayoutLeg(Base):
     settlement_wallet: Mapped["FundWallet | None"] = relationship(
         "FundWallet",
         foreign_keys=[from_settlement_wallet_id],
+    )
+
+
+class FundBscTransactionIntent(Base):
+    __tablename__ = "fund_bsc_transaction_intents"
+
+    id: Mapped[int] = mapped_column(
+        BigInteger,
+        primary_key=True,
+        autoincrement=True,
+    )
+
+    scope_key: Mapped[str] = mapped_column(
+        String(192),
+        nullable=False,
+    )
+    action_type: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+
+    settlement_batch_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "fund_settlement_batches.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    payout_batch_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "fund_negative_payout_batches.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+    payout_leg_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey(
+            "fund_negative_payout_legs.id",
+            ondelete="CASCADE",
+        ),
+        nullable=True,
+    )
+    fund_id: Mapped[int] = mapped_column(
+        Integer,
+        ForeignKey(
+            "funds.id",
+            ondelete="CASCADE",
+        ),
+        nullable=False,
+    )
+
+    asset: Mapped[str] = mapped_column(
+        String(16),
+        nullable=False,
+    )
+    amount: Mapped[Decimal] = mapped_column(
+        Numeric(38, 18),
+        nullable=False,
+    )
+
+    from_address: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+    )
+    to_address: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+    )
+
+    chain_id: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+    source_nonce: Mapped[int] = mapped_column(
+        BigInteger,
+        nullable=False,
+    )
+
+    prepared_tx_hash: Mapped[str] = mapped_column(
+        String(128),
+        nullable=False,
+    )
+    prepared_raw_tx: Mapped[str] = mapped_column(
+        Text,
+        nullable=False,
+    )
+    intent_fingerprint: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+    )
+
+    status: Mapped[str] = mapped_column(
+        String(64),
+        nullable=False,
+        server_default=sa_text("'prepared'"),
+    )
+    broadcast_attempts: Mapped[int] = mapped_column(
+        Integer,
+        nullable=False,
+        server_default=sa_text("0"),
+    )
+
+    receipt_status: Mapped[int | None] = mapped_column(
+        SmallInteger,
+        nullable=True,
+    )
+    block_number: Mapped[int | None] = mapped_column(
+        BigInteger,
+        nullable=True,
+    )
+    confirmations: Mapped[int | None] = mapped_column(
+        Integer,
+        nullable=True,
+    )
+
+    prepared_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+    )
+    broadcast_started_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    broadcast_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    visible_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    confirmed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+    failed_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        nullable=True,
+    )
+
+    prepared_json: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+    broadcast_json: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+    reconciliation_json: Mapped[dict | None] = mapped_column(
+        JSONB,
+        nullable=True,
+    )
+
+    error: Mapped[str | None] = mapped_column(
+        Text,
+        nullable=True,
+    )
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        nullable=False,
+        server_default=func.now(),
+    )
+
+    settlement_batch: Mapped["FundSettlementBatch"] = relationship(
+        "FundSettlementBatch",
+        foreign_keys=[settlement_batch_id],
+    )
+    payout_batch: Mapped["FundNegativePayoutBatch"] = relationship(
+        "FundNegativePayoutBatch",
+        foreign_keys=[payout_batch_id],
+    )
+    payout_leg: Mapped["FundNegativePayoutLeg | None"] = relationship(
+        "FundNegativePayoutLeg",
+        foreign_keys=[payout_leg_id],
+    )
+    fund: Mapped["Fund"] = relationship(
+        "Fund",
+        foreign_keys=[fund_id],
+    )
+
+    __table_args__ = (
+        UniqueConstraint(
+            "scope_key",
+            name="fund_bsc_transaction_intents_scope_key_uq",
+        ),
+        UniqueConstraint(
+            "from_address",
+            "source_nonce",
+            name="fund_bsc_transaction_intents_source_nonce_uq",
+        ),
+        UniqueConstraint(
+            "payout_leg_id",
+            name="fund_bsc_transaction_intents_payout_leg_uq",
+        ),
+        Index(
+            "idx_fund_bsc_transaction_intents_settlement_batch",
+            "settlement_batch_id",
+        ),
+        Index(
+            "idx_fund_bsc_transaction_intents_payout_batch",
+            "payout_batch_id",
+        ),
+        Index(
+            "idx_fund_bsc_transaction_intents_status_updated",
+            "status",
+            "updated_at",
+        ),
     )
 
 
