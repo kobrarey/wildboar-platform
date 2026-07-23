@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
@@ -60,6 +60,24 @@ class BscIntentError(RuntimeError):
     pass
 
 
+class BscIntentBroadcastRetryableError(
+    BscIntentError
+):
+    pass
+
+
+class BscIntentBroadcastAmbiguousError(
+    BscIntentError
+):
+    pass
+
+
+class BscIntentBroadcastPermanentError(
+    BscIntentError
+):
+    pass
+
+
 @dataclass(frozen=True)
 class PreparedBscTransaction:
     chain_id: int
@@ -80,6 +98,27 @@ class BscIntentBroadcastClaim:
     intent_id: int
     status: str
     claim_token: str | None
+    broadcast_attempts: int
+
+
+@dataclass(frozen=True)
+class BscIntentBroadcastCycleResult:
+    action: str
+    intent_id: int
+    status: str
+    tx_hash: str
+    broadcast_attempts: int
+
+
+@dataclass(frozen=True)
+class _ClaimedBscIntentBroadcast:
+    intent_id: int
+    claim_token: str
+    prepared_tx_hash: str
+    prepared_raw_tx: str = field(repr=False)
+    from_address: str
+    chain_id: int
+    source_nonce: int
     broadcast_attempts: int
 
 
@@ -1918,7 +1957,7 @@ def _prepared_transaction_is_visible(
     except TransactionNotFound:
         return False
     except Exception as exc:
-        raise BscIntentError(
+        raise BscIntentBroadcastRetryableError(
             "Cannot reconcile prepared transaction "
             f"by hash={tx_hash}: {exc}"
         ) from exc
@@ -1935,30 +1974,54 @@ def broadcast_prepared_transaction(
     chain_id: int,
     source_nonce: int,
 ) -> BroadcastBscTransactionResult:
-    tx_hash = str(
-        prepared_tx_hash or ""
-    ).strip()
-
-    if not tx_hash:
-        raise BscIntentError(
-            "Prepared transaction hash is empty"
+    try:
+        tx_hash = _normalize_prepared_tx_hash(
+            prepared_tx_hash
         )
+    except BscIntentError as exc:
+        raise BscIntentBroadcastPermanentError(
+            "Prepared transaction hash is invalid"
+        ) from exc
 
-    expected_chain_id = int(chain_id)
-    current_chain_id = int(w3.eth.chain_id)
+    try:
+        expected_chain_id = int(chain_id)
+        current_chain_id = int(w3.eth.chain_id)
+    except (TypeError, ValueError) as exc:
+        raise BscIntentBroadcastPermanentError(
+            "Prepared transaction chain id is invalid"
+        ) from exc
 
     if current_chain_id != expected_chain_id:
-        raise BscIntentError(
+        raise BscIntentBroadcastPermanentError(
             "Prepared transaction chain mismatch: "
             f"prepared_chain_id={expected_chain_id} "
             f"current_chain_id={current_chain_id}"
         )
 
-    from_checksum = _checksum(
-        w3,
-        from_address,
-    )
-    nonce = int(source_nonce)
+    try:
+        from_checksum = _checksum(
+            w3,
+            from_address,
+        )
+    except Exception as exc:
+        raise BscIntentBroadcastPermanentError(
+            "Prepared transaction source address "
+            "is invalid"
+        ) from exc
+
+    try:
+        nonce = int(source_nonce)
+    except (TypeError, ValueError) as exc:
+        raise BscIntentBroadcastPermanentError(
+            "Prepared transaction source nonce "
+            "is invalid"
+        ) from exc
+
+    if nonce < 0:
+        raise BscIntentBroadcastPermanentError(
+            "Prepared transaction source nonce "
+            "cannot be negative"
+        )
 
     if _prepared_transaction_is_visible(
         w3,
@@ -1977,23 +2040,29 @@ def broadcast_prepared_transaction(
             )
         )
     except Exception as exc:
-        raise BscIntentError(
+        raise BscIntentBroadcastRetryableError(
             "Cannot reconcile prepared transaction "
             f"nonce for hash={tx_hash}: {exc}"
         ) from exc
 
     if pending_nonce > nonce:
-        raise BscIntentError(
-            "Prepared transaction is not visible by hash, "
-            "but its source nonce may already be consumed: "
+        raise BscIntentBroadcastAmbiguousError(
+            "Prepared transaction is not visible by "
+            "hash, but its source nonce may already "
+            "be consumed: "
             f"hash={tx_hash} "
             f"source_nonce={nonce} "
             f"pending_nonce={pending_nonce}"
         )
 
-    raw_tx = _raw_transaction_bytes(
-        raw_tx_hex
-    )
+    try:
+        raw_tx = _raw_transaction_bytes(
+            raw_tx_hex
+        )
+    except BscIntentError as exc:
+        raise BscIntentBroadcastPermanentError(
+            "Prepared raw transaction is invalid"
+        ) from exc
 
     try:
         sent_hash = w3.eth.send_raw_transaction(
@@ -2005,7 +2074,9 @@ def broadcast_prepared_transaction(
             tx_hash=tx_hash,
         ):
             return BroadcastBscTransactionResult(
-                action="visible_after_broadcast_error",
+                action=(
+                    "visible_after_broadcast_error"
+                ),
                 tx_hash=tx_hash,
             )
 
@@ -2017,36 +2088,40 @@ def broadcast_prepared_transaction(
                 )
             )
         except Exception as nonce_exc:
-            raise BscIntentError(
-                "Prepared transaction broadcast outcome "
-                "is ambiguous and nonce reconciliation failed: "
+            raise BscIntentBroadcastAmbiguousError(
+                "Prepared transaction broadcast "
+                "outcome is ambiguous and nonce "
+                "reconciliation failed: "
                 f"hash={tx_hash}; "
                 f"broadcast_error={exc}; "
                 f"nonce_error={nonce_exc}"
             ) from exc
 
         if refreshed_pending_nonce > nonce:
-            raise BscIntentError(
-                "Prepared transaction broadcast outcome "
-                "is ambiguous because its nonce is consumed "
-                "but the transaction is not visible by hash: "
+            raise BscIntentBroadcastAmbiguousError(
+                "Prepared transaction broadcast "
+                "outcome is ambiguous because its "
+                "nonce is consumed but the transaction "
+                "is not visible by hash: "
                 f"hash={tx_hash} "
                 f"source_nonce={nonce} "
-                f"pending_nonce={refreshed_pending_nonce}"
+                f"pending_nonce="
+                f"{refreshed_pending_nonce}"
             ) from exc
 
-        raise BscIntentError(
-            "Prepared transaction was not broadcast and "
-            "its nonce remains available: "
+        raise BscIntentBroadcastRetryableError(
+            "Prepared transaction was not visible "
+            "after broadcast error and its nonce "
+            "remains available: "
             f"hash={tx_hash}; error={exc}"
         ) from exc
 
-    actual_tx_hash = w3.to_hex(
-        sent_hash
+    actual_tx_hash = _normalize_prepared_tx_hash(
+        w3.to_hex(sent_hash)
     )
 
-    if actual_tx_hash.lower() != tx_hash.lower():
-        raise BscIntentError(
+    if actual_tx_hash != tx_hash:
+        raise BscIntentBroadcastPermanentError(
             "Broadcast transaction hash mismatch: "
             f"prepared_hash={tx_hash} "
             f"broadcast_hash={actual_tx_hash}"
@@ -2057,6 +2132,706 @@ def broadcast_prepared_transaction(
         tx_hash=actual_tx_hash,
     )
 
+
+
+
+def _normalize_broadcast_claim_token(
+    value: Any,
+) -> str:
+    normalized = str(value or "").strip().lower()
+
+    try:
+        raw_token = bytes.fromhex(normalized)
+    except ValueError as exc:
+        raise BscIntentError(
+            "BSC broadcast claim token is not "
+            "valid hex"
+        ) from exc
+
+    if len(raw_token) != 16:
+        raise BscIntentError(
+            "BSC broadcast claim token must be "
+            "16 bytes"
+        )
+
+    return raw_token.hex()
+
+
+def _safe_broadcast_error_text(
+    error: BaseException,
+    *,
+    prepared_raw_tx: str,
+) -> str:
+    text = str(error or "").strip()
+
+    if not text:
+        text = error.__class__.__name__
+
+    raw_value = str(
+        prepared_raw_tx or ""
+    ).strip()
+
+    redaction_candidates = {
+        raw_value,
+        raw_value.removeprefix("0x"),
+    }
+
+    for candidate in sorted(
+        redaction_candidates,
+        key=len,
+        reverse=True,
+    ):
+        if candidate:
+            text = text.replace(
+                candidate,
+                "[redacted_raw_transaction]",
+            )
+
+    return text[:512]
+
+
+def _broadcast_cycle_result(
+    *,
+    action: str,
+    intent: FundBscTransactionIntent,
+) -> BscIntentBroadcastCycleResult:
+    return BscIntentBroadcastCycleResult(
+        action=str(action),
+        intent_id=int(intent.id),
+        status=str(intent.status or ""),
+        tx_hash=str(
+            intent.prepared_tx_hash or ""
+        ),
+        broadcast_attempts=(
+            _safe_broadcast_attempts(
+                intent.broadcast_attempts
+            )
+        ),
+    )
+
+
+def _load_claimed_bsc_intent_broadcast(
+    db: Session,
+    *,
+    intent_id: int,
+    claim_token: str,
+) -> tuple[
+    _ClaimedBscIntentBroadcast | None,
+    BscIntentBroadcastCycleResult | None,
+]:
+    normalized_claim_token = (
+        _normalize_broadcast_claim_token(
+            claim_token
+        )
+    )
+
+    intent = _load_bsc_intent_for_update(
+        db,
+        intent_id=intent_id,
+    )
+
+    _validate_persisted_bsc_intent_or_fail(
+        db,
+        intent=intent,
+    )
+
+    status = str(intent.status or "").strip()
+    attempts = _safe_broadcast_attempts(
+        intent.broadcast_attempts
+    )
+
+    completed_statuses = {
+        BSC_INTENT_STATUS_BROADCAST,
+        BSC_INTENT_STATUS_VISIBLE,
+        BSC_INTENT_STATUS_PENDING_CONFIRMATION,
+        BSC_INTENT_STATUS_CONFIRMED,
+        BSC_INTENT_STATUS_FAILED_REQUIRES_REVIEW,
+    }
+
+    if status in completed_statuses:
+        db.commit()
+        db.refresh(intent)
+
+        return (
+            None,
+            _broadcast_cycle_result(
+                action=f"status_{status}",
+                intent=intent,
+            ),
+        )
+
+    if status != BSC_INTENT_STATUS_BROADCASTING:
+        _mark_bsc_intent_operational_failure(
+            db,
+            intent=intent,
+            reason_code=(
+                "unexpected_status_before_external_broadcast"
+            ),
+            evidence={
+                "status": status,
+            },
+        )
+
+        raise BscIntentError(
+            "Unexpected BSC intent status before "
+            "external broadcast: "
+            f"intent_id={intent.id} "
+            f"status={status or 'empty'}"
+        )
+
+    broadcast_json = (
+        dict(intent.broadcast_json)
+        if isinstance(intent.broadcast_json, dict)
+        else {}
+    )
+
+    phase = str(
+        broadcast_json.get("phase") or ""
+    ).strip()
+
+    if phase != "attempt_claimed":
+        db.commit()
+        db.refresh(intent)
+
+        raise BscIntentError(
+            "BSC transaction intent has no active "
+            "broadcast claim: "
+            f"intent_id={intent.id}"
+        )
+
+    try:
+        stored_claim_token = (
+            _normalize_broadcast_claim_token(
+                broadcast_json.get(
+                    "claim_token"
+                )
+            )
+        )
+    except BscIntentError as exc:
+        _mark_bsc_intent_operational_failure(
+            db,
+            intent=intent,
+            reason_code=(
+                "invalid_persisted_broadcast_claim_token"
+            ),
+            evidence={
+                "phase": phase,
+            },
+        )
+
+        raise BscIntentError(
+            "Persisted BSC broadcast claim token "
+            "is invalid: "
+            f"intent_id={intent.id}"
+        ) from exc
+
+    if stored_claim_token != normalized_claim_token:
+        db.commit()
+        db.refresh(intent)
+
+        raise BscIntentError(
+            "BSC broadcast claim token mismatch: "
+            f"intent_id={intent.id}"
+        )
+
+    snapshot = _ClaimedBscIntentBroadcast(
+        intent_id=int(intent.id),
+        claim_token=normalized_claim_token,
+        prepared_tx_hash=str(
+            intent.prepared_tx_hash
+        ),
+        prepared_raw_tx=str(
+            intent.prepared_raw_tx
+        ),
+        from_address=str(
+            intent.from_address
+        ),
+        chain_id=int(intent.chain_id),
+        source_nonce=int(intent.source_nonce),
+        broadcast_attempts=attempts,
+    )
+
+    # No database lock may remain held during RPC.
+    db.commit()
+    db.refresh(intent)
+
+    return snapshot, None
+
+
+def _claim_still_owned(
+    intent: FundBscTransactionIntent,
+    *,
+    claim_token: str,
+) -> bool:
+    broadcast_json = (
+        dict(intent.broadcast_json)
+        if isinstance(intent.broadcast_json, dict)
+        else {}
+    )
+
+    if (
+        str(
+            broadcast_json.get("phase") or ""
+        ).strip()
+        != "attempt_claimed"
+    ):
+        return False
+
+    try:
+        stored_claim_token = (
+            _normalize_broadcast_claim_token(
+                broadcast_json.get(
+                    "claim_token"
+                )
+            )
+        )
+    except BscIntentError:
+        return False
+
+    return stored_claim_token == claim_token
+
+
+def _persist_bsc_intent_broadcast_success(
+    db: Session,
+    *,
+    snapshot: _ClaimedBscIntentBroadcast,
+    result: BroadcastBscTransactionResult,
+    now: datetime | None = None,
+) -> BscIntentBroadcastCycleResult:
+    normalized_result_hash = (
+        _normalize_prepared_tx_hash(
+            result.tx_hash
+        )
+    )
+    normalized_prepared_hash = (
+        _normalize_prepared_tx_hash(
+            snapshot.prepared_tx_hash
+        )
+    )
+
+    if normalized_result_hash != normalized_prepared_hash:
+        raise BscIntentBroadcastPermanentError(
+            "Persisted broadcast result hash does "
+            "not match claimed prepared hash"
+        )
+
+    allowed_actions = {
+        "broadcast",
+        "already_visible",
+        "visible_after_broadcast_error",
+    }
+
+    if result.action not in allowed_actions:
+        raise BscIntentBroadcastPermanentError(
+            "Unsupported BSC broadcast result action"
+        )
+
+    intent = _load_bsc_intent_for_update(
+        db,
+        intent_id=snapshot.intent_id,
+    )
+
+    _validate_persisted_bsc_intent_or_fail(
+        db,
+        intent=intent,
+    )
+
+    status = str(intent.status or "").strip()
+
+    later_statuses = {
+        BSC_INTENT_STATUS_BROADCAST,
+        BSC_INTENT_STATUS_VISIBLE,
+        BSC_INTENT_STATUS_PENDING_CONFIRMATION,
+        BSC_INTENT_STATUS_CONFIRMED,
+    }
+
+    if status in later_statuses:
+        stored_hash = _normalize_prepared_tx_hash(
+            intent.prepared_tx_hash
+        )
+
+        if stored_hash != normalized_result_hash:
+            _mark_bsc_intent_operational_failure(
+                db,
+                intent=intent,
+                reason_code=(
+                    "later_status_transaction_hash_mismatch"
+                ),
+                evidence={
+                    "status": status,
+                    "stored_tx_hash": stored_hash,
+                    "result_tx_hash": (
+                        normalized_result_hash
+                    ),
+                },
+            )
+
+            raise BscIntentError(
+                "Later BSC intent status contains "
+                "another transaction hash"
+            )
+
+        db.commit()
+        db.refresh(intent)
+
+        return _broadcast_cycle_result(
+            action=f"status_{status}",
+            intent=intent,
+        )
+
+    if (
+        status
+        == BSC_INTENT_STATUS_FAILED_REQUIRES_REVIEW
+    ):
+        db.commit()
+        db.refresh(intent)
+
+        return _broadcast_cycle_result(
+            action=(
+                "status_failed_requires_review"
+            ),
+            intent=intent,
+        )
+
+    if status != BSC_INTENT_STATUS_BROADCASTING:
+        _mark_bsc_intent_operational_failure(
+            db,
+            intent=intent,
+            reason_code=(
+                "unexpected_status_after_external_broadcast"
+            ),
+            evidence={
+                "status": status,
+            },
+        )
+
+        raise BscIntentError(
+            "Unexpected BSC intent status after "
+            "external broadcast: "
+            f"intent_id={intent.id}"
+        )
+
+    if not _claim_still_owned(
+        intent,
+        claim_token=snapshot.claim_token,
+    ):
+        db.commit()
+        db.refresh(intent)
+
+        return _broadcast_cycle_result(
+            action="claim_lost_after_external",
+            intent=intent,
+        )
+
+    result_at = (
+        now.astimezone(timezone.utc)
+        if now is not None
+        else utcnow()
+    )
+
+    prior_broadcast_json = (
+        dict(intent.broadcast_json)
+        if isinstance(intent.broadcast_json, dict)
+        else {}
+    )
+
+    if result.action == "broadcast":
+        intent.status = (
+            BSC_INTENT_STATUS_BROADCAST
+        )
+        intent.broadcast_at = (
+            intent.broadcast_at or result_at
+        )
+    else:
+        intent.status = BSC_INTENT_STATUS_VISIBLE
+        intent.visible_at = (
+            intent.visible_at or result_at
+        )
+
+        if (
+            result.action
+            == "visible_after_broadcast_error"
+        ):
+            intent.broadcast_at = (
+                intent.broadcast_at or result_at
+            )
+
+    intent.updated_at = result_at
+    intent.error = None
+    intent.broadcast_json = {
+        "schema": (
+            "fund_bsc_transaction_intent_broadcast_v1"
+        ),
+        "phase": "result_persisted",
+        "intent_id": int(intent.id),
+        "scope_key": str(intent.scope_key),
+        "intent_fingerprint": str(
+            intent.intent_fingerprint
+        ),
+        "prepared_tx_hash": (
+            normalized_prepared_hash
+        ),
+        "result_action": str(result.action),
+        "result_tx_hash": normalized_result_hash,
+        "broadcast_attempts": (
+            _safe_broadcast_attempts(
+                intent.broadcast_attempts
+            )
+        ),
+        "claimed_at": (
+            prior_broadcast_json.get(
+                "claimed_at"
+            )
+        ),
+        "result_persisted_at": (
+            result_at.isoformat()
+        ),
+    }
+
+    _commit_and_refresh_bsc_intent(
+        db,
+        intent=intent,
+    )
+
+    return _broadcast_cycle_result(
+        action=str(result.action),
+        intent=intent,
+    )
+
+
+def _persist_bsc_intent_broadcast_failure(
+    db: Session,
+    *,
+    snapshot: _ClaimedBscIntentBroadcast,
+    error: BaseException,
+    review_required: bool,
+    reason_code: str,
+    now: datetime | None = None,
+) -> BscIntentBroadcastCycleResult:
+    intent = _load_bsc_intent_for_update(
+        db,
+        intent_id=snapshot.intent_id,
+    )
+
+    _validate_persisted_bsc_intent_or_fail(
+        db,
+        intent=intent,
+    )
+
+    status = str(intent.status or "").strip()
+
+    if status != BSC_INTENT_STATUS_BROADCASTING:
+        db.commit()
+        db.refresh(intent)
+
+        return _broadcast_cycle_result(
+            action=f"status_{status}",
+            intent=intent,
+        )
+
+    if not _claim_still_owned(
+        intent,
+        claim_token=snapshot.claim_token,
+    ):
+        db.commit()
+        db.refresh(intent)
+
+        return _broadcast_cycle_result(
+            action="claim_lost_after_external",
+            intent=intent,
+        )
+
+    safe_error = _safe_broadcast_error_text(
+        error,
+        prepared_raw_tx=(
+            snapshot.prepared_raw_tx
+        ),
+    )
+
+    if review_required:
+        _mark_bsc_intent_operational_failure(
+            db,
+            intent=intent,
+            reason_code=reason_code,
+            evidence={
+                "error_type": (
+                    error.__class__.__name__
+                ),
+                "error": safe_error,
+                "prepared_tx_hash": str(
+                    intent.prepared_tx_hash
+                ),
+                "broadcast_attempts": (
+                    _safe_broadcast_attempts(
+                        intent.broadcast_attempts
+                    )
+                ),
+            },
+        )
+
+        return _broadcast_cycle_result(
+            action=(
+                "failed_requires_review"
+            ),
+            intent=intent,
+        )
+
+    failure_at = (
+        now.astimezone(timezone.utc)
+        if now is not None
+        else utcnow()
+    )
+
+    intent.status = (
+        BSC_INTENT_STATUS_BROADCASTING
+    )
+    intent.updated_at = failure_at
+    intent.error = safe_error
+    intent.broadcast_json = {
+        "schema": (
+            "fund_bsc_transaction_intent_broadcast_v1"
+        ),
+        "phase": (
+            "retryable_reconciliation_required"
+        ),
+        "intent_id": int(intent.id),
+        "scope_key": str(intent.scope_key),
+        "intent_fingerprint": str(
+            intent.intent_fingerprint
+        ),
+        "prepared_tx_hash": str(
+            intent.prepared_tx_hash
+        ),
+        "error_type": (
+            error.__class__.__name__
+        ),
+        "error": safe_error,
+        "broadcast_attempts": (
+            _safe_broadcast_attempts(
+                intent.broadcast_attempts
+            )
+        ),
+        "failed_at": failure_at.isoformat(),
+    }
+
+    _commit_and_refresh_bsc_intent(
+        db,
+        intent=intent,
+    )
+
+    return _broadcast_cycle_result(
+        action="retryable_error",
+        intent=intent,
+    )
+
+
+def execute_claimed_bsc_intent_broadcast(
+    db: Session,
+    w3: Web3,
+    *,
+    intent_id: int,
+    claim_token: str,
+    now: datetime | None = None,
+) -> BscIntentBroadcastCycleResult:
+    snapshot, completed_result = (
+        _load_claimed_bsc_intent_broadcast(
+            db,
+            intent_id=intent_id,
+            claim_token=claim_token,
+        )
+    )
+
+    if completed_result is not None:
+        return completed_result
+
+    if snapshot is None:
+        raise BscIntentError(
+            "BSC broadcast snapshot is missing"
+        )
+
+    try:
+        # Exactly one helper invocation and at most
+        # one send_raw_transaction in this cycle.
+        broadcast_result = (
+            broadcast_prepared_transaction(
+                w3,
+                prepared_tx_hash=(
+                    snapshot.prepared_tx_hash
+                ),
+                raw_tx_hex=(
+                    snapshot.prepared_raw_tx
+                ),
+                from_address=(
+                    snapshot.from_address
+                ),
+                chain_id=snapshot.chain_id,
+                source_nonce=(
+                    snapshot.source_nonce
+                ),
+            )
+        )
+    except BscIntentBroadcastRetryableError as exc:
+        return _persist_bsc_intent_broadcast_failure(
+            db,
+            snapshot=snapshot,
+            error=exc,
+            review_required=False,
+            reason_code=(
+                "retryable_broadcast_reconciliation_error"
+            ),
+            now=now,
+        )
+    except BscIntentBroadcastAmbiguousError as exc:
+        return _persist_bsc_intent_broadcast_failure(
+            db,
+            snapshot=snapshot,
+            error=exc,
+            review_required=True,
+            reason_code=(
+                "ambiguous_broadcast_outcome"
+            ),
+            now=now,
+        )
+    except BscIntentBroadcastPermanentError as exc:
+        return _persist_bsc_intent_broadcast_failure(
+            db,
+            snapshot=snapshot,
+            error=exc,
+            review_required=True,
+            reason_code=(
+                "permanent_broadcast_contract_error"
+            ),
+            now=now,
+        )
+    except BscIntentError as exc:
+        return _persist_bsc_intent_broadcast_failure(
+            db,
+            snapshot=snapshot,
+            error=exc,
+            review_required=True,
+            reason_code=(
+                "unexpected_bsc_intent_error"
+            ),
+            now=now,
+        )
+    except Exception as exc:
+        return _persist_bsc_intent_broadcast_failure(
+            db,
+            snapshot=snapshot,
+            error=exc,
+            review_required=True,
+            reason_code=(
+                "unexpected_broadcast_exception"
+            ),
+            now=now,
+        )
+
+    return _persist_bsc_intent_broadcast_success(
+        db,
+        snapshot=snapshot,
+        result=broadcast_result,
+        now=now,
+    )
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
