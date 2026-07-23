@@ -22,6 +22,12 @@ from app.models import (
 
 ZERO = Decimal("0")
 
+SENSITIVE_AUDIT_FIELDS = frozenset(
+    {
+        "prepared_raw_tx",
+    }
+)
+
 
 class NegativeExternalStateError(RuntimeError):
     pass
@@ -86,6 +92,21 @@ def _audit_value(value: Any) -> Any:
         return f"{text[:256]}..."
 
     return text
+
+
+def _audit_field_value(
+    *,
+    field_name: str,
+    value: Any,
+) -> Any:
+    if field_name in SENSITIVE_AUDIT_FIELDS:
+        return (
+            "redacted_present"
+            if _present(value)
+            else None
+        )
+
+    return _audit_value(value)
 
 
 def _is_earn_leg(leg: FundNegativeSaleLeg) -> bool:
@@ -242,7 +263,10 @@ def inspect_negative_external_state(
             "model": model,
             "row_id": row_id,
             "field": field,
-            "value": _audit_value(value),
+            "value": _audit_field_value(
+                field_name=field,
+                value=value,
+            ),
         }
 
         if evidence_item not in evidence:

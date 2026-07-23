@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import hashlib
+import json
+
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from decimal import Decimal
@@ -12,6 +15,7 @@ from web3.exceptions import TransactionNotFound
 from app.config import settings
 from app.models import FundSettlementTransfer
 from app.settlement.statuses import (
+    BSC_INTENT_ACTION_TYPES,
     TRANSFER_STATUS_CONFIRMED,
     TRANSFER_STATUS_PREPARED,
     TRANSFER_STATUS_PROCESSING,
@@ -51,6 +55,323 @@ class PreparedBscTransaction:
 class BroadcastBscTransactionResult:
     action: str
     tx_hash: str
+
+
+def _positive_intent_id(
+    value: Any,
+    *,
+    field_name: str,
+) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError) as exc:
+        raise BscIntentError(
+            f"{field_name} must be an integer"
+        ) from exc
+
+    if normalized <= 0:
+        raise BscIntentError(
+            f"{field_name} must be positive"
+        )
+
+    return normalized
+
+
+def _optional_positive_intent_id(
+    value: Any,
+    *,
+    field_name: str,
+) -> int | None:
+    if value is None:
+        return None
+
+    return _positive_intent_id(
+        value,
+        field_name=field_name,
+    )
+
+
+def _canonical_intent_amount(value: Any) -> str:
+    if isinstance(value, float):
+        raise BscIntentError(
+            "Float BSC intent amount is forbidden"
+        )
+
+    try:
+        amount = Decimal(str(value))
+    except Exception as exc:
+        raise BscIntentError(
+            "BSC intent amount is invalid"
+        ) from exc
+
+    if not amount.is_finite():
+        raise BscIntentError(
+            "BSC intent amount must be finite"
+        )
+
+    if amount <= 0:
+        raise BscIntentError(
+            "BSC intent amount must be positive"
+        )
+
+    return format(amount.normalize(), "f")
+
+
+def _normalize_intent_scope_key(value: Any) -> str:
+    normalized = str(value or "").strip()
+
+    if not normalized:
+        raise BscIntentError(
+            "BSC intent scope_key is empty"
+        )
+
+    if len(normalized) > 192:
+        raise BscIntentError(
+            "BSC intent scope_key is too long"
+        )
+
+    return normalized
+
+
+def _normalize_intent_action_type(value: Any) -> str:
+    normalized = str(value or "").strip()
+
+    if normalized not in BSC_INTENT_ACTION_TYPES:
+        raise BscIntentError(
+            "Unsupported BSC intent action_type"
+        )
+
+    return normalized
+
+
+def _normalize_intent_asset(value: Any) -> str:
+    normalized = str(value or "").strip().upper()
+
+    if not normalized:
+        raise BscIntentError(
+            "BSC intent asset is empty"
+        )
+
+    if len(normalized) > 16:
+        raise BscIntentError(
+            "BSC intent asset is too long"
+        )
+
+    return normalized
+
+
+def _normalize_intent_address(
+    value: Any,
+    *,
+    field_name: str,
+) -> str:
+    normalized = str(value or "").strip().lower()
+
+    if not normalized:
+        raise BscIntentError(
+            f"{field_name} is empty"
+        )
+
+    if len(normalized) > 128:
+        raise BscIntentError(
+            f"{field_name} is too long"
+        )
+
+    return normalized
+
+
+def _normalize_prepared_tx_hash(value: Any) -> str:
+    normalized = str(value or "").strip()
+    hex_value = (
+        normalized[2:]
+        if normalized.lower().startswith("0x")
+        else normalized
+    )
+
+    try:
+        raw_hash = bytes.fromhex(hex_value)
+    except ValueError as exc:
+        raise BscIntentError(
+            "Prepared transaction hash is not valid hex"
+        ) from exc
+
+    if len(raw_hash) != 32:
+        raise BscIntentError(
+            "Prepared transaction hash must be 32 bytes"
+        )
+
+    return f"0x{raw_hash.hex()}"
+
+
+def _bsc_intent_fingerprint_payload(
+    *,
+    scope_key: str,
+    action_type: str,
+    settlement_batch_id: int,
+    payout_batch_id: int,
+    payout_leg_id: int | None,
+    fund_id: int,
+    asset: str,
+    amount: Decimal,
+    from_address: str,
+    to_address: str,
+    prepared: PreparedBscTransaction,
+) -> dict[str, Any]:
+    chain_id = int(prepared.chain_id)
+    source_nonce = int(prepared.source_nonce)
+
+    if chain_id <= 0:
+        raise BscIntentError(
+            "BSC intent chain_id must be positive"
+        )
+
+    if source_nonce < 0:
+        raise BscIntentError(
+            "BSC intent source_nonce cannot be negative"
+        )
+
+    raw_transaction = _raw_transaction_bytes(
+        prepared.raw_tx_hex
+    )
+
+    return {
+        "schema": (
+            "fund_bsc_transaction_intent_fingerprint_v1"
+        ),
+        "scope_key": _normalize_intent_scope_key(
+            scope_key
+        ),
+        "action_type": _normalize_intent_action_type(
+            action_type
+        ),
+        "settlement_batch_id": _positive_intent_id(
+            settlement_batch_id,
+            field_name="settlement_batch_id",
+        ),
+        "payout_batch_id": _positive_intent_id(
+            payout_batch_id,
+            field_name="payout_batch_id",
+        ),
+        "payout_leg_id": _optional_positive_intent_id(
+            payout_leg_id,
+            field_name="payout_leg_id",
+        ),
+        "fund_id": _positive_intent_id(
+            fund_id,
+            field_name="fund_id",
+        ),
+        "asset": _normalize_intent_asset(asset),
+        "amount": _canonical_intent_amount(amount),
+        "from_address": _normalize_intent_address(
+            from_address,
+            field_name="from_address",
+        ),
+        "to_address": _normalize_intent_address(
+            to_address,
+            field_name="to_address",
+        ),
+        "chain_id": chain_id,
+        "source_nonce": source_nonce,
+        "prepared_tx_hash": (
+            _normalize_prepared_tx_hash(
+                prepared.tx_hash
+            )
+        ),
+        "raw_transaction_sha256": hashlib.sha256(
+            raw_transaction
+        ).hexdigest(),
+    }
+
+
+def build_bsc_intent_fingerprint(
+    *,
+    scope_key: str,
+    action_type: str,
+    settlement_batch_id: int,
+    payout_batch_id: int,
+    payout_leg_id: int | None,
+    fund_id: int,
+    asset: str,
+    amount: Decimal,
+    from_address: str,
+    to_address: str,
+    prepared: PreparedBscTransaction,
+) -> str:
+    payload = _bsc_intent_fingerprint_payload(
+        scope_key=scope_key,
+        action_type=action_type,
+        settlement_batch_id=settlement_batch_id,
+        payout_batch_id=payout_batch_id,
+        payout_leg_id=payout_leg_id,
+        fund_id=fund_id,
+        asset=asset,
+        amount=amount,
+        from_address=from_address,
+        to_address=to_address,
+        prepared=prepared,
+    )
+
+    canonical_json = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+
+    return hashlib.sha256(
+        canonical_json.encode("utf-8")
+    ).hexdigest()
+
+
+def build_bsc_intent_safe_audit(
+    *,
+    scope_key: str,
+    action_type: str,
+    settlement_batch_id: int,
+    payout_batch_id: int,
+    payout_leg_id: int | None,
+    fund_id: int,
+    asset: str,
+    amount: Decimal,
+    from_address: str,
+    to_address: str,
+    prepared: PreparedBscTransaction,
+) -> dict[str, Any]:
+    payload = _bsc_intent_fingerprint_payload(
+        scope_key=scope_key,
+        action_type=action_type,
+        settlement_batch_id=settlement_batch_id,
+        payout_batch_id=payout_batch_id,
+        payout_leg_id=payout_leg_id,
+        fund_id=fund_id,
+        asset=asset,
+        amount=amount,
+        from_address=from_address,
+        to_address=to_address,
+        prepared=prepared,
+    )
+
+    return {
+        **payload,
+        "schema": "fund_bsc_transaction_intent_audit_v1",
+        "intent_fingerprint": (
+            build_bsc_intent_fingerprint(
+                scope_key=scope_key,
+                action_type=action_type,
+                settlement_batch_id=(
+                    settlement_batch_id
+                ),
+                payout_batch_id=payout_batch_id,
+                payout_leg_id=payout_leg_id,
+                fund_id=fund_id,
+                asset=asset,
+                amount=amount,
+                from_address=from_address,
+                to_address=to_address,
+                prepared=prepared,
+            )
+        ),
+    }
 
 
 def _normalize_private_key(private_key: str) -> str:
