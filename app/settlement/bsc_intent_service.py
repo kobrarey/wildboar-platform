@@ -8,14 +8,25 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
+from sqlalchemy import text as sa_text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from web3 import Web3
 from web3.exceptions import TransactionNotFound
 
 from app.config import settings
-from app.models import FundSettlementTransfer
+from app.models import (
+    FundBscTransactionIntent,
+    FundSettlementTransfer,
+)
 from app.settlement.statuses import (
+    BSC_INTENT_ACTION_NEGATIVE_REDEEM_PAYOUT,
+    BSC_INTENT_ACTION_NEGATIVE_SETTLEMENT_GAS_TOPUP,
     BSC_INTENT_ACTION_TYPES,
+    BSC_INTENT_STATUS_FAILED_REQUIRES_REVIEW,
+    BSC_INTENT_STATUS_PREPARED,
+    BSC_INTENT_TERMINAL_STATUSES,
+    BSC_INTENT_UNRESOLVED_STATUSES,
     TRANSFER_STATUS_CONFIRMED,
     TRANSFER_STATUS_PREPARED,
     TRANSFER_STATUS_PROCESSING,
@@ -600,6 +611,749 @@ def _raw_transaction_bytes(
         raise BscIntentError(
             "Prepared raw transaction is not valid hex"
         ) from exc
+
+
+def _normalized_prepared_transaction(
+    prepared: PreparedBscTransaction,
+) -> PreparedBscTransaction:
+    try:
+        chain_id = int(prepared.chain_id)
+    except (TypeError, ValueError) as exc:
+        raise BscIntentError(
+            "BSC intent chain_id must be an integer"
+        ) from exc
+
+    try:
+        source_nonce = int(prepared.source_nonce)
+    except (TypeError, ValueError) as exc:
+        raise BscIntentError(
+            "BSC intent source_nonce must be an integer"
+        ) from exc
+
+    if chain_id <= 0:
+        raise BscIntentError(
+            "BSC intent chain_id must be positive"
+        )
+
+    if source_nonce < 0:
+        raise BscIntentError(
+            "BSC intent source_nonce cannot be negative"
+        )
+
+    raw_transaction = _raw_transaction_bytes(
+        prepared.raw_tx_hex
+    )
+
+    return PreparedBscTransaction(
+        chain_id=chain_id,
+        source_nonce=source_nonce,
+        tx_hash=_normalize_prepared_tx_hash(
+            prepared.tx_hash
+        ),
+        raw_tx_hex=f"0x{raw_transaction.hex()}",
+    )
+
+
+def _validate_bsc_intent_action_contract(
+    *,
+    action_type: str,
+    asset: str,
+    payout_leg_id: int | None,
+) -> None:
+    if (
+        action_type
+        == BSC_INTENT_ACTION_NEGATIVE_SETTLEMENT_GAS_TOPUP
+    ):
+        if asset != "BNB":
+            raise BscIntentError(
+                "Negative settlement gas top-up "
+                "intent must use BNB"
+            )
+
+        if payout_leg_id is not None:
+            raise BscIntentError(
+                "Negative settlement gas top-up "
+                "intent cannot reference payout_leg_id"
+            )
+
+        return
+
+    if (
+        action_type
+        == BSC_INTENT_ACTION_NEGATIVE_REDEEM_PAYOUT
+    ):
+        if asset != "USDT":
+            raise BscIntentError(
+                "Negative redeem payout intent "
+                "must use USDT"
+            )
+
+        if payout_leg_id is None:
+            raise BscIntentError(
+                "Negative redeem payout intent "
+                "requires payout_leg_id"
+            )
+
+        return
+
+    raise BscIntentError(
+        "Unsupported BSC intent action_type"
+    )
+
+
+def _validated_prepared_intent_contract(
+    *,
+    scope_key: str,
+    action_type: str,
+    settlement_batch_id: int,
+    payout_batch_id: int,
+    payout_leg_id: int | None,
+    fund_id: int,
+    asset: str,
+    amount: Decimal,
+    from_address: str,
+    to_address: str,
+    prepared: PreparedBscTransaction,
+) -> dict[str, Any]:
+    normalized_scope_key = (
+        _normalize_intent_scope_key(scope_key)
+    )
+    normalized_action_type = (
+        _normalize_intent_action_type(action_type)
+    )
+    normalized_settlement_batch_id = (
+        _positive_intent_id(
+            settlement_batch_id,
+            field_name="settlement_batch_id",
+        )
+    )
+    normalized_payout_batch_id = (
+        _positive_intent_id(
+            payout_batch_id,
+            field_name="payout_batch_id",
+        )
+    )
+    normalized_payout_leg_id = (
+        _optional_positive_intent_id(
+            payout_leg_id,
+            field_name="payout_leg_id",
+        )
+    )
+    normalized_fund_id = _positive_intent_id(
+        fund_id,
+        field_name="fund_id",
+    )
+    normalized_asset = _normalize_intent_asset(
+        asset
+    )
+    normalized_amount = Decimal(
+        _canonical_intent_amount(amount)
+    )
+    normalized_from_address = (
+        _normalize_intent_address(
+            from_address,
+            field_name="from_address",
+        )
+    )
+    normalized_to_address = (
+        _normalize_intent_address(
+            to_address,
+            field_name="to_address",
+        )
+    )
+    normalized_prepared = (
+        _normalized_prepared_transaction(prepared)
+    )
+
+    _validate_bsc_intent_action_contract(
+        action_type=normalized_action_type,
+        asset=normalized_asset,
+        payout_leg_id=normalized_payout_leg_id,
+    )
+
+    intent_fingerprint = (
+        build_bsc_intent_fingerprint(
+            scope_key=normalized_scope_key,
+            action_type=normalized_action_type,
+            settlement_batch_id=(
+                normalized_settlement_batch_id
+            ),
+            payout_batch_id=(
+                normalized_payout_batch_id
+            ),
+            payout_leg_id=normalized_payout_leg_id,
+            fund_id=normalized_fund_id,
+            asset=normalized_asset,
+            amount=normalized_amount,
+            from_address=normalized_from_address,
+            to_address=normalized_to_address,
+            prepared=normalized_prepared,
+        )
+    )
+
+    prepared_audit = build_bsc_intent_safe_audit(
+        scope_key=normalized_scope_key,
+        action_type=normalized_action_type,
+        settlement_batch_id=(
+            normalized_settlement_batch_id
+        ),
+        payout_batch_id=normalized_payout_batch_id,
+        payout_leg_id=normalized_payout_leg_id,
+        fund_id=normalized_fund_id,
+        asset=normalized_asset,
+        amount=normalized_amount,
+        from_address=normalized_from_address,
+        to_address=normalized_to_address,
+        prepared=normalized_prepared,
+    )
+
+    return {
+        "scope_key": normalized_scope_key,
+        "action_type": normalized_action_type,
+        "settlement_batch_id": (
+            normalized_settlement_batch_id
+        ),
+        "payout_batch_id": normalized_payout_batch_id,
+        "payout_leg_id": normalized_payout_leg_id,
+        "fund_id": normalized_fund_id,
+        "asset": normalized_asset,
+        "amount": normalized_amount,
+        "from_address": normalized_from_address,
+        "to_address": normalized_to_address,
+        "prepared": normalized_prepared,
+        "intent_fingerprint": intent_fingerprint,
+        "prepared_audit": prepared_audit,
+    }
+
+
+def _source_advisory_lock_key(
+    from_address: str,
+) -> int:
+    normalized_address = _normalize_intent_address(
+        from_address,
+        field_name="from_address",
+    )
+
+    digest = hashlib.sha256(
+        (
+            "fund-bsc-transaction-intent-source:"
+            f"{normalized_address}"
+        ).encode("utf-8")
+    ).digest()
+
+    unsigned_value = int.from_bytes(
+        digest[:8],
+        byteorder="big",
+        signed=False,
+    )
+
+    if unsigned_value >= (1 << 63):
+        return unsigned_value - (1 << 64)
+
+    return unsigned_value
+
+
+def _acquire_source_transaction_lock(
+    db: Session,
+    *,
+    from_address: str,
+) -> int:
+    lock_key = _source_advisory_lock_key(
+        from_address
+    )
+
+    db.execute(
+        sa_text(
+            "SELECT pg_advisory_xact_lock(:lock_key)"
+        ),
+        {
+            "lock_key": lock_key,
+        },
+    )
+
+    return lock_key
+
+
+def prepared_transaction_from_intent(
+    intent: FundBscTransactionIntent,
+) -> PreparedBscTransaction:
+    return _normalized_prepared_transaction(
+        PreparedBscTransaction(
+            chain_id=int(intent.chain_id),
+            source_nonce=int(intent.source_nonce),
+            tx_hash=str(intent.prepared_tx_hash or ""),
+            raw_tx_hex=str(intent.prepared_raw_tx or ""),
+        )
+    )
+
+
+def _safe_int_or_none(value: Any) -> int | None:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _safe_decimal_or_none(
+    value: Any,
+) -> Decimal | None:
+    try:
+        normalized = Decimal(str(value))
+    except Exception:
+        return None
+
+    if not normalized.is_finite():
+        return None
+
+    return normalized
+
+
+def _existing_intent_mismatch_fields(
+    *,
+    existing: FundBscTransactionIntent,
+    contract: dict[str, Any],
+) -> list[str]:
+    mismatch_fields: list[str] = []
+
+    scalar_comparisons = (
+        (
+            "scope_key",
+            str(existing.scope_key or "").strip(),
+            contract["scope_key"],
+        ),
+        (
+            "action_type",
+            str(existing.action_type or "").strip(),
+            contract["action_type"],
+        ),
+        (
+            "settlement_batch_id",
+            _safe_int_or_none(
+                existing.settlement_batch_id
+            ),
+            contract["settlement_batch_id"],
+        ),
+        (
+            "payout_batch_id",
+            _safe_int_or_none(
+                existing.payout_batch_id
+            ),
+            contract["payout_batch_id"],
+        ),
+        (
+            "payout_leg_id",
+            _safe_int_or_none(
+                existing.payout_leg_id
+            ),
+            contract["payout_leg_id"],
+        ),
+        (
+            "fund_id",
+            _safe_int_or_none(existing.fund_id),
+            contract["fund_id"],
+        ),
+        (
+            "asset",
+            str(existing.asset or "").strip().upper(),
+            contract["asset"],
+        ),
+        (
+            "amount",
+            _safe_decimal_or_none(existing.amount),
+            contract["amount"],
+        ),
+        (
+            "from_address",
+            str(
+                existing.from_address or ""
+            ).strip().lower(),
+            contract["from_address"],
+        ),
+        (
+            "to_address",
+            str(
+                existing.to_address or ""
+            ).strip().lower(),
+            contract["to_address"],
+        ),
+        (
+            "chain_id",
+            _safe_int_or_none(existing.chain_id),
+            contract["prepared"].chain_id,
+        ),
+        (
+            "source_nonce",
+            _safe_int_or_none(existing.source_nonce),
+            contract["prepared"].source_nonce,
+        ),
+    )
+
+    for (
+        field_name,
+        stored_value,
+        requested_value,
+    ) in scalar_comparisons:
+        if stored_value != requested_value:
+            mismatch_fields.append(field_name)
+
+    try:
+        existing_hash = _normalize_prepared_tx_hash(
+            existing.prepared_tx_hash
+        )
+    except BscIntentError:
+        existing_hash = None
+
+    if (
+        existing_hash
+        != contract["prepared"].tx_hash
+    ):
+        mismatch_fields.append(
+            "prepared_tx_hash"
+        )
+
+    try:
+        existing_raw_sha256 = hashlib.sha256(
+            _raw_transaction_bytes(
+                existing.prepared_raw_tx
+            )
+        ).hexdigest()
+    except BscIntentError:
+        existing_raw_sha256 = None
+
+    if (
+        existing_raw_sha256
+        != contract["prepared_audit"][
+            "raw_transaction_sha256"
+        ]
+    ):
+        mismatch_fields.append(
+            "prepared_raw_tx"
+        )
+
+    if (
+        str(
+            existing.intent_fingerprint or ""
+        ).strip()
+        != contract["intent_fingerprint"]
+    ):
+        mismatch_fields.append(
+            "intent_fingerprint"
+        )
+
+    stored_audit = existing.prepared_json
+
+    if not isinstance(stored_audit, dict):
+        mismatch_fields.append(
+            "prepared_json"
+        )
+    else:
+        for key, expected_value in (
+            contract["prepared_audit"].items()
+        ):
+            if stored_audit.get(key) != expected_value:
+                mismatch_fields.append(
+                    f"prepared_json.{key}"
+                )
+
+    known_statuses = (
+        BSC_INTENT_UNRESOLVED_STATUSES
+        | BSC_INTENT_TERMINAL_STATUSES
+    )
+
+    if (
+        str(existing.status or "").strip()
+        not in known_statuses
+    ):
+        mismatch_fields.append("status")
+
+    return sorted(set(mismatch_fields))
+
+
+def _mark_intent_failed_requires_review(
+    db: Session,
+    *,
+    intent: FundBscTransactionIntent,
+    reason_code: str,
+    mismatch_fields: list[str],
+    requested_fingerprint: str,
+) -> FundBscTransactionIntent:
+    now = utcnow()
+
+    intent.status = (
+        BSC_INTENT_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    intent.failed_at = intent.failed_at or now
+    intent.updated_at = now
+    intent.error = (
+        "Immutable BSC transaction intent "
+        "contract mismatch"
+    )
+    intent.reconciliation_json = {
+        "schema": (
+            "fund_bsc_transaction_intent_failure_v1"
+        ),
+        "reason_code": reason_code,
+        "scope_key": str(intent.scope_key or ""),
+        "intent_id": (
+            int(intent.id)
+            if intent.id is not None
+            else None
+        ),
+        "mismatch_fields": list(
+            sorted(set(mismatch_fields))
+        ),
+        "stored_fingerprint": str(
+            intent.intent_fingerprint or ""
+        ),
+        "requested_fingerprint": (
+            requested_fingerprint
+        ),
+    }
+
+    db.add(intent)
+    db.commit()
+    db.refresh(intent)
+
+    return intent
+
+
+def _rollback_and_raise_intent_error(
+    db: Session,
+    message: str,
+) -> None:
+    db.rollback()
+    raise BscIntentError(message)
+
+
+def persist_prepared_bsc_intent(
+    db: Session,
+    *,
+    scope_key: str,
+    action_type: str,
+    settlement_batch_id: int,
+    payout_batch_id: int,
+    payout_leg_id: int | None,
+    fund_id: int,
+    asset: str,
+    amount: Decimal,
+    from_address: str,
+    to_address: str,
+    prepared: PreparedBscTransaction,
+) -> FundBscTransactionIntent:
+    contract = _validated_prepared_intent_contract(
+        scope_key=scope_key,
+        action_type=action_type,
+        settlement_batch_id=settlement_batch_id,
+        payout_batch_id=payout_batch_id,
+        payout_leg_id=payout_leg_id,
+        fund_id=fund_id,
+        asset=asset,
+        amount=amount,
+        from_address=from_address,
+        to_address=to_address,
+        prepared=prepared,
+    )
+
+    _acquire_source_transaction_lock(
+        db,
+        from_address=contract["from_address"],
+    )
+
+    existing = (
+        db.query(FundBscTransactionIntent)
+        .filter(
+            FundBscTransactionIntent.scope_key
+            == contract["scope_key"]
+        )
+        .with_for_update()
+        .first()
+    )
+
+    if existing is not None:
+        mismatch_fields = (
+            _existing_intent_mismatch_fields(
+                existing=existing,
+                contract=contract,
+            )
+        )
+
+        if mismatch_fields:
+            _mark_intent_failed_requires_review(
+                db,
+                intent=existing,
+                reason_code=(
+                    "immutable_contract_mismatch"
+                ),
+                mismatch_fields=mismatch_fields,
+                requested_fingerprint=(
+                    contract["intent_fingerprint"]
+                ),
+            )
+
+            raise BscIntentError(
+                "Immutable BSC transaction intent "
+                "contract mismatch: "
+                f"scope_key={contract['scope_key']}"
+            )
+
+        if (
+            existing.status
+            == BSC_INTENT_STATUS_FAILED_REQUIRES_REVIEW
+        ):
+            db.commit()
+            db.refresh(existing)
+
+            raise BscIntentError(
+                "BSC transaction intent is already "
+                "failed_requires_review: "
+                f"scope_key={contract['scope_key']}"
+            )
+
+        # Idempotent query-before-create path.
+        # Commit releases pg_advisory_xact_lock.
+        db.commit()
+        db.refresh(existing)
+
+        return existing
+
+    unresolved_source_intent = (
+        db.query(FundBscTransactionIntent)
+        .filter(
+            FundBscTransactionIntent.from_address
+            == contract["from_address"]
+        )
+        .filter(
+            FundBscTransactionIntent.status.in_(
+                sorted(
+                    BSC_INTENT_UNRESOLVED_STATUSES
+                )
+            )
+        )
+        .order_by(
+            FundBscTransactionIntent.id.asc()
+        )
+        .with_for_update()
+        .first()
+    )
+
+    if unresolved_source_intent is not None:
+        _rollback_and_raise_intent_error(
+            db,
+            (
+                "Another unresolved BSC transaction "
+                "intent already exists for source: "
+                f"source={contract['from_address']} "
+                f"intent_id={unresolved_source_intent.id}"
+            ),
+        )
+
+    nonce_owner = (
+        db.query(FundBscTransactionIntent)
+        .filter(
+            FundBscTransactionIntent.from_address
+            == contract["from_address"]
+        )
+        .filter(
+            FundBscTransactionIntent.source_nonce
+            == contract["prepared"].source_nonce
+        )
+        .with_for_update()
+        .first()
+    )
+
+    if nonce_owner is not None:
+        _rollback_and_raise_intent_error(
+            db,
+            (
+                "BSC source nonce is already owned "
+                "by another durable intent: "
+                f"intent_id={nonce_owner.id}"
+            ),
+        )
+
+    if contract["payout_leg_id"] is not None:
+        payout_leg_owner = (
+            db.query(FundBscTransactionIntent)
+            .filter(
+                FundBscTransactionIntent.payout_leg_id
+                == contract["payout_leg_id"]
+            )
+            .with_for_update()
+            .first()
+        )
+
+        if payout_leg_owner is not None:
+            _rollback_and_raise_intent_error(
+                db,
+                (
+                    "Payout leg already has a durable "
+                    "BSC transaction intent: "
+                    f"intent_id={payout_leg_owner.id}"
+                ),
+            )
+
+    now = utcnow()
+
+    intent = FundBscTransactionIntent(
+        scope_key=contract["scope_key"],
+        action_type=contract["action_type"],
+        settlement_batch_id=(
+            contract["settlement_batch_id"]
+        ),
+        payout_batch_id=(
+            contract["payout_batch_id"]
+        ),
+        payout_leg_id=contract["payout_leg_id"],
+        fund_id=contract["fund_id"],
+        asset=contract["asset"],
+        amount=contract["amount"],
+        from_address=contract["from_address"],
+        to_address=contract["to_address"],
+        chain_id=contract["prepared"].chain_id,
+        source_nonce=(
+            contract["prepared"].source_nonce
+        ),
+        prepared_tx_hash=(
+            contract["prepared"].tx_hash
+        ),
+        prepared_raw_tx=(
+            contract["prepared"].raw_tx_hex
+        ),
+        intent_fingerprint=(
+            contract["intent_fingerprint"]
+        ),
+        status=BSC_INTENT_STATUS_PREPARED,
+        broadcast_attempts=0,
+        prepared_at=now,
+        prepared_json={
+            **contract["prepared_audit"],
+            "durable_boundary": (
+                "prepared_before_broadcast"
+            ),
+        },
+        error=None,
+        created_at=now,
+        updated_at=now,
+    )
+
+    try:
+        db.add(intent)
+        db.flush()
+        db.commit()
+    except IntegrityError as exc:
+        db.rollback()
+
+        raise BscIntentError(
+            "BSC transaction intent uniqueness "
+            "conflict during durable prepare"
+        ) from exc
+    except Exception:
+        db.rollback()
+        raise
+
+    db.refresh(intent)
+
+    return intent
 
 
 def _prepared_transaction_is_visible(
