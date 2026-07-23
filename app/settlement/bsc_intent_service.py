@@ -4,9 +4,10 @@ import hashlib
 import json
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy import text as sa_text
 from sqlalchemy.exc import IntegrityError
@@ -23,8 +24,13 @@ from app.settlement.statuses import (
     BSC_INTENT_ACTION_NEGATIVE_REDEEM_PAYOUT,
     BSC_INTENT_ACTION_NEGATIVE_SETTLEMENT_GAS_TOPUP,
     BSC_INTENT_ACTION_TYPES,
+    BSC_INTENT_STATUS_BROADCAST,
+    BSC_INTENT_STATUS_BROADCASTING,
+    BSC_INTENT_STATUS_CONFIRMED,
     BSC_INTENT_STATUS_FAILED_REQUIRES_REVIEW,
+    BSC_INTENT_STATUS_PENDING_CONFIRMATION,
     BSC_INTENT_STATUS_PREPARED,
+    BSC_INTENT_STATUS_VISIBLE,
     BSC_INTENT_TERMINAL_STATUSES,
     BSC_INTENT_UNRESOLVED_STATUSES,
     TRANSFER_STATUS_CONFIRMED,
@@ -66,6 +72,15 @@ class PreparedBscTransaction:
 class BroadcastBscTransactionResult:
     action: str
     tx_hash: str
+
+
+@dataclass(frozen=True)
+class BscIntentBroadcastClaim:
+    action: str
+    intent_id: int
+    status: str
+    claim_token: str | None
+    broadcast_attempts: int
 
 
 def _positive_intent_id(
@@ -1354,6 +1369,541 @@ def persist_prepared_bsc_intent(
     db.refresh(intent)
 
     return intent
+
+
+def _persisted_bsc_intent_contract(
+    intent: FundBscTransactionIntent,
+) -> dict[str, Any]:
+    prepared = prepared_transaction_from_intent(
+        intent
+    )
+
+    return _validated_prepared_intent_contract(
+        scope_key=str(intent.scope_key or ""),
+        action_type=str(intent.action_type or ""),
+        settlement_batch_id=(
+            intent.settlement_batch_id
+        ),
+        payout_batch_id=intent.payout_batch_id,
+        payout_leg_id=intent.payout_leg_id,
+        fund_id=intent.fund_id,
+        asset=str(intent.asset or ""),
+        amount=intent.amount,
+        from_address=str(
+            intent.from_address or ""
+        ),
+        to_address=str(intent.to_address or ""),
+        prepared=prepared,
+    )
+
+
+def _validate_persisted_bsc_intent_or_fail(
+    db: Session,
+    *,
+    intent: FundBscTransactionIntent,
+) -> dict[str, Any]:
+    try:
+        contract = _persisted_bsc_intent_contract(
+            intent
+        )
+    except BscIntentError as exc:
+        _mark_intent_failed_requires_review(
+            db,
+            intent=intent,
+            reason_code="stored_contract_invalid",
+            mismatch_fields=["stored_contract"],
+            requested_fingerprint=str(
+                intent.intent_fingerprint or ""
+            ),
+        )
+
+        raise BscIntentError(
+            "Persisted BSC transaction intent "
+            "contract is invalid: "
+            f"intent_id={intent.id}"
+        ) from exc
+
+    mismatch_fields = (
+        _existing_intent_mismatch_fields(
+            existing=intent,
+            contract=contract,
+        )
+    )
+
+    if mismatch_fields:
+        _mark_intent_failed_requires_review(
+            db,
+            intent=intent,
+            reason_code=(
+                "persisted_contract_mismatch"
+            ),
+            mismatch_fields=mismatch_fields,
+            requested_fingerprint=(
+                contract["intent_fingerprint"]
+            ),
+        )
+
+        raise BscIntentError(
+            "Persisted BSC transaction intent "
+            "contract mismatch: "
+            f"intent_id={intent.id}"
+        )
+
+    return contract
+
+
+def _load_bsc_intent_for_update(
+    db: Session,
+    *,
+    intent_id: int,
+) -> FundBscTransactionIntent:
+    normalized_intent_id = _positive_intent_id(
+        intent_id,
+        field_name="intent_id",
+    )
+
+    intent = (
+        db.query(FundBscTransactionIntent)
+        .filter(
+            FundBscTransactionIntent.id
+            == normalized_intent_id
+        )
+        .with_for_update()
+        .first()
+    )
+
+    if intent is None:
+        db.rollback()
+
+        raise BscIntentError(
+            "BSC transaction intent not found: "
+            f"intent_id={normalized_intent_id}"
+        )
+
+    _acquire_source_transaction_lock(
+        db,
+        from_address=str(
+            intent.from_address or ""
+        ),
+    )
+
+    return intent
+
+
+def _commit_and_refresh_bsc_intent(
+    db: Session,
+    *,
+    intent: FundBscTransactionIntent,
+) -> FundBscTransactionIntent:
+    db.add(intent)
+    db.commit()
+    db.refresh(intent)
+
+    return intent
+
+
+def _safe_broadcast_attempts(
+    value: Any,
+) -> int:
+    try:
+        attempts = int(value or 0)
+    except (TypeError, ValueError) as exc:
+        raise BscIntentError(
+            "BSC intent broadcast_attempts "
+            "must be an integer"
+        ) from exc
+
+    if attempts < 0:
+        raise BscIntentError(
+            "BSC intent broadcast_attempts "
+            "cannot be negative"
+        )
+
+    return attempts
+
+
+def _parse_claimed_at(
+    value: Any,
+) -> datetime | None:
+    text = str(value or "").strip()
+
+    if not text:
+        return None
+
+    try:
+        parsed = datetime.fromisoformat(
+            text.replace("Z", "+00:00")
+        )
+    except ValueError:
+        return None
+
+    if parsed.tzinfo is None:
+        return None
+
+    return parsed.astimezone(timezone.utc)
+
+
+def _broadcast_claim_timeout() -> timedelta:
+    try:
+        seconds = int(
+            settings
+            .NEGATIVE_NET_BSC_INTENT_MAX_PENDING_SEC
+        )
+    except (TypeError, ValueError) as exc:
+        raise BscIntentError(
+            "NEGATIVE_NET_BSC_INTENT_MAX_PENDING_SEC "
+            "must be an integer"
+        ) from exc
+
+    if seconds <= 0:
+        raise BscIntentError(
+            "NEGATIVE_NET_BSC_INTENT_MAX_PENDING_SEC "
+            "must be positive"
+        )
+
+    return timedelta(seconds=seconds)
+
+
+def _mark_bsc_intent_operational_failure(
+    db: Session,
+    *,
+    intent: FundBscTransactionIntent,
+    reason_code: str,
+    evidence: dict[str, Any] | None = None,
+) -> FundBscTransactionIntent:
+    now = utcnow()
+
+    intent.status = (
+        BSC_INTENT_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    intent.failed_at = intent.failed_at or now
+    intent.updated_at = now
+    intent.error = (
+        "BSC transaction intent operational "
+        f"failure: {reason_code}"
+    )
+    intent.reconciliation_json = {
+        "schema": (
+            "fund_bsc_transaction_intent_failure_v1"
+        ),
+        "reason_code": str(reason_code),
+        "intent_id": (
+            int(intent.id)
+            if intent.id is not None
+            else None
+        ),
+        "scope_key": str(
+            intent.scope_key or ""
+        ),
+        "intent_fingerprint": str(
+            intent.intent_fingerprint or ""
+        ),
+        "evidence": dict(evidence or {}),
+    }
+
+    return _commit_and_refresh_bsc_intent(
+        db,
+        intent=intent,
+    )
+
+
+def mark_bsc_intent_broadcasting(
+    db: Session,
+    *,
+    intent_id: int,
+    now: datetime | None = None,
+) -> FundBscTransactionIntent:
+    intent = _load_bsc_intent_for_update(
+        db,
+        intent_id=intent_id,
+    )
+
+    _validate_persisted_bsc_intent_or_fail(
+        db,
+        intent=intent,
+    )
+
+    status = str(intent.status or "").strip()
+
+    if (
+        status
+        == BSC_INTENT_STATUS_FAILED_REQUIRES_REVIEW
+    ):
+        db.commit()
+        db.refresh(intent)
+
+        raise BscIntentError(
+            "BSC transaction intent is "
+            "failed_requires_review: "
+            f"intent_id={intent.id}"
+        )
+
+    idempotent_statuses = {
+        BSC_INTENT_STATUS_BROADCASTING,
+        BSC_INTENT_STATUS_BROADCAST,
+        BSC_INTENT_STATUS_VISIBLE,
+        BSC_INTENT_STATUS_PENDING_CONFIRMATION,
+        BSC_INTENT_STATUS_CONFIRMED,
+    }
+
+    if status in idempotent_statuses:
+        db.commit()
+        db.refresh(intent)
+
+        return intent
+
+    if status != BSC_INTENT_STATUS_PREPARED:
+        _mark_bsc_intent_operational_failure(
+            db,
+            intent=intent,
+            reason_code=(
+                "unexpected_status_before_broadcasting"
+            ),
+            evidence={
+                "status": status,
+            },
+        )
+
+        raise BscIntentError(
+            "Unexpected BSC intent status before "
+            "broadcasting: "
+            f"intent_id={intent.id} "
+            f"status={status or 'empty'}"
+        )
+
+    transition_at = (
+        now.astimezone(timezone.utc)
+        if now is not None
+        else utcnow()
+    )
+
+    attempts = _safe_broadcast_attempts(
+        intent.broadcast_attempts
+    )
+
+    intent.status = (
+        BSC_INTENT_STATUS_BROADCASTING
+    )
+    intent.broadcast_started_at = (
+        intent.broadcast_started_at
+        or transition_at
+    )
+    intent.updated_at = transition_at
+    intent.error = None
+    intent.broadcast_json = {
+        "schema": (
+            "fund_bsc_transaction_intent_broadcast_v1"
+        ),
+        "phase": "ready_for_broadcast",
+        "intent_id": int(intent.id),
+        "scope_key": str(intent.scope_key),
+        "intent_fingerprint": str(
+            intent.intent_fingerprint
+        ),
+        "prepared_tx_hash": str(
+            intent.prepared_tx_hash
+        ),
+        "marked_at": transition_at.isoformat(),
+        "broadcast_attempts": attempts,
+    }
+
+    return _commit_and_refresh_bsc_intent(
+        db,
+        intent=intent,
+    )
+
+
+def claim_bsc_intent_broadcast_attempt(
+    db: Session,
+    *,
+    intent_id: int,
+    now: datetime | None = None,
+) -> BscIntentBroadcastClaim:
+    intent = _load_bsc_intent_for_update(
+        db,
+        intent_id=intent_id,
+    )
+
+    _validate_persisted_bsc_intent_or_fail(
+        db,
+        intent=intent,
+    )
+
+    status = str(intent.status or "").strip()
+    attempts = _safe_broadcast_attempts(
+        intent.broadcast_attempts
+    )
+
+    if (
+        status
+        == BSC_INTENT_STATUS_FAILED_REQUIRES_REVIEW
+    ):
+        db.commit()
+        db.refresh(intent)
+
+        raise BscIntentError(
+            "BSC transaction intent is "
+            "failed_requires_review: "
+            f"intent_id={intent.id}"
+        )
+
+    if status == BSC_INTENT_STATUS_PREPARED:
+        db.commit()
+        db.refresh(intent)
+
+        raise BscIntentError(
+            "BSC transaction intent must first be "
+            "marked broadcasting: "
+            f"intent_id={intent.id}"
+        )
+
+    terminal_or_later_statuses = {
+        BSC_INTENT_STATUS_BROADCAST,
+        BSC_INTENT_STATUS_VISIBLE,
+        BSC_INTENT_STATUS_PENDING_CONFIRMATION,
+        BSC_INTENT_STATUS_CONFIRMED,
+    }
+
+    if status in terminal_or_later_statuses:
+        db.commit()
+        db.refresh(intent)
+
+        return BscIntentBroadcastClaim(
+            action=f"status_{status}",
+            intent_id=int(intent.id),
+            status=status,
+            claim_token=None,
+            broadcast_attempts=attempts,
+        )
+
+    if status != BSC_INTENT_STATUS_BROADCASTING:
+        _mark_bsc_intent_operational_failure(
+            db,
+            intent=intent,
+            reason_code=(
+                "unexpected_status_before_broadcast_claim"
+            ),
+            evidence={
+                "status": status,
+            },
+        )
+
+        raise BscIntentError(
+            "Unexpected BSC intent status before "
+            "broadcast claim: "
+            f"intent_id={intent.id} "
+            f"status={status or 'empty'}"
+        )
+
+    claim_at = (
+        now.astimezone(timezone.utc)
+        if now is not None
+        else utcnow()
+    )
+    timeout = _broadcast_claim_timeout()
+
+    broadcast_json = (
+        dict(intent.broadcast_json)
+        if isinstance(intent.broadcast_json, dict)
+        else {}
+    )
+
+    phase = str(
+        broadcast_json.get("phase") or ""
+    ).strip()
+    existing_claim_token = str(
+        broadcast_json.get("claim_token") or ""
+    ).strip()
+    existing_claimed_at = _parse_claimed_at(
+        broadcast_json.get("claimed_at")
+    )
+
+    if phase == "attempt_claimed":
+        if (
+            not existing_claim_token
+            or existing_claimed_at is None
+        ):
+            _mark_bsc_intent_operational_failure(
+                db,
+                intent=intent,
+                reason_code=(
+                    "invalid_active_broadcast_claim"
+                ),
+                evidence={
+                    "has_claim_token": bool(
+                        existing_claim_token
+                    ),
+                    "has_claimed_at": (
+                        existing_claimed_at
+                        is not None
+                    ),
+                },
+            )
+
+            raise BscIntentError(
+                "Active BSC broadcast claim "
+                "metadata is invalid: "
+                f"intent_id={intent.id}"
+            )
+
+        claim_age = (
+            claim_at - existing_claimed_at
+        )
+
+        if claim_age < timeout:
+            db.commit()
+            db.refresh(intent)
+
+            return BscIntentBroadcastClaim(
+                action="claim_already_active",
+                intent_id=int(intent.id),
+                status=status,
+                claim_token=None,
+                broadcast_attempts=attempts,
+            )
+
+    new_claim_token = uuid4().hex
+    new_attempts = attempts + 1
+
+    intent.broadcast_attempts = new_attempts
+    intent.updated_at = claim_at
+    intent.error = None
+    intent.broadcast_json = {
+        "schema": (
+            "fund_bsc_transaction_intent_broadcast_v1"
+        ),
+        "phase": "attempt_claimed",
+        "intent_id": int(intent.id),
+        "scope_key": str(intent.scope_key),
+        "intent_fingerprint": str(
+            intent.intent_fingerprint
+        ),
+        "prepared_tx_hash": str(
+            intent.prepared_tx_hash
+        ),
+        "claim_token": new_claim_token,
+        "claimed_at": claim_at.isoformat(),
+        "broadcast_attempts": new_attempts,
+        "previous_claim_was_stale": bool(
+            phase == "attempt_claimed"
+        ),
+        "claim_timeout_sec": int(
+            timeout.total_seconds()
+        ),
+    }
+
+    _commit_and_refresh_bsc_intent(
+        db,
+        intent=intent,
+    )
+
+    return BscIntentBroadcastClaim(
+        action="claim_created",
+        intent_id=int(intent.id),
+        status=str(intent.status),
+        claim_token=new_claim_token,
+        broadcast_attempts=new_attempts,
+    )
 
 
 def _prepared_transaction_is_visible(
