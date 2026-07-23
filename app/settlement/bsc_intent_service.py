@@ -1501,17 +1501,16 @@ def _load_bsc_intent_for_update(
         field_name="intent_id",
     )
 
-    intent = (
+    candidate = (
         db.query(FundBscTransactionIntent)
         .filter(
             FundBscTransactionIntent.id
             == normalized_intent_id
         )
-        .with_for_update()
         .first()
     )
 
-    if intent is None:
+    if candidate is None:
         db.rollback()
 
         raise BscIntentError(
@@ -1519,12 +1518,102 @@ def _load_bsc_intent_for_update(
             f"intent_id={normalized_intent_id}"
         )
 
+    try:
+        candidate_source = (
+            _normalize_intent_address(
+                candidate.from_address,
+                field_name="from_address",
+            )
+        )
+    except BscIntentError as exc:
+        db.rollback()
+
+        raise BscIntentError(
+            "BSC transaction intent contains an "
+            "invalid source address before lock: "
+            f"intent_id={normalized_intent_id}"
+        ) from exc
+
+    # Lock order must match durable prepare:
+    # source advisory lock before row FOR UPDATE.
     _acquire_source_transaction_lock(
         db,
-        from_address=str(
-            intent.from_address or ""
-        ),
+        from_address=candidate_source,
     )
+
+    locked_query = (
+        db.query(FundBscTransactionIntent)
+        .filter(
+            FundBscTransactionIntent.id
+            == normalized_intent_id
+        )
+        .with_for_update()
+    )
+
+    # SQLAlchemy identity map may otherwise return
+    # attributes captured before advisory lock.
+    populate_existing = getattr(
+        locked_query,
+        "populate_existing",
+        None,
+    )
+
+    if callable(populate_existing):
+        locked_query = populate_existing()
+
+    intent = locked_query.first()
+
+    if intent is None:
+        db.rollback()
+
+        raise BscIntentError(
+            "BSC transaction intent disappeared "
+            "during lock acquisition: "
+            f"intent_id={normalized_intent_id}"
+        )
+
+    try:
+        locked_source = _normalize_intent_address(
+            intent.from_address,
+            field_name="from_address",
+        )
+    except BscIntentError as exc:
+        _mark_intent_failed_requires_review(
+            db,
+            intent=intent,
+            reason_code=(
+                "invalid_source_after_lock_acquisition"
+            ),
+            mismatch_fields=["from_address"],
+            requested_fingerprint=str(
+                intent.intent_fingerprint or ""
+            ),
+        )
+
+        raise BscIntentError(
+            "Locked BSC transaction intent contains "
+            "an invalid source address: "
+            f"intent_id={normalized_intent_id}"
+        ) from exc
+
+    if locked_source != candidate_source:
+        _mark_intent_failed_requires_review(
+            db,
+            intent=intent,
+            reason_code=(
+                "source_changed_during_lock_acquisition"
+            ),
+            mismatch_fields=["from_address"],
+            requested_fingerprint=str(
+                intent.intent_fingerprint or ""
+            ),
+        )
+
+        raise BscIntentError(
+            "BSC transaction intent source changed "
+            "during lock acquisition: "
+            f"intent_id={normalized_intent_id}"
+        )
 
     return intent
 
