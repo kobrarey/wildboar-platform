@@ -248,6 +248,82 @@ def test_only_first_actionable_leg_runs(
     )
 
 
+def test_pre_submit_revalidation_failure_requires_review(
+    monkeypatch,
+):
+    (
+        sale_batch,
+        settlement_batch,
+        legs,
+    ) = _objects()
+
+    called: list[int] = []
+
+    def failed_revalidation(
+        db,
+        *,
+        client,
+        sale_batch,
+        settlement_batch,
+        leg,
+        execution_round,
+        now,
+    ):
+        called.append(int(leg.id))
+
+        raise (
+            service
+            .NegativeSalePreSubmitRevalidationError(
+                "Instrument qtyStep changed"
+            )
+        )
+
+    monkeypatch.setattr(
+        service,
+        "resume_live_leg_once",
+        failed_revalidation,
+    )
+
+    result = (
+        service
+        .resume_negative_sale_order_batch_once(
+            object(),
+            client=object(),
+            sale_batch=sale_batch,
+            settlement_batch=(
+                settlement_batch
+            ),
+            legs=legs,
+        )
+    )
+
+    assert called == [20]
+
+    assert result.action == (
+        "review_required"
+    )
+    assert result.reason == (
+        "pre_submit_revalidation_failed"
+    )
+    assert result.active_leg_id == 20
+    assert result.posted is False
+    assert (
+        result.has_pending_action
+        is False
+    )
+    assert result.requires_review is True
+
+    assert result.leg_step[
+        "error_type"
+    ] == "pre_submit_revalidation"
+    assert result.leg_step[
+        "no_operation_guard"
+    ] is True
+    assert result.leg_step[
+        "no_order_post"
+    ] is True
+
+
 def test_active_first_leg_blocks_second(
     monkeypatch,
 ):

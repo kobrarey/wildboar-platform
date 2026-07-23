@@ -347,3 +347,101 @@ def test_executor_commits_before_state_machine_http(
         result.settlement_status_after
         == BATCH_STATUS_NEGATIVE_NET_SALE_PROCESSING
     )
+
+
+def test_pre_submit_revalidation_failure_persists_failed_requires_review(
+    monkeypatch,
+):
+    (
+        sale_batch,
+        settlement_batch,
+        fund,
+        legs,
+    ) = _objects()
+
+    db = FakeDB()
+
+    monkeypatch.setattr(
+        execution,
+        "prepare_negative_sale_live_execution",
+        lambda *args, **kwargs: (
+            sale_batch,
+            settlement_batch,
+            fund,
+            legs,
+            "sale_execution_processing",
+            "negative_net_sale_processing",
+        ),
+    )
+
+    monkeypatch.setattr(
+        execution,
+        "resume_negative_sale_balance_refresh_once",
+        lambda *args, **kwargs: None,
+    )
+
+    monkeypatch.setattr(
+        execution,
+        "resume_negative_sale_earn_once",
+        lambda *args, **kwargs: None,
+    )
+
+    def failed_revalidation_step(
+        db_arg,
+        **kwargs,
+    ):
+        assert db_arg.commits == 1
+
+        return _step(
+            action="review_required",
+            has_pending_action=False,
+            requires_review=True,
+            available=None,
+            shortage=None,
+            reason=(
+                "pre_submit_revalidation_"
+                "failed"
+            ),
+        )
+
+    monkeypatch.setattr(
+        execution,
+        "resume_negative_sale_order_batch_once",
+        failed_revalidation_step,
+    )
+
+    result = (
+        execution
+        .execute_negative_sale_plan_live(
+            db,
+            sale_batch_id=10,
+            client=object(),
+            now=NOW,
+        )
+    )
+
+    assert db.commits == 2
+
+    assert sale_batch.status == (
+        SALE_BATCH_STATUS_SALE_EXECUTION_FAILED_REQUIRES_REVIEW
+    )
+    assert settlement_batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert result.ok is False
+    assert result.status_after == (
+        SALE_BATCH_STATUS_SALE_EXECUTION_FAILED_REQUIRES_REVIEW
+    )
+    assert (
+        result.settlement_status_after
+        == BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert (
+        "pre_submit_revalidation_failed"
+        in sale_batch.error
+    )
+    assert settlement_batch.error == (
+        sale_batch.error
+    )

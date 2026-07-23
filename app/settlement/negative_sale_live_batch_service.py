@@ -37,6 +37,7 @@ from app.settlement.negative_sale_execution_types import (
 )
 from app.settlement.negative_sale_live_leg_service import (
     NegativeSaleLiveLegStepResult,
+    NegativeSalePreSubmitRevalidationError,
     resume_live_leg_once,
 )
 from app.settlement.negative_sale_live_preflight import (
@@ -1627,19 +1628,73 @@ def _resume_candidate_phase_once(
             )
         )
 
-        leg_step = resume_live_leg_once(
-            db,
-            client=client,
-            sale_batch=sale_batch,
-            settlement_batch=(
-                settlement_batch
-            ),
-            leg=leg,
-            execution_round=(
-                execution_round
-            ),
-            now=now,
-        )
+        try:
+            leg_step = resume_live_leg_once(
+                db,
+                client=client,
+                sale_batch=sale_batch,
+                settlement_batch=(
+                    settlement_batch
+                ),
+                leg=leg,
+                execution_round=(
+                    execution_round
+                ),
+                now=now,
+            )
+        except (
+            NegativeSalePreSubmitRevalidationError
+        ) as exc:
+            return NegativeSaleLiveBatchStepResult(
+                sale_batch_id=int(
+                    sale_batch.id
+                ),
+                settlement_batch_id=int(
+                    settlement_batch.id
+                ),
+                action="review_required",
+                reason=(
+                    "pre_submit_revalidation_"
+                    "failed"
+                ),
+                candidate_leg_count=(
+                    total_candidate_count
+                ),
+                active_leg_id=int(
+                    leg.id
+                ),
+                posted=False,
+                all_order_legs_terminal=False,
+                has_pending_action=False,
+                requires_review=True,
+                confirmed_available_usdt=(
+                    confirmed_available_usdt
+                ),
+                shortage_usdt=(
+                    shortage_usdt
+                ),
+                correction_decision=None,
+                transferable_balance=None,
+                leg_step={
+                    "error_type": (
+                        "pre_submit_revalidation"
+                    ),
+                    "error": str(exc),
+                    "leg_id": int(leg.id),
+                    "execution_round": int(
+                        execution_round
+                    ),
+                    "posted": False,
+                    "no_operation_guard": True,
+                    "no_order_post": True,
+                    "no_transfer": True,
+                    "no_withdrawal": True,
+                    "no_bsc_action": True,
+                    "no_accounting_finalization": (
+                        True
+                    ),
+                },
+            )
 
         has_pending = (
             _intent_has_pending_external_action(

@@ -25,6 +25,7 @@ from app.settlement.negative_sale_live_persistence import (
     persist_runtime_intent_state,
 )
 from app.settlement.negative_sale_live_preflight import (
+    NegativeSaleLivePreflight,
     NegativeSaleLivePreflightError,
     build_live_negative_sale_preflight,
 )
@@ -50,6 +51,34 @@ class NegativeSaleLiveLegServiceError(
 ):
     pass
 
+
+class NegativeSalePreSubmitRevalidationError(
+    NegativeSaleLiveLegServiceError
+):
+    pass
+
+
+SUBMIT_INSTRUMENT_CONTRACT_FIELDS = (
+    "category",
+    "symbol",
+    "status",
+    "trading",
+    "baseCoin",
+    "quoteCoin",
+    "settleCoin",
+    "contractType",
+    "qtyStep",
+    "minOrderQty",
+    "minNotionalValue",
+    "minOrderAmt",
+    "maxMarketOrderQty",
+    "maxOrderQty",
+    "basePrecision",
+    "quotePrecision",
+    "tickSize",
+    "preflight_complete",
+    "completeness_reasons",
+)
 
 ACTIVE_RUNTIME_STATUSES = {
     "submitted",
@@ -174,6 +203,253 @@ def _dict_or_empty(
         if isinstance(value, dict)
         else {}
     )
+
+
+def _normalized_optional_side(
+    value: Any,
+) -> str | None:
+    text = str(value or "").strip().lower()
+
+    if not text:
+        return None
+
+    if text in {"buy", "long"}:
+        return "Buy"
+
+    if text in {"sell", "short"}:
+        return "Sell"
+
+    raise NegativeSalePreSubmitRevalidationError(
+        "Invalid side in prepared intent: "
+        f"value={value!r}"
+    )
+
+
+def _positive_payload_qty(
+    value: Any,
+) -> Decimal:
+    if isinstance(value, bool):
+        raise NegativeSalePreSubmitRevalidationError(
+            "Prepared payload qty must not be bool"
+        )
+
+    if isinstance(value, float):
+        raise NegativeSalePreSubmitRevalidationError(
+            "Prepared payload qty must not be float"
+        )
+
+    try:
+        result = Decimal(str(value))
+    except Exception as exc:
+        raise NegativeSalePreSubmitRevalidationError(
+            "Prepared payload qty is not Decimal"
+        ) from exc
+
+    if not result.is_finite() or result <= ZERO:
+        raise NegativeSalePreSubmitRevalidationError(
+            "Prepared payload qty must be "
+            "finite and positive"
+        )
+
+    return result
+
+
+def _instrument_submit_contract(
+    snapshot: Any,
+    *,
+    source: str,
+) -> dict[str, Any]:
+    if not isinstance(snapshot, dict):
+        raise NegativeSalePreSubmitRevalidationError(
+            "Instrument snapshot is missing: "
+            f"source={source}"
+        )
+
+    return {
+        field_name: deepcopy(
+            snapshot.get(field_name)
+        )
+        for field_name
+        in SUBMIT_INSTRUMENT_CONTRACT_FIELDS
+    }
+
+
+def validate_prepared_suborder_before_submit(
+    client: BybitV5Client,
+    *,
+    intent: dict[str, Any],
+    payload: dict[str, Any],
+    now: datetime | None = None,
+) -> NegativeSaleLivePreflight:
+    effective_now = now or utcnow()
+
+    if not isinstance(intent, dict):
+        raise NegativeSalePreSubmitRevalidationError(
+            "Prepared intent must be a dict"
+        )
+
+    if not isinstance(payload, dict):
+        raise NegativeSalePreSubmitRevalidationError(
+            "Prepared payload must be a dict"
+        )
+
+    category = str(
+        payload.get("category")
+        or intent.get("category")
+        or ""
+    ).strip().lower()
+
+    symbol = str(
+        payload.get("symbol")
+        or intent.get("symbol")
+        or ""
+    ).strip().upper()
+
+    close_side = _normalized_optional_side(
+        payload.get("side")
+        or intent.get("close_side")
+    )
+
+    if close_side is None:
+        raise NegativeSalePreSubmitRevalidationError(
+            "Prepared payload close side is missing"
+        )
+
+    requested_qty = _positive_payload_qty(
+        payload.get("qty")
+    )
+
+    planned_position_idx = (
+        payload.get("positionIdx")
+        if "positionIdx" in payload
+        else intent.get("position_idx")
+    )
+
+    try:
+        live_preflight = (
+            build_live_negative_sale_preflight(
+                client,
+                category=category,
+                symbol=symbol,
+                requested_qty=requested_qty,
+                planned_position_side=(
+                    intent.get("position_side")
+                ),
+                planned_close_side=close_side,
+                planned_position_idx=(
+                    planned_position_idx
+                ),
+                captured_at=effective_now,
+            )
+        )
+    except NegativeSaleLivePreflightError as exc:
+        raise NegativeSalePreSubmitRevalidationError(
+            "Live pre-submit revalidation "
+            f"failed: {exc}"
+        ) from exc
+
+    prepared_contract = (
+        _instrument_submit_contract(
+            intent.get("instrument_snapshot"),
+            source="prepared_intent",
+        )
+    )
+    current_contract = (
+        _instrument_submit_contract(
+            live_preflight.instrument_snapshot,
+            source="live_preflight",
+        )
+    )
+
+    changed_fields = [
+        field_name
+        for field_name
+        in SUBMIT_INSTRUMENT_CONTRACT_FIELDS
+        if prepared_contract[field_name]
+        != current_contract[field_name]
+    ]
+
+    if changed_fields:
+        raise NegativeSalePreSubmitRevalidationError(
+            "Live instrument contract changed "
+            "after intent preparation: "
+            f"fields={','.join(changed_fields)}"
+        )
+
+    expected_position_side = (
+        _normalized_optional_side(
+            intent.get("position_side")
+        )
+    )
+
+    payload_reduce_only = (
+        payload.get("reduceOnly")
+        if "reduceOnly" in payload
+        else None
+    )
+    payload_market_unit = (
+        payload.get("marketUnit")
+        if "marketUnit" in payload
+        else None
+    )
+
+    mismatches: list[str] = []
+
+    if live_preflight.category != category:
+        mismatches.append("category")
+
+    if live_preflight.symbol != symbol:
+        mismatches.append("symbol")
+
+    if live_preflight.close_side != close_side:
+        mismatches.append("close_side")
+
+    if (
+        live_preflight.position_side
+        != expected_position_side
+    ):
+        mismatches.append("position_side")
+
+    if (
+        live_preflight.position_idx
+        != planned_position_idx
+    ):
+        mismatches.append("position_idx")
+
+    if (
+        live_preflight.reduce_only
+        != payload_reduce_only
+    ):
+        mismatches.append("reduce_only")
+
+    if (
+        live_preflight.market_unit
+        != payload_market_unit
+    ):
+        mismatches.append("market_unit")
+
+    if live_preflight.available_qty < requested_qty:
+        mismatches.append("available_qty")
+
+    if (
+        live_preflight.normalized_qty
+        != requested_qty
+    ):
+        mismatches.append("normalized_qty")
+
+    if live_preflight.slices != (
+        requested_qty,
+    ):
+        mismatches.append("exact_single_slice")
+
+    if mismatches:
+        raise NegativeSalePreSubmitRevalidationError(
+            "Prepared payload is no longer "
+            "exactly executable: "
+            f"fields={','.join(mismatches)}"
+        )
+
+    return live_preflight
 
 
 def _planned_requested_qty(
@@ -719,6 +995,15 @@ def submit_next_live_leg_suborder(
                 )
             )
 
+        live_submit_preflight = (
+            validate_prepared_suborder_before_submit(
+                client,
+                intent=intent,
+                payload=payload,
+                now=effective_now,
+            )
+        )
+
         require_bybit_negative_sale_order_guard(
             db,
             fund_id=int(
@@ -777,6 +1062,9 @@ def submit_next_live_leg_suborder(
                 ),
                 "exact_prepared_payload": (
                     deepcopy(payload)
+                ),
+                "live_submit_preflight": (
+                    live_submit_preflight.to_dict()
                 ),
                 "no_transfer": True,
                 "no_withdrawal": True,
