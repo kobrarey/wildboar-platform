@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.models import (
     Fund,
+    FundBscTransactionIntent,
     FundNegativeBybitFlow,
     FundNegativePayoutBatch,
     FundNegativePayoutLeg,
@@ -28,7 +29,10 @@ from app.settlement.gas_service import (
     WEI_PER_BNB,
     get_bnb_balance,
     get_web3,
-    send_native_bnb,
+)
+from app.settlement.bsc_intent_service import (
+    persist_prepared_bsc_intent,
+    prepare_native_bnb_transaction,
 )
 from app.settlement.transfer_service import _check_tx_confirmed, _send_usdt_transfer
 from app.wallets import decrypt_private_key
@@ -50,6 +54,10 @@ from app.settlement.statuses import (
     BATCH_STATUS_NEGATIVE_NET_PAYOUT_PROCESSING,
     BATCH_STATUS_NEGATIVE_NET_PAYOUTS_CONFIRMED,
     BATCH_STATUS_PAUSED_OPERATOR_ACTION_REQUIRED,
+    BSC_INTENT_ACTION_NEGATIVE_SETTLEMENT_GAS_TOPUP,
+    BSC_INTENT_STATUS_CONFIRMED,
+    BSC_INTENT_STATUS_FAILED_REQUIRES_REVIEW,
+    BSC_INTENT_UNRESOLVED_STATUSES,
     BYBIT_FLOW_STATUS_COMPLETED,
     ORDER_SIDE_REDEEM,
     ORDER_STATUS_CANCELLED,
@@ -1338,59 +1346,151 @@ def _ensure_live_settlement_wallet_gas(
     leg_count: int,
     now,
 ) -> bool:
-    """
-    Real BSC gas top-up path:
-    OK gas wallet -> fund settlement wallet.
+    settlement_address = str(
+        settlement_wallet.address
+    )
+    ok_wallet_address = str(
+        settings.FEE_WALLET_OK_ADDRESS or ""
+    ).strip()
+    ok_wallet_private_key = str(
+        settings.FEE_WALLET_OK_PRIVATE_KEY or ""
+    ).strip()
 
-    Returns True only when the settlement wallet is gas-ready.
-    Returns False when a top-up tx has been sent and is pending confirmation.
-    Does not commit.
-    """
-    settlement_address = str(settlement_wallet.address)
-    ok_wallet_address = str(settings.FEE_WALLET_OK_ADDRESS or "").strip()
-    ok_wallet_private_key = str(settings.FEE_WALLET_OK_PRIVATE_KEY or "").strip()
-
-    if not ok_wallet_address:
-        raise NegativePayoutFlowError("FEE_WALLET_OK_ADDRESS is required for live gas top-up")
-
-    if not ok_wallet_private_key:
-        raise NegativePayoutFlowError("FEE_WALLET_OK_PRIVATE_KEY is required for live gas top-up")
-
-    required_bnb = _required_bnb_for_payout_legs(w3, leg_count=leg_count)
-    bnb_before = _q18(get_bnb_balance(w3, settlement_address))
+    required_bnb = _required_bnb_for_payout_legs(
+        w3,
+        leg_count=leg_count,
+    )
+    bnb_before = _q18(
+        get_bnb_balance(
+            w3,
+            settlement_address,
+        )
+    )
 
     batch.settlement_wallet_bnb_before = bnb_before
     batch.settlement_wallet_bnb_required = required_bnb
-    batch.gas_topup_required_bnb = max(required_bnb - bnb_before, ZERO)
+    batch.gas_topup_required_bnb = max(
+        required_bnb - bnb_before,
+        ZERO,
+    )
     batch.updated_at = now
 
-    if batch.gas_topup_tx_hash:
-        if _check_tx_confirmed(w3, batch.gas_topup_tx_hash):
-            bnb_after = _q18(get_bnb_balance(w3, settlement_address))
-            batch.settlement_wallet_bnb_after = bnb_after
-            batch.gas_status = PAYOUT_GAS_STATUS_READY
-            batch.status = PAYOUT_BATCH_STATUS_GAS_READY
-            batch.gas_reconciliation_json = _json_dict(
-                {
-                    "live": True,
-                    "gas_topup_tx_hash": batch.gas_topup_tx_hash,
-                    "confirmed": True,
-                    "settlement_wallet_bnb_before": bnb_before,
-                    "settlement_wallet_bnb_after": bnb_after,
-                    "required_bnb": required_bnb,
-                    "no_duplicate_topup": True,
-                }
+    scope_key = (
+        f"negative-gas:"
+        f"{int(settlement_batch.id)}:"
+        f"{int(batch.id)}"
+    )
+
+    existing_intent = (
+        db.query(FundBscTransactionIntent)
+        .filter(
+            FundBscTransactionIntent.scope_key
+            == scope_key
+        )
+        .first()
+    )
+
+    if existing_intent is not None:
+        batch.gas_topup_tx_hash = str(
+            existing_intent.prepared_tx_hash or ""
+        )
+
+        if (
+            existing_intent.status
+            == BSC_INTENT_STATUS_CONFIRMED
+        ):
+            bnb_after = _q18(
+                get_bnb_balance(
+                    w3,
+                    settlement_address,
+                )
+            )
+
+            if bnb_after < required_bnb:
+                raise NegativePayoutFlowError(
+                    "Confirmed gas intent did not make "
+                    "settlement wallet gas-ready"
+                )
+
+            batch.settlement_wallet_bnb_after = (
+                bnb_after
+            )
+            batch.gas_status = (
+                PAYOUT_GAS_STATUS_READY
+            )
+            batch.status = (
+                PAYOUT_BATCH_STATUS_GAS_READY
+            )
+            batch.gas_reconciliation_json = (
+                _json_dict(
+                    {
+                        "live": True,
+                        "durable_intent": True,
+                        "scope_key": scope_key,
+                        "intent_id": int(
+                            existing_intent.id
+                        ),
+                        "intent_status": (
+                            existing_intent.status
+                        ),
+                        "prepared_tx_hash": (
+                            existing_intent
+                            .prepared_tx_hash
+                        ),
+                        "confirmed": True,
+                        "settlement_wallet_bnb_before": (
+                            bnb_before
+                        ),
+                        "settlement_wallet_bnb_after": (
+                            bnb_after
+                        ),
+                        "required_bnb": required_bnb,
+                    }
+                )
             )
             db.add(batch)
             db.flush()
             return True
 
-        batch.gas_status = PAYOUT_GAS_STATUS_TOPUP_REQUIRED
-        batch.status = PAYOUT_BATCH_STATUS_GAS_CHECK_PASSED
+        if (
+            existing_intent.status
+            == BSC_INTENT_STATUS_FAILED_REQUIRES_REVIEW
+        ):
+            raise NegativePayoutFlowError(
+                "Settlement gas durable intent is "
+                "failed_requires_review"
+            )
+
+        if (
+            existing_intent.status
+            not in BSC_INTENT_UNRESOLVED_STATUSES
+        ):
+            raise NegativePayoutFlowError(
+                "Unsupported settlement gas intent "
+                f"status: {existing_intent.status}"
+            )
+
+        batch.gas_status = (
+            PAYOUT_GAS_STATUS_TOPUP_REQUIRED
+        )
+        batch.status = (
+            PAYOUT_BATCH_STATUS_GAS_CHECK_PASSED
+        )
         batch.gas_reconciliation_json = _json_dict(
             {
                 "live": True,
-                "gas_topup_tx_hash": batch.gas_topup_tx_hash,
+                "durable_intent": True,
+                "scope_key": scope_key,
+                "intent_id": int(
+                    existing_intent.id
+                ),
+                "intent_status": (
+                    existing_intent.status
+                ),
+                "prepared_tx_hash": (
+                    existing_intent
+                    .prepared_tx_hash
+                ),
                 "pending_confirmation": True,
                 "no_duplicate_topup": True,
             }
@@ -1400,66 +1500,113 @@ def _ensure_live_settlement_wallet_gas(
         return False
 
     if bnb_before >= required_bnb:
-        batch.settlement_wallet_bnb_after = bnb_before
+        batch.settlement_wallet_bnb_after = (
+            bnb_before
+        )
         batch.gas_status = PAYOUT_GAS_STATUS_READY
         batch.status = PAYOUT_BATCH_STATUS_GAS_READY
         batch.gas_reconciliation_json = _json_dict(
             {
                 "live": True,
                 "gas_sufficient": True,
-                "settlement_wallet_bnb_before": bnb_before,
+                "settlement_wallet_bnb_before": (
+                    bnb_before
+                ),
                 "required_bnb": required_bnb,
                 "no_real_gas_topup_needed": True,
+                "durable_intent_not_required": True,
             }
         )
         db.add(batch)
         db.flush()
         return True
 
-    topup_amount = _q18(required_bnb - bnb_before)
-    ok_available = _q18(get_bnb_balance(w3, ok_wallet_address))
-    batch.ok_gas_wallet_bnb_available = ok_available
+    if not ok_wallet_address:
+        raise NegativePayoutFlowError(
+            "FEE_WALLET_OK_ADDRESS is required "
+            "for live gas top-up"
+        )
+
+    if not ok_wallet_private_key:
+        raise NegativePayoutFlowError(
+            "FEE_WALLET_OK_PRIVATE_KEY is required "
+            "for live gas top-up"
+        )
+
+    topup_amount = _q18(
+        required_bnb - bnb_before
+    )
+    ok_available = _q18(
+        get_bnb_balance(
+            w3,
+            ok_wallet_address,
+        )
+    )
+
+    batch.ok_gas_wallet_bnb_available = (
+        ok_available
+    )
     batch.gas_topup_amount_bnb = topup_amount
 
     if ok_available < topup_amount:
         raise NegativePayoutFlowError(
-            f"Insufficient OK gas wallet BNB: available={ok_available}, required={topup_amount}"
+            "Insufficient OK gas wallet BNB: "
+            f"available={ok_available}, "
+            f"required={topup_amount}"
         )
-
-    request_id = deterministic_settlement_gas_topup_request_id(
-        settlement_batch_id=int(settlement_batch.id),
-        payout_batch_id=int(batch.id),
-        amount_bnb=topup_amount,
-        to_address=settlement_address,
-    )
 
     try:
-        guard_decision = require_bsc_settlement_gas_topup_guard(
-            db,
-            fund_id=int(fund.id),
-            settlement_batch_id=int(settlement_batch.id),
-            request_id=request_id,
-            amount_usdt=None,
-            metadata={
-                "source": "negative_payout_flow_live",
-                "boundary": "ok_gas_wallet_to_settlement_wallet",
-                "asset": "BNB",
-                "amount_bnb": str(topup_amount),
-                "from_address": ok_wallet_address,
-                "to_address": settlement_address,
-                "payout_batch_id": int(batch.id),
-            },
+        guard_decision = (
+            require_bsc_settlement_gas_topup_guard(
+                db,
+                fund_id=int(fund.id),
+                settlement_batch_id=int(
+                    settlement_batch.id
+                ),
+                request_id=scope_key,
+                amount_usdt=None,
+                metadata={
+                    "source": (
+                        "negative_payout_flow_live"
+                    ),
+                    "boundary": (
+                        "durable_gas_intent_prepare"
+                    ),
+                    "asset": "BNB",
+                    "amount_bnb": str(
+                        topup_amount
+                    ),
+                    "from_address": (
+                        ok_wallet_address
+                    ),
+                    "to_address": (
+                        settlement_address
+                    ),
+                    "payout_batch_id": int(
+                        batch.id
+                    ),
+                },
+            )
         )
     except OperationGuardBlockedError as exc:
-        batch.gas_status = PAYOUT_GAS_STATUS_FAILED_REQUIRES_REVIEW
-        batch.status = PAYOUT_BATCH_STATUS_FAILED_REQUIRES_REVIEW
-        batch.error = f"Operation Guard blocked settlement wallet gas top-up: {exc}"
+        batch.gas_status = (
+            PAYOUT_GAS_STATUS_FAILED_REQUIRES_REVIEW
+        )
+        batch.status = (
+            PAYOUT_BATCH_STATUS_FAILED_REQUIRES_REVIEW
+        )
+        batch.error = (
+            "Operation Guard blocked settlement "
+            f"wallet gas top-up: {exc}"
+        )
         batch.updated_at = now
         db.add(batch)
         db.flush()
-        raise NegativePayoutFlowError(batch.error) from exc
+        raise NegativePayoutFlowError(
+            batch.error
+        ) from exc
 
-    tx_hash = send_native_bnb(
+    prepared = prepare_native_bnb_transaction(
         w3,
         from_private_key=ok_wallet_private_key,
         from_address=ok_wallet_address,
@@ -1467,19 +1614,66 @@ def _ensure_live_settlement_wallet_gas(
         amount_bnb=topup_amount,
     )
 
-    batch.gas_topup_tx_hash = tx_hash
-    batch.gas_status = PAYOUT_GAS_STATUS_TOPUP_REQUIRED
-    batch.status = PAYOUT_BATCH_STATUS_GAS_CHECK_PASSED
+    intent = persist_prepared_bsc_intent(
+        db,
+        scope_key=scope_key,
+        action_type=(
+            BSC_INTENT_ACTION_NEGATIVE_SETTLEMENT_GAS_TOPUP
+        ),
+        settlement_batch_id=int(
+            settlement_batch.id
+        ),
+        payout_batch_id=int(batch.id),
+        payout_leg_id=None,
+        fund_id=int(fund.id),
+        asset="BNB",
+        amount=topup_amount,
+        from_address=ok_wallet_address,
+        to_address=settlement_address,
+        prepared=prepared,
+    )
+
+    batch.gas_topup_tx_hash = str(
+        intent.prepared_tx_hash
+    )
+    batch.gas_status = (
+        PAYOUT_GAS_STATUS_TOPUP_REQUIRED
+    )
+    batch.status = (
+        PAYOUT_BATCH_STATUS_GAS_CHECK_PASSED
+    )
     batch.gas_topup_mock_json = _json_dict(
         {
             "live": True,
-            "request_id": request_id,
-            "guard_event_id": guard_decision.event_id,
+            "durable_intent": True,
+            "scope_key": scope_key,
+            "intent_id": int(intent.id),
+            "intent_status": intent.status,
+            "guard_event_id": (
+                guard_decision.event_id
+            ),
             "from_address": ok_wallet_address,
             "to_address": settlement_address,
             "amount_bnb": topup_amount,
-            "tx_hash": tx_hash,
-            "pending_confirmation": True,
+            "prepared_tx_hash": (
+                intent.prepared_tx_hash
+            ),
+            "broadcast_performed": False,
+            "pending_broadcast": True,
+        }
+    )
+    batch.gas_reconciliation_json = _json_dict(
+        {
+            "live": True,
+            "durable_intent": True,
+            "scope_key": scope_key,
+            "intent_id": int(intent.id),
+            "intent_status": intent.status,
+            "prepared_tx_hash": (
+                intent.prepared_tx_hash
+            ),
+            "pending_broadcast": True,
+            "no_duplicate_topup": True,
         }
     )
     batch.updated_at = now
