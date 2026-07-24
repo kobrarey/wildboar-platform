@@ -12,7 +12,11 @@ from app.lifecycle import evaluate_live_gate
 from app.models import Fund, FundNegativeBybitFlow, FundNegativePayoutBatch, FundSettlementBatch
 from app.settlement.negative_payout_flow import (
     LIVE_RESUMABLE_PAYOUT_BATCH_STATUSES,
+    execute_negative_payout_flow_live,
     execute_negative_payout_flow_mock,
+)
+from app.settlement.accounting_service import (
+    SettlementShareQuantityError,
 )
 from app.settlement.negative_payout_flow_mock import load_negative_payout_mock_file
 from app.settlement.bsc_intent_worker_service import (
@@ -23,6 +27,7 @@ from app.settlement.statuses import (
     BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT,
     BATCH_STATUS_NEGATIVE_NET_PAYOUT_PROCESSING,
     BYBIT_FLOW_STATUS_COMPLETED,
+    PAYOUT_BATCH_STATUS_PAUSED_OPERATOR_ACTION_REQUIRED,
 )
 
 
@@ -76,48 +81,128 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     return args
 
 
-def _load_candidates(db, *, fund_code: str | None):
+def _candidate_query(
+    db,
+    *,
+    fund_code: str | None,
+    include_paused: bool,
+):
+    resumable_statuses = set(
+        LIVE_RESUMABLE_PAYOUT_BATCH_STATUSES
+    )
+
+    if not include_paused:
+        resumable_statuses.discard(
+            PAYOUT_BATCH_STATUS_PAUSED_OPERATOR_ACTION_REQUIRED
+        )
+
     query = (
         db.query(FundSettlementBatch)
         .join(
             FundNegativeBybitFlow,
-            FundNegativeBybitFlow.settlement_batch_id == FundSettlementBatch.id,
+            FundNegativeBybitFlow.settlement_batch_id
+            == FundSettlementBatch.id,
         )
         .outerjoin(
             FundNegativePayoutBatch,
-            FundNegativePayoutBatch.settlement_batch_id == FundSettlementBatch.id,
+            FundNegativePayoutBatch.settlement_batch_id
+            == FundSettlementBatch.id,
         )
-        .join(Fund, Fund.id == FundSettlementBatch.fund_id)
-        .filter(FundNegativeBybitFlow.status == BYBIT_FLOW_STATUS_COMPLETED)
+        .join(
+            Fund,
+            Fund.id == FundSettlementBatch.fund_id,
+        )
+        .filter(
+            FundNegativeBybitFlow.status
+            == BYBIT_FLOW_STATUS_COMPLETED
+        )
         .filter(
             or_(
                 and_(
                     FundSettlementBatch.status
                     == BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT,
                     or_(
-                        FundNegativePayoutBatch.id.is_(None),
+                        FundNegativePayoutBatch.id.is_(
+                            None
+                        ),
                         FundNegativePayoutBatch.status.in_(
-                            sorted(LIVE_RESUMABLE_PAYOUT_BATCH_STATUSES)
+                            sorted(
+                                resumable_statuses
+                            )
                         ),
                     ),
                 ),
                 and_(
                     FundSettlementBatch.status
                     == BATCH_STATUS_NEGATIVE_NET_PAYOUT_PROCESSING,
-                    FundNegativePayoutBatch.id.isnot(None),
+                    FundNegativePayoutBatch.id.isnot(
+                        None
+                    ),
                     FundNegativePayoutBatch.status.in_(
-                        sorted(LIVE_RESUMABLE_PAYOUT_BATCH_STATUSES)
+                        sorted(resumable_statuses)
                     ),
                 ),
             )
         )
-        .order_by(FundSettlementBatch.id.asc())
+        .order_by(
+            FundSettlementBatch.id.asc()
+        )
     )
 
     if fund_code:
-        query = query.filter(Fund.code == str(fund_code))
+        query = query.filter(
+            Fund.code == str(fund_code)
+        )
 
-    return query.all()
+    return query
+
+
+def _load_candidates(
+    db,
+    *,
+    fund_code: str | None,
+):
+    return _candidate_query(
+        db,
+        fund_code=fund_code,
+        include_paused=True,
+    ).all()
+
+
+def _select_live_settlement_batch_id(
+    db,
+    *,
+    fund_code: str | None,
+    resume_paused: bool,
+) -> int | None:
+    settlement_batch = (
+        _candidate_query(
+            db,
+            fund_code=fund_code,
+            include_paused=bool(
+                resume_paused
+            ),
+        )
+        .with_for_update(
+            skip_locked=True,
+            of=FundSettlementBatch,
+        )
+        .first()
+    )
+
+    if settlement_batch is None:
+        db.commit()
+        return None
+
+    settlement_batch_id = int(
+        settlement_batch.id
+    )
+
+    # Освобождаем SELECT FOR UPDATE до RPC,
+    # подготовки и подписания транзакции.
+    db.commit()
+
+    return settlement_batch_id
 
 
 def _run_once(*, mock_payout_file: str, dry_run: bool, fund_code: str | None) -> int:
@@ -186,18 +271,95 @@ def _run_live_once(
     db = SessionLocal()
 
     try:
-        result = run_bsc_intent_worker_cycle(
-            db,
-            w3_factory=get_web3,
-            fund_code=fund_code,
-            resume_paused=bool(resume_paused),
+        intent_result = (
+            run_bsc_intent_worker_cycle(
+                db,
+                w3_factory=get_web3,
+                fund_code=fund_code,
+                resume_paused=bool(
+                    resume_paused
+                ),
+            )
         )
 
-        processed = (
-            0
-            if result.action == "no_candidate"
-            else 1
+        if intent_result.action != "no_candidate":
+            print(
+                {
+                    "worker": (
+                        "fund_negative_payout_worker"
+                    ),
+                    "live_execution": True,
+                    "phase": "intent_cycle",
+                    "action": (
+                        intent_result.action
+                    ),
+                    "intent_id": (
+                        intent_result.intent_id
+                    ),
+                    "status": (
+                        intent_result.status
+                    ),
+                    "web3_created": (
+                        intent_result.web3_created
+                    ),
+                    "broadcast_execution_invoked": (
+                        intent_result
+                        .broadcast_execution_invoked
+                    ),
+                    "fund_code_filter": (
+                        fund_code or ""
+                    ),
+                    "resume_paused": bool(
+                        resume_paused
+                    ),
+                    "processed": 1,
+                }
+            )
+            return 1
+
+        settlement_batch_id = (
+            _select_live_settlement_batch_id(
+                db,
+                fund_code=fund_code,
+                resume_paused=bool(
+                    resume_paused
+                ),
+            )
         )
+
+        if settlement_batch_id is None:
+            print(
+                {
+                    "worker": (
+                        "fund_negative_payout_worker"
+                    ),
+                    "live_execution": True,
+                    "phase": "orchestration",
+                    "action": "no_candidate",
+                    "intent_id": None,
+                    "settlement_batch_id": None,
+                    "external_action": False,
+                    "fund_code_filter": (
+                        fund_code or ""
+                    ),
+                    "resume_paused": bool(
+                        resume_paused
+                    ),
+                    "processed": 0,
+                }
+            )
+            return 0
+
+        flow_result = (
+            execute_negative_payout_flow_live(
+                db,
+                settlement_batch_id=(
+                    settlement_batch_id
+                ),
+            )
+        )
+
+        db.commit()
 
         print(
             {
@@ -205,27 +367,68 @@ def _run_live_once(
                     "fund_negative_payout_worker"
                 ),
                 "live_execution": True,
-                "action": result.action,
-                "intent_id": result.intent_id,
-                "status": result.status,
-                "web3_created": (
-                    result.web3_created
+                "phase": "orchestration",
+                "action": (
+                    "advanced_negative_payout"
                 ),
-                "broadcast_execution_invoked": (
-                    result
-                    .broadcast_execution_invoked
+                "settlement_batch_id": (
+                    flow_result
+                    .settlement_batch_id
                 ),
+                "payout_batch_id": (
+                    flow_result.payout_batch_id
+                ),
+                "status_after": (
+                    flow_result.status_after
+                ),
+                "settlement_status_after": (
+                    flow_result
+                    .settlement_status_after
+                ),
+                "payout_leg_count": (
+                    flow_result.payout_leg_count
+                ),
+                "confirmed_payout_leg_count": (
+                    flow_result
+                    .confirmed_payout_leg_count
+                ),
+                "ok": flow_result.ok,
+                "error": flow_result.error,
                 "fund_code_filter": (
                     fund_code or ""
                 ),
                 "resume_paused": bool(
                     resume_paused
                 ),
-                "processed": processed,
+                "processed": 1,
             }
         )
 
-        return processed
+        return 1
+
+    except SettlementShareQuantityError as exc:
+        db.commit()
+
+        print(
+            {
+                "worker": (
+                    "fund_negative_payout_worker"
+                ),
+                "live_execution": True,
+                "phase": "orchestration",
+                "action": (
+                    "commit_failed_requires_review"
+                ),
+                "external_action": False,
+                "error": str(exc),
+                "fund_code_filter": (
+                    fund_code or ""
+                ),
+                "processed": 1,
+            }
+        )
+
+        return 1
 
     except Exception:
         db.rollback()
