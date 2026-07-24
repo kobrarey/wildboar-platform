@@ -71,7 +71,13 @@ def _load_candidate(db, *, fund_code: str | None):
     if fund_code:
         query = query.filter(Fund.code == str(fund_code))
 
-    return query.first()
+    return (
+        query.with_for_update(
+            skip_locked=True,
+            of=FundSettlementBatch,
+        )
+        .first()
+    )
 
 
 def _run_once(*, dry_run: bool, fund_code: str | None) -> int:
