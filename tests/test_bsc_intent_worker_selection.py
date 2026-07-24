@@ -1,3 +1,5 @@
+from decimal import Decimal
+
 import pytest
 
 import app.settlement.bsc_intent_worker_service as worker_service
@@ -15,6 +17,7 @@ from app.settlement.bsc_intent_worker_service import (
     select_next_bsc_intent_candidate,
 )
 from app.settlement.statuses import (
+    BSC_INTENT_ACTION_NEGATIVE_REDEEM_PAYOUT,
     BSC_INTENT_UNRESOLVED_STATUSES,
     PAYOUT_BATCH_STATUS_PAUSED_OPERATOR_ACTION_REQUIRED,
 )
@@ -92,18 +95,47 @@ def _unresolved_status() -> str:
     return sorted(BSC_INTENT_UNRESOLVED_STATUSES)[0]
 
 
+def _candidate_row(
+    *,
+    intent_id: int = 17,
+    status: str | None = None,
+):
+    return (
+        intent_id,
+        status or _unresolved_status(),
+        BSC_INTENT_ACTION_NEGATIVE_REDEEM_PAYOUT,
+        f"neg-net-redeem-payout:{intent_id}",
+        3,
+        5,
+        Decimal("10.25"),
+    )
+
+
 def test_selector_returns_exactly_one_candidate():
     status = _unresolved_status()
-    db = FakeSession((17, status))
+    db = FakeSession(
+        _candidate_row(
+            intent_id=17,
+            status=status,
+        )
+    )
 
     candidate = select_next_bsc_intent_candidate(db)
 
     assert candidate is not None
     assert candidate.intent_id == 17
     assert candidate.status == status
+    assert (
+        candidate.action_type
+        == BSC_INTENT_ACTION_NEGATIVE_REDEEM_PAYOUT
+    )
+    assert candidate.scope_key == "neg-net-redeem-payout:17"
+    assert candidate.fund_id == 3
+    assert candidate.settlement_batch_id == 5
+    assert candidate.amount == Decimal("10.25")
 
     assert db.query_entities is not None
-    assert len(db.query_entities) == 2
+    assert len(db.query_entities) == 7
     assert (
         db.query_entities[0]
         is FundBscTransactionIntent.id
@@ -158,7 +190,9 @@ def test_selector_returns_exactly_one_candidate():
 
 
 def test_selector_uses_deterministic_ordering():
-    db = FakeSession((21, _unresolved_status()))
+    db = FakeSession(
+        _candidate_row(intent_id=21)
+    )
 
     select_next_bsc_intent_candidate(db)
 
@@ -178,7 +212,9 @@ def test_no_candidate_commits_and_returns_none():
 
 
 def test_invalid_candidate_id_rolls_back():
-    db = FakeSession((0, _unresolved_status()))
+    db = FakeSession(
+        _candidate_row(intent_id=0)
+    )
 
     with pytest.raises(
         BscIntentWorkerSelectionError,
@@ -191,7 +227,12 @@ def test_invalid_candidate_id_rolls_back():
 
 
 def test_terminal_candidate_status_rolls_back():
-    db = FakeSession((23, "confirmed"))
+    db = FakeSession(
+        _candidate_row(
+            intent_id=23,
+            status="confirmed",
+        )
+    )
 
     with pytest.raises(
         BscIntentWorkerSelectionError,
@@ -234,7 +275,9 @@ def test_paused_payout_requires_explicit_resume():
 
 
 def test_fund_code_adds_explicit_filter():
-    db = FakeSession((31, _unresolved_status()))
+    db = FakeSession(
+        _candidate_row(intent_id=31)
+    )
 
     candidate = select_next_bsc_intent_candidate(
         db,

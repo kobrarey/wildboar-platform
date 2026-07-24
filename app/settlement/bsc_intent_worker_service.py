@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from decimal import Decimal, InvalidOperation
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -15,6 +16,10 @@ from app.models import (
     FundNegativePayoutBatch,
     FundSettlementBatch,
 )
+from app.operation_guard.hooks import (
+    require_bsc_redeem_payout_guard,
+    require_bsc_settlement_gas_topup_guard,
+)
 from app.settlement.bsc_intent_reconciliation_service import (
     reconcile_bsc_intent_once,
 )
@@ -26,6 +31,8 @@ from app.settlement.bsc_intent_service import (
 from app.settlement.statuses import (
     BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT,
     BATCH_STATUS_NEGATIVE_NET_PAYOUT_PROCESSING,
+    BSC_INTENT_ACTION_NEGATIVE_REDEEM_PAYOUT,
+    BSC_INTENT_ACTION_NEGATIVE_SETTLEMENT_GAS_TOPUP,
     BSC_INTENT_ACTION_TYPES,
     BSC_INTENT_STATUS_BROADCAST,
     BSC_INTENT_STATUS_BROADCASTING,
@@ -53,6 +60,11 @@ class BscIntentWorkerSelectionError(
 class BscIntentWorkerCandidate:
     intent_id: int
     status: str
+    action_type: str
+    scope_key: str
+    fund_id: int
+    settlement_batch_id: int
+    amount: Decimal
 
 
 def _candidate_from_row(
@@ -61,11 +73,17 @@ def _candidate_from_row(
     try:
         intent_id = int(row[0])
         status = str(row[1] or "").strip()
+        action_type = str(row[2] or "").strip()
+        scope_key = str(row[3] or "").strip()
+        fund_id = int(row[4])
+        settlement_batch_id = int(row[5])
+        amount = Decimal(str(row[6]))
     except (
         TypeError,
         ValueError,
         KeyError,
         IndexError,
+        InvalidOperation,
     ) as exc:
         raise BscIntentWorkerSelectionError(
             "Invalid BSC intent worker candidate row"
@@ -83,9 +101,45 @@ def _candidate_from_row(
             f"unsupported status: {status or 'empty'}"
         )
 
+    if action_type not in BSC_INTENT_ACTION_TYPES:
+        raise BscIntentWorkerSelectionError(
+            "BSC intent worker candidate has "
+            f"unsupported action_type: "
+            f"{action_type or 'empty'}"
+        )
+
+    if not scope_key:
+        raise BscIntentWorkerSelectionError(
+            "BSC intent worker candidate scope_key "
+            "is empty"
+        )
+
+    if fund_id <= 0:
+        raise BscIntentWorkerSelectionError(
+            "BSC intent worker candidate fund_id "
+            "must be positive"
+        )
+
+    if settlement_batch_id <= 0:
+        raise BscIntentWorkerSelectionError(
+            "BSC intent worker candidate "
+            "settlement_batch_id must be positive"
+        )
+
+    if not amount.is_finite() or amount <= 0:
+        raise BscIntentWorkerSelectionError(
+            "BSC intent worker candidate amount "
+            "must be positive and finite"
+        )
+
     return BscIntentWorkerCandidate(
         intent_id=intent_id,
         status=status,
+        action_type=action_type,
+        scope_key=scope_key,
+        fund_id=fund_id,
+        settlement_batch_id=settlement_batch_id,
+        amount=amount,
     )
 
 
@@ -149,6 +203,11 @@ def select_next_bsc_intent_candidate(
             db.query(
                 FundBscTransactionIntent.id,
                 FundBscTransactionIntent.status,
+                FundBscTransactionIntent.action_type,
+                FundBscTransactionIntent.scope_key,
+                FundBscTransactionIntent.fund_id,
+                FundBscTransactionIntent.settlement_batch_id,
+                FundBscTransactionIntent.amount,
             )
             .join(
                 FundSettlementBatch,
@@ -269,6 +328,63 @@ def select_next_bsc_intent_candidate(
         raise
 
 
+def _require_candidate_broadcast_guard(
+    db: Session,
+    candidate: BscIntentWorkerCandidate,
+) -> None:
+    metadata = {
+        "source": "bsc_intent_worker_service",
+        "intent_id": candidate.intent_id,
+        "scope_key": candidate.scope_key,
+        "action_type": candidate.action_type,
+    }
+
+    if (
+        candidate.action_type
+        == BSC_INTENT_ACTION_NEGATIVE_SETTLEMENT_GAS_TOPUP
+    ):
+        require_bsc_settlement_gas_topup_guard(
+            db,
+            fund_id=candidate.fund_id,
+            settlement_batch_id=(
+                candidate.settlement_batch_id
+            ),
+            request_id=candidate.scope_key,
+            amount_usdt=None,
+            metadata={
+                **metadata,
+                "asset": "BNB",
+                "amount_bnb": str(candidate.amount),
+            },
+        )
+        return
+
+    if (
+        candidate.action_type
+        == BSC_INTENT_ACTION_NEGATIVE_REDEEM_PAYOUT
+    ):
+        require_bsc_redeem_payout_guard(
+            db,
+            fund_id=candidate.fund_id,
+            settlement_batch_id=(
+                candidate.settlement_batch_id
+            ),
+            amount_usdt=candidate.amount,
+            request_id=candidate.scope_key,
+            metadata={
+                **metadata,
+                "asset": "USDT",
+            },
+        )
+        return
+
+    raise BscIntentWorkerSelectionError(
+        "Unsupported BSC intent action_type "
+        "before broadcast guard: "
+        f"{candidate.action_type or 'empty'}"
+    )
+
+
 @dataclass(frozen=True)
 class BscIntentWorkerCycleResult:
     action: str
@@ -341,6 +457,11 @@ def run_bsc_intent_worker_cycle(
         )
 
     if candidate.status == BSC_INTENT_STATUS_BROADCASTING:
+        _require_candidate_broadcast_guard(
+            db,
+            candidate,
+        )
+
         claim = claim_bsc_intent_broadcast_attempt(
             db,
             intent_id=candidate.intent_id,

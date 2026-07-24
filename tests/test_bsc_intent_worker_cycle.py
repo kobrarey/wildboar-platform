@@ -1,9 +1,12 @@
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
 
 import app.settlement.bsc_intent_worker_service as worker_service
 from app.settlement.statuses import (
+    BSC_INTENT_ACTION_NEGATIVE_REDEEM_PAYOUT,
+    BSC_INTENT_ACTION_NEGATIVE_SETTLEMENT_GAS_TOPUP,
     BSC_INTENT_STATUS_BROADCAST,
     BSC_INTENT_STATUS_BROADCASTING,
     BSC_INTENT_STATUS_PENDING_CONFIRMATION,
@@ -14,6 +17,26 @@ from app.settlement.statuses import (
 
 class DummySession:
     pass
+
+
+def _candidate(
+    *,
+    intent_id: int,
+    status: str,
+    action_type: str = (
+        BSC_INTENT_ACTION_NEGATIVE_REDEEM_PAYOUT
+    ),
+    amount: Decimal = Decimal("10.25"),
+):
+    return worker_service.BscIntentWorkerCandidate(
+        intent_id=intent_id,
+        status=status,
+        action_type=action_type,
+        scope_key=f"bsc-intent:{intent_id}",
+        fund_id=3,
+        settlement_batch_id=5,
+        amount=amount,
+    )
 
 
 def _forbidden(name):
@@ -89,7 +112,7 @@ def test_prepared_cycle_only_marks_broadcasting(
     monkeypatch,
 ):
     db = DummySession()
-    candidate = worker_service.BscIntentWorkerCandidate(
+    candidate = _candidate(
         intent_id=11,
         status=BSC_INTENT_STATUS_PREPARED,
     )
@@ -152,9 +175,15 @@ def test_active_broadcast_claim_does_not_create_web3(
     monkeypatch,
 ):
     db = DummySession()
-    candidate = worker_service.BscIntentWorkerCandidate(
+    candidate = _candidate(
         intent_id=12,
         status=BSC_INTENT_STATUS_BROADCASTING,
+    )
+
+    monkeypatch.setattr(
+        worker_service,
+        "_require_candidate_broadcast_guard",
+        lambda session, received_candidate: None,
     )
 
     monkeypatch.setattr(
@@ -216,9 +245,15 @@ def test_claimed_broadcast_cycle_executes_once(
         "execute": 0,
     }
 
-    candidate = worker_service.BscIntentWorkerCandidate(
+    candidate = _candidate(
         intent_id=13,
         status=BSC_INTENT_STATUS_BROADCASTING,
+    )
+
+    monkeypatch.setattr(
+        worker_service,
+        "_require_candidate_broadcast_guard",
+        lambda session, received_candidate: None,
     )
 
     monkeypatch.setattr(
@@ -315,7 +350,7 @@ def test_reconciliation_cycle_uses_one_read_only_rpc(
         "reconcile": 0,
     }
 
-    candidate = worker_service.BscIntentWorkerCandidate(
+    candidate = _candidate(
         intent_id=14,
         status=status,
     )
@@ -401,9 +436,15 @@ def test_broadcast_race_status_result_is_not_counted_as_attempt(
         "execute": 0,
     }
 
-    candidate = worker_service.BscIntentWorkerCandidate(
+    candidate = _candidate(
         intent_id=15,
         status=BSC_INTENT_STATUS_BROADCASTING,
+    )
+
+    monkeypatch.setattr(
+        worker_service,
+        "_require_candidate_broadcast_guard",
+        lambda session, received_candidate: None,
     )
 
     monkeypatch.setattr(
@@ -552,3 +593,181 @@ def test_cycle_forwards_selector_scope(
         result.broadcast_execution_invoked
         is False
     )
+
+
+def test_gas_topup_uses_only_gas_guard(
+    monkeypatch,
+):
+    db = DummySession()
+    candidate = _candidate(
+        intent_id=21,
+        status=BSC_INTENT_STATUS_BROADCASTING,
+        action_type=(
+            BSC_INTENT_ACTION_NEGATIVE_SETTLEMENT_GAS_TOPUP
+        ),
+        amount=Decimal("0.001"),
+    )
+    calls = []
+
+    def gas_guard(
+        session,
+        *,
+        fund_id,
+        settlement_batch_id,
+        request_id,
+        amount_usdt,
+        metadata,
+    ):
+        calls.append(
+            {
+                "session": session,
+                "fund_id": fund_id,
+                "settlement_batch_id": (
+                    settlement_batch_id
+                ),
+                "request_id": request_id,
+                "amount_usdt": amount_usdt,
+                "metadata": metadata,
+            }
+        )
+
+    monkeypatch.setattr(
+        worker_service,
+        "require_bsc_settlement_gas_topup_guard",
+        gas_guard,
+    )
+    monkeypatch.setattr(
+        worker_service,
+        "require_bsc_redeem_payout_guard",
+        _forbidden(
+            "require_bsc_redeem_payout_guard"
+        ),
+    )
+
+    worker_service._require_candidate_broadcast_guard(
+        db,
+        candidate,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["session"] is db
+    assert calls[0]["fund_id"] == 3
+    assert calls[0]["settlement_batch_id"] == 5
+    assert calls[0]["request_id"] == "bsc-intent:21"
+    assert calls[0]["amount_usdt"] is None
+    assert calls[0]["metadata"]["asset"] == "BNB"
+    assert calls[0]["metadata"]["amount_bnb"] == "0.001"
+
+
+def test_redeem_payout_uses_only_payout_guard(
+    monkeypatch,
+):
+    db = DummySession()
+    candidate = _candidate(
+        intent_id=22,
+        status=BSC_INTENT_STATUS_BROADCASTING,
+        action_type=(
+            BSC_INTENT_ACTION_NEGATIVE_REDEEM_PAYOUT
+        ),
+        amount=Decimal("17.35"),
+    )
+    calls = []
+
+    def payout_guard(
+        session,
+        *,
+        fund_id,
+        settlement_batch_id,
+        amount_usdt,
+        request_id,
+        metadata,
+    ):
+        calls.append(
+            {
+                "session": session,
+                "fund_id": fund_id,
+                "settlement_batch_id": (
+                    settlement_batch_id
+                ),
+                "amount_usdt": amount_usdt,
+                "request_id": request_id,
+                "metadata": metadata,
+            }
+        )
+
+    monkeypatch.setattr(
+        worker_service,
+        "require_bsc_redeem_payout_guard",
+        payout_guard,
+    )
+    monkeypatch.setattr(
+        worker_service,
+        "require_bsc_settlement_gas_topup_guard",
+        _forbidden(
+            "require_bsc_settlement_gas_topup_guard"
+        ),
+    )
+
+    worker_service._require_candidate_broadcast_guard(
+        db,
+        candidate,
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["session"] is db
+    assert calls[0]["fund_id"] == 3
+    assert calls[0]["settlement_batch_id"] == 5
+    assert calls[0]["amount_usdt"] == Decimal("17.35")
+    assert calls[0]["request_id"] == "bsc-intent:22"
+    assert calls[0]["metadata"]["asset"] == "USDT"
+
+
+def test_blocked_guard_prevents_claim_web3_and_execution(
+    monkeypatch,
+):
+    db = DummySession()
+    candidate = _candidate(
+        intent_id=23,
+        status=BSC_INTENT_STATUS_BROADCASTING,
+    )
+
+    monkeypatch.setattr(
+        worker_service,
+        "select_next_bsc_intent_candidate",
+        lambda session, **kwargs: candidate,
+    )
+
+    def blocked_guard(
+        session,
+        received_candidate,
+    ):
+        raise RuntimeError("operation guard blocked")
+
+    monkeypatch.setattr(
+        worker_service,
+        "_require_candidate_broadcast_guard",
+        blocked_guard,
+    )
+    monkeypatch.setattr(
+        worker_service,
+        "claim_bsc_intent_broadcast_attempt",
+        _forbidden(
+            "claim_bsc_intent_broadcast_attempt"
+        ),
+    )
+    monkeypatch.setattr(
+        worker_service,
+        "execute_claimed_bsc_intent_broadcast",
+        _forbidden(
+            "execute_claimed_bsc_intent_broadcast"
+        ),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="operation guard blocked",
+    ):
+        worker_service.run_bsc_intent_worker_cycle(
+            db,
+            w3_factory=_forbidden("w3_factory"),
+        )
