@@ -12,14 +12,13 @@ from app.lifecycle import evaluate_live_gate
 from app.models import Fund, FundNegativeBybitFlow, FundNegativePayoutBatch, FundSettlementBatch
 from app.settlement.negative_payout_flow import (
     LIVE_RESUMABLE_PAYOUT_BATCH_STATUSES,
-    execute_negative_payout_flow_live,
     execute_negative_payout_flow_mock,
 )
 from app.settlement.negative_payout_flow_mock import load_negative_payout_mock_file
-from app.settlement.accounting_service import (
-    SettlementShareQuantityError,
-    validate_settlement_share_state_before_external,
+from app.settlement.bsc_intent_worker_service import (
+    run_bsc_intent_worker_cycle,
 )
+from app.settlement.gas_service import get_web3
 from app.settlement.statuses import (
     BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT,
     BATCH_STATUS_NEGATIVE_NET_PAYOUT_PROCESSING,
@@ -40,6 +39,10 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--fund-code", default=None)
     parser.add_argument("--sleep-seconds", type=int, default=30)
     parser.add_argument("--live-execution", action="store_true")
+    parser.add_argument(
+        "--resume-paused",
+        action="store_true",
+    )
 
     args = parser.parse_args(argv)
 
@@ -175,74 +178,59 @@ def _run_once(*, mock_payout_file: str, dry_run: bool, fund_code: str | None) ->
         db.close()
 
 
-def _run_live_once(*, fund_code: str | None) -> int:
+def _run_live_once(
+    *,
+    fund_code: str | None,
+    resume_paused: bool = False,
+) -> int:
     db = SessionLocal()
+
     try:
-        candidates = _load_candidates(db, fund_code=fund_code)
-        processed = 0
+        result = run_bsc_intent_worker_cycle(
+            db,
+            w3_factory=get_web3,
+            fund_code=fund_code,
+            resume_paused=bool(resume_paused),
+        )
 
-        for settlement_batch in candidates:
-            validate_settlement_share_state_before_external(
-                db,
-                batch=settlement_batch,
-                mark_failed=True,
-            )
+        processed = (
+            0
+            if result.action == "no_candidate"
+            else 1
+        )
 
-            result = execute_negative_payout_flow_live(
-                db,
-                settlement_batch_id=int(
-                    settlement_batch.id
-                ),
-            )
-            processed += 1
-
-            print(
-                {
-                    "worker": "fund_negative_payout_worker",
-                    "live_execution": True,
-                    "settlement_batch_id": result.settlement_batch_id,
-                    "payout_batch_id": result.payout_batch_id,
-                    "ok": result.ok,
-                    "status_after": result.status_after,
-                    "settlement_status_after": result.settlement_status_after,
-                    "payout_leg_count": result.payout_leg_count,
-                    "confirmed_payout_leg_count": result.confirmed_payout_leg_count,
-                    "expected_total_payout_usdt": result.expected_total_payout_usdt,
-                    "confirmed_total_payout_usdt": result.confirmed_total_payout_usdt,
-                    "error": result.error,
-                    "diagnostics": result.diagnostics,
-                }
-            )
-
-        db.commit()
         print(
             {
-                "worker": "fund_negative_payout_worker",
+                "worker": (
+                    "fund_negative_payout_worker"
+                ),
                 "live_execution": True,
-                "committed": True,
+                "action": result.action,
+                "intent_id": result.intent_id,
+                "status": result.status,
+                "web3_created": (
+                    result.web3_created
+                ),
+                "broadcast_execution_invoked": (
+                    result
+                    .broadcast_execution_invoked
+                ),
+                "fund_code_filter": (
+                    fund_code or ""
+                ),
+                "resume_paused": bool(
+                    resume_paused
+                ),
                 "processed": processed,
             }
         )
+
         return processed
-
-    except SettlementShareQuantityError as exc:
-        db.commit()
-
-        print(
-            {
-                "worker": "fund_negative_payout_worker",
-                "live_execution": True,
-                "action": "commit_failed_requires_review",
-                "external_action": False,
-                "error": str(exc),
-                "fund_code_filter": fund_code or "",
-            }
-        )
-        return 1
 
     except Exception:
         db.rollback()
         raise
+
     finally:
         db.close()
 
@@ -278,6 +266,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         while True:
             _run_live_once(
                 fund_code=args.fund_code,
+                resume_paused=bool(
+                    args.resume_paused
+                ),
             )
 
             if args.run_once:
