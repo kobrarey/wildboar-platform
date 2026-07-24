@@ -757,9 +757,14 @@ def process_retry_settlement_gas_topup_action_live(
                 f"Settlement batch status is not retryable: {batch.status}"
             )
 
-        payout_batch.operator_action_id = int(processing_action.id)
+        payout_batch.operator_action_id = int(
+            processing_action.id
+        )
         db.add(payout_batch)
-        db.flush()
+
+        # Persist the processing claim and release
+        # all row locks before BSC RPC/signing.
+        db.commit()
 
         w3 = get_web3()
         before_tx_hash = str(payout_batch.gas_topup_tx_hash or "").strip()

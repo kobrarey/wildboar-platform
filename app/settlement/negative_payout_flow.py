@@ -2299,8 +2299,13 @@ def execute_negative_payout_flow_live(
 
         batch.status = PAYOUT_BATCH_STATUS_PAYOUTS_PLANNED
         batch.updated_at = now
+        db.add(settlement_batch)
         db.add(batch)
-        db.flush()
+
+        # Durable payout plan boundary.
+        # Persist state and release all row locks
+        # before BSC RPC or transaction signing.
+        db.commit()
 
         w3 = get_web3()
 
