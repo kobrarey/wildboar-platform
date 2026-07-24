@@ -33,8 +33,8 @@ from app.settlement.gas_service import (
 from app.settlement.bsc_intent_service import (
     persist_prepared_bsc_intent,
     prepare_native_bnb_transaction,
+    prepare_usdt_transfer_transaction,
 )
-from app.settlement.transfer_service import _check_tx_confirmed, _send_usdt_transfer
 from app.wallets import decrypt_private_key
 from app.settlement.negative_payout_flow_types import (
     NegativePayoutFlowError,
@@ -54,6 +54,7 @@ from app.settlement.statuses import (
     BATCH_STATUS_NEGATIVE_NET_PAYOUT_PROCESSING,
     BATCH_STATUS_NEGATIVE_NET_PAYOUTS_CONFIRMED,
     BATCH_STATUS_PAUSED_OPERATOR_ACTION_REQUIRED,
+    BSC_INTENT_ACTION_NEGATIVE_REDEEM_PAYOUT,
     BSC_INTENT_ACTION_NEGATIVE_SETTLEMENT_GAS_TOPUP,
     BSC_INTENT_STATUS_CONFIRMED,
     BSC_INTENT_STATUS_FAILED_REQUIRES_REVIEW,
@@ -1694,123 +1695,311 @@ def _send_or_confirm_live_payout_leg(
     leg: FundNegativePayoutLeg,
     now,
 ) -> bool:
-    """
-    Real BSC payout:
-    settlement wallet -> user platform wallet USDT.
+    amount_usdt = dec(leg.amount_usdt)
 
-    Returns True only when the payout tx is confirmed.
-    Returns False when tx is sent but still pending confirmation.
-    Does not commit.
-    """
-    if dec(leg.amount_usdt) <= ZERO:
-        raise NegativePayoutFlowError("Live payout leg amount must be positive")
+    if amount_usdt <= ZERO:
+        raise NegativePayoutFlowError(
+            "Live payout leg amount must be positive"
+        )
 
     if not leg.to_address:
-        raise NegativePayoutFlowError("Live payout leg to_address is required")
+        raise NegativePayoutFlowError(
+            "Live payout leg to_address is required"
+        )
 
-    if str(leg.from_address) != str(settlement_wallet.address):
-        raise NegativePayoutFlowError("Live payout leg from_address mismatch")
+    if (
+        str(leg.from_address)
+        != str(settlement_wallet.address)
+    ):
+        raise NegativePayoutFlowError(
+            "Live payout leg from_address mismatch"
+        )
 
-    if str(leg.coin) != settings.NEGATIVE_NET_PAYOUT_COIN:
-        raise NegativePayoutFlowError("Live payout leg coin mismatch")
+    if (
+        str(leg.coin)
+        != settings.NEGATIVE_NET_PAYOUT_COIN
+    ):
+        raise NegativePayoutFlowError(
+            "Live payout leg coin mismatch"
+        )
 
-    if str(leg.chain) != settings.NEGATIVE_NET_PAYOUT_CHAIN:
-        raise NegativePayoutFlowError("Live payout leg chain mismatch")
+    if (
+        str(leg.chain)
+        != settings.NEGATIVE_NET_PAYOUT_CHAIN
+    ):
+        raise NegativePayoutFlowError(
+            "Live payout leg chain mismatch"
+        )
 
-    if leg.tx_hash:
-        if _check_tx_confirmed(w3, leg.tx_hash):
-            leg.status = PAYOUT_LEG_STATUS_PAYOUT_CONFIRMED
-            leg.confirmations = int(settings.NEGATIVE_NET_PAYOUT_CONFIRMATIONS_REQUIRED)
-            leg.confirmed_at = leg.confirmed_at or now
-            leg.updated_at = now
+    scope_key = (
+        deterministic_redeem_payout_request_id(
+            settlement_batch_id=int(
+                settlement_batch.id
+            ),
+            payout_batch_id=int(batch.id),
+            payout_leg_id=int(leg.id),
+            user_wallet_id=int(
+                leg.to_user_wallet_id
+                or leg.user_wallet_id
+            ),
+            amount_usdt=amount_usdt,
+            to_address=str(leg.to_address),
+        )
+    )
+
+    existing_intent = (
+        db.query(FundBscTransactionIntent)
+        .filter(
+            FundBscTransactionIntent.scope_key
+            == scope_key
+        )
+        .first()
+    )
+
+    if existing_intent is not None:
+        leg.tx_hash = str(
+            existing_intent.prepared_tx_hash or ""
+        )
+        leg.updated_at = now
+
+        if (
+            existing_intent.status
+            == BSC_INTENT_STATUS_CONFIRMED
+        ):
+            confirmations = max(
+                int(
+                    existing_intent.confirmations
+                    or 0
+                ),
+                int(
+                    settings
+                    .NEGATIVE_NET_PAYOUT_CONFIRMATIONS_REQUIRED
+                ),
+            )
+
+            leg.status = (
+                PAYOUT_LEG_STATUS_PAYOUT_CONFIRMED
+            )
+            leg.confirmations = confirmations
+            leg.confirmed_at = (
+                leg.confirmed_at
+                or getattr(
+                    existing_intent,
+                    "confirmed_at",
+                    None,
+                )
+                or now
+            )
             leg.confirmation_json = _json_dict(
                 {
                     "live": True,
-                    "tx_hash": leg.tx_hash,
+                    "durable_intent": True,
+                    "scope_key": scope_key,
+                    "intent_id": int(
+                        existing_intent.id
+                    ),
+                    "intent_status": (
+                        existing_intent.status
+                    ),
+                    "tx_hash": (
+                        existing_intent
+                        .prepared_tx_hash
+                    ),
+                    "receipt_status": (
+                        existing_intent
+                        .receipt_status
+                    ),
+                    "confirmations": confirmations,
+                    "required_confirmations": int(
+                        settings
+                        .NEGATIVE_NET_PAYOUT_CONFIRMATIONS_REQUIRED
+                    ),
                     "confirmed": True,
-                    "required_confirmations": int(settings.NEGATIVE_NET_PAYOUT_CONFIRMATIONS_REQUIRED),
                     "no_duplicate_payout": True,
                 }
             )
+
             db.add(leg)
             db.flush()
             return True
 
-        leg.confirmation_json = _json_dict(
+        if (
+            existing_intent.status
+            == BSC_INTENT_STATUS_FAILED_REQUIRES_REVIEW
+        ):
+            leg.status = (
+                PAYOUT_LEG_STATUS_FAILED_REQUIRES_REVIEW
+            )
+            leg.error = (
+                str(existing_intent.error or "").strip()
+                or (
+                    "BSC payout intent "
+                    "failed_requires_review"
+                )
+            )
+            leg.failed_at = leg.failed_at or now
+
+            db.add(leg)
+            db.flush()
+
+            raise NegativePayoutFlowError(
+                leg.error
+            )
+
+        if (
+            existing_intent.status
+            not in BSC_INTENT_UNRESOLVED_STATUSES
+        ):
+            raise NegativePayoutFlowError(
+                "Unsupported payout intent status: "
+                f"{existing_intent.status}"
+            )
+
+        leg.payout_mock_json = _json_dict(
             {
                 "live": True,
-                "tx_hash": leg.tx_hash,
+                "durable_intent": True,
+                "scope_key": scope_key,
+                "intent_id": int(
+                    existing_intent.id
+                ),
+                "intent_status": (
+                    existing_intent.status
+                ),
+                "prepared_tx_hash": (
+                    existing_intent
+                    .prepared_tx_hash
+                ),
                 "pending_confirmation": True,
                 "no_duplicate_payout": True,
             }
         )
-        leg.updated_at = now
+
         db.add(leg)
         db.flush()
         return False
 
-    request_id = deterministic_redeem_payout_request_id(
-        settlement_batch_id=int(settlement_batch.id),
-        payout_batch_id=int(batch.id),
-        payout_leg_id=int(leg.id),
-        user_wallet_id=int(leg.to_user_wallet_id or leg.user_wallet_id),
-        amount_usdt=dec(leg.amount_usdt),
-        to_address=str(leg.to_address),
-    )
-
     try:
-        guard_decision = require_bsc_redeem_payout_guard(
-            db,
-            fund_id=int(fund.id),
-            settlement_batch_id=int(settlement_batch.id),
-            amount_usdt=dec(leg.amount_usdt),
-            request_id=request_id,
-            metadata={
-                "source": "negative_payout_flow_live",
-                "boundary": "settlement_wallet_to_user_wallet",
-                "asset": "USDT",
-                "payout_batch_id": int(batch.id),
-                "payout_leg_id": int(leg.id),
-                "user_id": int(leg.user_id),
-                "user_wallet_id": int(leg.to_user_wallet_id or leg.user_wallet_id),
-                "from_address": str(leg.from_address),
-                "to_address": str(leg.to_address),
-            },
+        guard_decision = (
+            require_bsc_redeem_payout_guard(
+                db,
+                fund_id=int(fund.id),
+                settlement_batch_id=int(
+                    settlement_batch.id
+                ),
+                amount_usdt=amount_usdt,
+                request_id=scope_key,
+                metadata={
+                    "source": (
+                        "negative_payout_flow_live"
+                    ),
+                    "boundary": (
+                        "durable_payout_intent_prepare"
+                    ),
+                    "asset": "USDT",
+                    "payout_batch_id": int(
+                        batch.id
+                    ),
+                    "payout_leg_id": int(
+                        leg.id
+                    ),
+                    "user_id": int(
+                        leg.user_id
+                    ),
+                    "user_wallet_id": int(
+                        leg.to_user_wallet_id
+                        or leg.user_wallet_id
+                    ),
+                    "from_address": str(
+                        leg.from_address
+                    ),
+                    "to_address": str(
+                        leg.to_address
+                    ),
+                },
+            )
         )
     except OperationGuardBlockedError as exc:
-        leg.status = PAYOUT_LEG_STATUS_FAILED_REQUIRES_REVIEW
-        leg.error = f"Operation Guard blocked BSC redeem payout: {exc}"
+        leg.status = (
+            PAYOUT_LEG_STATUS_FAILED_REQUIRES_REVIEW
+        )
+        leg.error = (
+            "Operation Guard blocked BSC "
+            f"redeem payout: {exc}"
+        )
         leg.failed_at = now
         leg.updated_at = now
+
         db.add(leg)
         db.flush()
-        raise NegativePayoutFlowError(leg.error) from exc
 
-    private_key = decrypt_private_key(settlement_wallet.encrypted_private_key)
+        raise NegativePayoutFlowError(
+            leg.error
+        ) from exc
 
-    tx_hash = _send_usdt_transfer(
-        w3,
-        from_private_key=private_key,
-        from_address=str(settlement_wallet.address),
-        to_address=str(leg.to_address),
-        amount_usdt=dec(leg.amount_usdt),
+    private_key = decrypt_private_key(
+        settlement_wallet.encrypted_private_key
     )
 
-    leg.tx_hash = tx_hash
-    leg.sent_at = now
+    prepared = prepare_usdt_transfer_transaction(
+        w3,
+        from_private_key=private_key,
+        from_address=str(
+            settlement_wallet.address
+        ),
+        to_address=str(leg.to_address),
+        amount_usdt=amount_usdt,
+    )
+
+    intent = persist_prepared_bsc_intent(
+        db,
+        scope_key=scope_key,
+        action_type=(
+            BSC_INTENT_ACTION_NEGATIVE_REDEEM_PAYOUT
+        ),
+        settlement_batch_id=int(
+            settlement_batch.id
+        ),
+        payout_batch_id=int(batch.id),
+        payout_leg_id=int(leg.id),
+        fund_id=int(fund.id),
+        asset="USDT",
+        amount=amount_usdt,
+        from_address=str(
+            settlement_wallet.address
+        ),
+        to_address=str(leg.to_address),
+        prepared=prepared,
+    )
+
+    leg.tx_hash = str(
+        intent.prepared_tx_hash
+    )
     leg.updated_at = now
     leg.payout_mock_json = _json_dict(
         {
             "live": True,
-            "request_id": request_id,
-            "guard_event_id": guard_decision.event_id,
+            "durable_intent": True,
+            "scope_key": scope_key,
+            "intent_id": int(intent.id),
+            "intent_status": intent.status,
+            "guard_event_id": (
+                guard_decision.event_id
+            ),
             "coin": leg.coin,
             "chain": leg.chain,
-            "from_address": str(settlement_wallet.address),
-            "to_address": str(leg.to_address),
-            "amount_usdt": dec(leg.amount_usdt),
-            "tx_hash": tx_hash,
-            "pending_confirmation": True,
+            "from_address": str(
+                settlement_wallet.address
+            ),
+            "to_address": str(
+                leg.to_address
+            ),
+            "amount_usdt": amount_usdt,
+            "prepared_tx_hash": (
+                intent.prepared_tx_hash
+            ),
+            "broadcast_performed": False,
+            "pending_broadcast": True,
         }
     )
 
@@ -2190,9 +2379,6 @@ def execute_negative_payout_flow_live(
                 now=now,
             )
 
-            if not confirmed:
-                all_confirmed = False
-
             payout_rows.append(
                 {
                     "payout_leg_id": int(leg.id),
@@ -2205,6 +2391,10 @@ def execute_negative_payout_flow_live(
                     "confirmed": confirmed,
                 }
             )
+
+            if not confirmed:
+                all_confirmed = False
+                break
 
         confirmed_count = sum(
             1 for leg in legs if leg.status == PAYOUT_LEG_STATUS_PAYOUT_CONFIRMED
