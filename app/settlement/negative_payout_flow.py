@@ -35,6 +35,10 @@ from app.settlement.bsc_intent_service import (
     prepare_native_bnb_transaction,
     prepare_usdt_transfer_transaction,
 )
+from app.settlement.bsc_balance_service import (
+    read_bsc_block_number,
+    read_bsc_usdt_balance,
+)
 from app.wallets import decrypt_private_key
 from app.settlement.negative_payout_flow_types import (
     NegativePayoutFlowError,
@@ -103,6 +107,7 @@ LIVE_RESUMABLE_PAYOUT_BATCH_STATUSES = {
     PAYOUT_BATCH_STATUS_GAS_CHECK_PASSED,
     PAYOUT_BATCH_STATUS_GAS_READY,
     PAYOUT_BATCH_STATUS_PAYOUTS_PLANNED,
+    PAYOUT_BATCH_STATUS_PAYOUTS_CONFIRMED,
     PAYOUT_BATCH_STATUS_GAS_TOPUP_MOCKED,
     PAYOUT_BATCH_STATUS_PAUSED_OPERATOR_ACTION_REQUIRED,
 }
@@ -2011,94 +2016,374 @@ def _send_or_confirm_live_payout_leg(
 def _refresh_live_balances_after_confirmed_payouts(
     db: Session,
     *,
+    w3,
     batch: FundNegativePayoutBatch,
     legs: list[FundNegativePayoutLeg],
     expected_total_payout_usdt: Decimal,
     now,
 ) -> None:
-    confirmed_total = sum((dec(leg.amount_usdt) for leg in legs), ZERO)
-
-    if not _same_decimal(confirmed_total, expected_total_payout_usdt):
-        raise NegativePayoutFlowError("Confirmed payout total mismatch")
-
-    batch.balance_refresh_started_at = batch.balance_refresh_started_at or now
-
-    settlement_before = (
-        dec(batch.settlement_wallet_usdt_before)
-        if batch.settlement_wallet_usdt_before is not None
-        else expected_total_payout_usdt
+    confirmed_total = sum(
+        (
+            dec(leg.amount_usdt)
+            for leg in legs
+        ),
+        ZERO,
     )
-    settlement_after = settlement_before - expected_total_payout_usdt
-    if settlement_after < ZERO:
-        raise NegativePayoutFlowError("Settlement wallet balance refresh after balance is negative")
 
-    user_refresh_rows = []
+    if not _same_decimal(
+        confirmed_total,
+        expected_total_payout_usdt,
+    ):
+        raise NegativePayoutFlowError(
+            "Confirmed payout total mismatch"
+        )
+
+    batch_id = int(batch.id)
+    settlement_address = str(
+        batch.settlement_wallet_address or ""
+    ).strip()
+
+    if not settlement_address:
+        raise NegativePayoutFlowError(
+            "Settlement wallet address is required "
+            "for absolute balance refresh"
+        )
+
+    wallet_snapshots = []
+
     for leg in legs:
-        if leg.status != PAYOUT_LEG_STATUS_PAYOUT_CONFIRMED:
-            raise NegativePayoutFlowError("Cannot refresh balance before all payout legs are confirmed")
+        if (
+            leg.status
+            != PAYOUT_LEG_STATUS_PAYOUT_CONFIRMED
+        ):
+            raise NegativePayoutFlowError(
+                "Cannot refresh balance before all "
+                "payout legs are confirmed"
+            )
+
+        wallet_id = int(
+            leg.to_user_wallet_id
+            or leg.user_wallet_id
+        )
 
         wallet = (
             db.query(UserWallet)
-            .filter(UserWallet.id == int(leg.to_user_wallet_id or leg.user_wallet_id))
+            .filter(
+                UserWallet.id == wallet_id
+            )
+            .first()
+        )
+
+        if wallet is None:
+            raise NegativePayoutFlowError(
+                "User wallet not found during "
+                "live balance refresh"
+            )
+
+        wallet_address = str(
+            wallet.address or ""
+        ).strip()
+
+        if not wallet_address:
+            raise NegativePayoutFlowError(
+                "User wallet address is required "
+                "during live balance refresh"
+            )
+
+        if (
+            wallet_address.lower()
+            != str(leg.to_address or "")
+            .strip()
+            .lower()
+        ):
+            raise NegativePayoutFlowError(
+                "Payout leg and user wallet "
+                "address mismatch"
+            )
+
+        wallet_snapshots.append(
+            {
+                "leg_id": int(leg.id),
+                "wallet_id": wallet_id,
+                "address": wallet_address,
+                "before_usdt": dec(
+                    wallet.usdt_balance or ZERO
+                ),
+                "payout_amount_usdt": dec(
+                    leg.amount_usdt
+                ),
+            }
+        )
+
+    batch.balance_refresh_started_at = (
+        batch.balance_refresh_started_at
+        or now
+    )
+    db.add(batch)
+
+    # Persist the refresh checkpoint and release
+    # every DB lock before read-only BSC RPC.
+    db.commit()
+
+    block_number = read_bsc_block_number(
+        w3
+    )
+
+    settlement_after = (
+        read_bsc_usdt_balance(
+            w3,
+            settlement_address,
+            block_identifier=block_number,
+        )
+    )
+
+    observed_wallet_balances = {}
+
+    for snapshot in wallet_snapshots:
+        wallet_id = int(
+            snapshot["wallet_id"]
+        )
+
+        if wallet_id in observed_wallet_balances:
+            continue
+
+        observed_wallet_balances[wallet_id] = (
+            read_bsc_usdt_balance(
+                w3,
+                str(snapshot["address"]),
+                block_identifier=block_number,
+            )
+        )
+
+    # RPC is complete. Re-lock and validate the
+    # persisted rows before writing observations.
+    locked_batch = (
+        db.query(FundNegativePayoutBatch)
+        .filter(
+            FundNegativePayoutBatch.id
+            == batch_id
+        )
+        .with_for_update()
+        .first()
+    )
+
+    if locked_batch is None:
+        raise NegativePayoutFlowError(
+            "Payout batch disappeared during "
+            "live balance refresh"
+        )
+
+    if (
+        str(
+            locked_batch
+            .settlement_wallet_address
+            or ""
+        )
+        .strip()
+        .lower()
+        != settlement_address.lower()
+    ):
+        raise NegativePayoutFlowError(
+            "Settlement wallet address changed "
+            "during balance refresh"
+        )
+
+    user_refresh_rows = []
+
+    for snapshot in wallet_snapshots:
+        leg_id = int(snapshot["leg_id"])
+        wallet_id = int(
+            snapshot["wallet_id"]
+        )
+        expected_address = str(
+            snapshot["address"]
+        )
+        before = dec(
+            snapshot["before_usdt"]
+        )
+        observed_after = dec(
+            observed_wallet_balances[
+                wallet_id
+            ]
+        )
+
+        locked_leg = (
+            db.query(FundNegativePayoutLeg)
+            .filter(
+                FundNegativePayoutLeg.id
+                == leg_id
+            )
             .with_for_update()
             .first()
         )
-        if wallet is None:
-            raise NegativePayoutFlowError("User wallet not found during live balance refresh")
 
-        before = dec(wallet.usdt_balance or ZERO)
-        after = before + dec(leg.amount_usdt)
+        if locked_leg is None:
+            raise NegativePayoutFlowError(
+                "Payout leg disappeared during "
+                "live balance refresh"
+            )
 
-        wallet.usdt_balance = after
-        wallet.usdt_balance_updated_at = now
+        if (
+            locked_leg.status
+            != PAYOUT_LEG_STATUS_PAYOUT_CONFIRMED
+        ):
+            raise NegativePayoutFlowError(
+                "Payout leg status changed during "
+                "live balance refresh"
+            )
 
-        leg.wallet_balance_before_usdt = before
-        leg.wallet_balance_after_usdt = after
-        leg.status = PAYOUT_LEG_STATUS_BALANCE_REFRESHED
-        leg.balance_refresh_json = _json_dict(
-            {
-                "live": True,
-                "user_wallet_id": int(wallet.id),
-                "address": wallet.address,
-                "before_usdt": before,
-                "payout_amount_usdt": dec(leg.amount_usdt),
-                "after_usdt": after,
-            }
+        locked_wallet = (
+            db.query(UserWallet)
+            .filter(
+                UserWallet.id == wallet_id
+            )
+            .with_for_update()
+            .first()
         )
-        leg.updated_at = now
 
-        db.add(wallet)
-        db.add(leg)
+        if locked_wallet is None:
+            raise NegativePayoutFlowError(
+                "User wallet disappeared during "
+                "live balance refresh"
+            )
+
+        if (
+            str(locked_wallet.address or "")
+            .strip()
+            .lower()
+            != expected_address.lower()
+        ):
+            raise NegativePayoutFlowError(
+                "User wallet address changed during "
+                "live balance refresh"
+            )
+
+        # Absolute on-chain balanceOf snapshot.
+        # Never add the payout amount arithmetically.
+        locked_wallet.usdt_balance = (
+            observed_after
+        )
+        locked_wallet.usdt_balance_updated_at = (
+            now
+        )
+        locked_wallet.usdt_balance_block = (
+            block_number
+        )
+
+        locked_leg.wallet_balance_before_usdt = (
+            before
+        )
+        locked_leg.wallet_balance_after_usdt = (
+            observed_after
+        )
+        locked_leg.status = (
+            PAYOUT_LEG_STATUS_BALANCE_REFRESHED
+        )
+        locked_leg.balance_refresh_json = (
+            _json_dict(
+                {
+                    "live": True,
+                    "absolute_onchain_sync": True,
+                    "block_number": block_number,
+                    "user_wallet_id": wallet_id,
+                    "address": expected_address,
+                    "before_usdt": before,
+                    "payout_amount_usdt": dec(
+                        snapshot[
+                            "payout_amount_usdt"
+                        ]
+                    ),
+                    "observed_after_usdt": (
+                        observed_after
+                    ),
+                    "arithmetic_credit_applied": (
+                        False
+                    ),
+                }
+            )
+        )
+        locked_leg.updated_at = now
+
+        db.add(locked_wallet)
+        db.add(locked_leg)
 
         user_refresh_rows.append(
             {
-                "user_wallet_id": int(wallet.id),
-                "address": wallet.address,
+                "user_wallet_id": wallet_id,
+                "address": expected_address,
                 "before_usdt": before,
-                "payout_amount_usdt": dec(leg.amount_usdt),
-                "after_usdt": after,
+                "payout_amount_usdt": dec(
+                    snapshot[
+                        "payout_amount_usdt"
+                    ]
+                ),
+                "observed_after_usdt": (
+                    observed_after
+                ),
+                "block_number": block_number,
+                "absolute_onchain_sync": True,
             }
         )
 
-    batch.settlement_wallet_usdt_before = settlement_before
-    batch.settlement_wallet_usdt_after = settlement_after
-    batch.confirmed_total_payout_usdt = expected_total_payout_usdt
-    batch.confirmed_payout_leg_count = len(legs)
-    batch.balance_refresh_status = PAYOUT_BALANCE_REFRESH_STATUS_CONFIRMED
-    batch.balance_refresh_completed_at = now
-    batch.balance_refresh_json = _json_dict(
-        {
-            "live": True,
-            "settlement_wallet": {
-                "before_usdt": settlement_before,
-                "confirmed_total_payout_usdt": expected_total_payout_usdt,
-                "after_usdt": settlement_after,
-            },
-            "user_wallets": user_refresh_rows,
-        }
+    settlement_before = (
+        dec(
+            locked_batch
+            .settlement_wallet_usdt_before
+        )
+        if (
+            locked_batch
+            .settlement_wallet_usdt_before
+            is not None
+        )
+        else None
     )
 
-    db.add(batch)
+    locked_batch.settlement_wallet_usdt_after = (
+        settlement_after
+    )
+    locked_batch.confirmed_total_payout_usdt = (
+        expected_total_payout_usdt
+    )
+    locked_batch.confirmed_payout_leg_count = (
+        len(legs)
+    )
+    locked_batch.balance_refresh_status = (
+        PAYOUT_BALANCE_REFRESH_STATUS_CONFIRMED
+    )
+    locked_batch.balance_refresh_completed_at = (
+        now
+    )
+    locked_batch.balance_refresh_json = (
+        _json_dict(
+            {
+                "live": True,
+                "absolute_onchain_sync": True,
+                "block_number": block_number,
+                "settlement_wallet": {
+                    "address": (
+                        settlement_address
+                    ),
+                    "before_usdt": (
+                        settlement_before
+                    ),
+                    "confirmed_total_payout_usdt": (
+                        expected_total_payout_usdt
+                    ),
+                    "observed_after_usdt": (
+                        settlement_after
+                    ),
+                    "arithmetic_debit_applied": (
+                        False
+                    ),
+                },
+                "user_wallets": (
+                    user_refresh_rows
+                ),
+            }
+        )
+    )
+
+    db.add(locked_batch)
     db.flush()
 
 
@@ -2468,9 +2753,14 @@ def execute_negative_payout_flow_live(
 
         _refresh_live_balances_after_confirmed_payouts(
             db,
+            w3=w3,
             batch=batch,
             legs=legs,
-            expected_total_payout_usdt=amounts["expected_total_payout_usdt"],
+            expected_total_payout_usdt=(
+                amounts[
+                    "expected_total_payout_usdt"
+                ]
+            ),
             now=now,
         )
 
