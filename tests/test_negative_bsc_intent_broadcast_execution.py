@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any
 
+import pytest
 from web3.exceptions import TransactionNotFound
 
 from app.models import FundBscTransactionIntent
@@ -10,6 +11,7 @@ from app.settlement import bsc_intent_service
 from app.settlement.bsc_intent_service import (
     BroadcastBscTransactionResult,
     PreparedBscTransaction,
+    broadcast_prepared_transaction,
     build_bsc_intent_safe_audit,
     execute_claimed_bsc_intent_broadcast,
 )
@@ -483,3 +485,78 @@ def test_claim_lost_after_external_cannot_overwrite(
         BSC_INTENT_STATUS_BROADCASTING
     )
     assert intent.broadcast_at is None
+
+
+class CrashAfterAcceptedBroadcastEth(FakeEth):
+    def send_raw_transaction(
+        self,
+        raw_tx: bytes,
+    ) -> bytes:
+        super().send_raw_transaction(
+            raw_tx
+        )
+
+        # Simulate abrupt process termination after
+        # the node accepted the transaction but before
+        # the application persisted the broadcast result.
+        raise SystemExit(
+            "simulated crash after accepted broadcast"
+        )
+
+
+def test_crash_after_node_acceptance_does_not_rebroadcast():
+    prepared = _prepared()
+
+    eth = CrashAfterAcceptedBroadcastEth(
+        tx_hash=prepared.tx_hash,
+        visible=False,
+        nonce_values=[prepared.source_nonce],
+    )
+    w3 = FakeWeb3(eth)
+
+    with pytest.raises(
+        SystemExit,
+        match=(
+            "simulated crash after "
+            "accepted broadcast"
+        ),
+    ):
+        broadcast_prepared_transaction(
+            w3,
+            prepared_tx_hash=(
+                prepared.tx_hash
+            ),
+            raw_tx_hex=prepared.raw_tx_hex,
+            from_address="0xabcdef",
+            chain_id=prepared.chain_id,
+            source_nonce=(
+                prepared.source_nonce
+            ),
+        )
+
+    assert eth.send_count == 1
+    assert eth.visible is True
+
+    # Simulated restart: durable prepared hash and raw
+    # transaction are loaded again. The worker must
+    # reconcile by hash before considering another send.
+    restarted = broadcast_prepared_transaction(
+        w3,
+        prepared_tx_hash=prepared.tx_hash,
+        raw_tx_hex=prepared.raw_tx_hex,
+        from_address="0xabcdef",
+        chain_id=prepared.chain_id,
+        source_nonce=prepared.source_nonce,
+    )
+
+    assert restarted.action == "already_visible"
+    assert restarted.tx_hash == (
+        prepared.tx_hash
+    )
+
+    # The restart performed no second broadcast.
+    assert eth.send_count == 1
+    assert (
+        eth.get_transaction_count_calls
+        == 1
+    )
