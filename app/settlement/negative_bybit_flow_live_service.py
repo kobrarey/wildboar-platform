@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.bybit.asset_flows import (
     BybitAssetFlowError,
     create_universal_transfer,
+    query_account_coin_balance,
     query_universal_transfer,
 )
 from app.bybit.client import (
@@ -51,6 +52,8 @@ from app.settlement.negative_bybit_flow_types import (
 from app.settlement.statuses import (
     BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING,
     BYBIT_FLOW_STATUS_CREATED,
+    BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW,
+    BYBIT_FLOW_STATUS_MASTER_BALANCE_CONFIRMED,
     BYBIT_FLOW_STATUS_PREFLIGHT_PASSED,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_INTENT_PREPARED,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING,
@@ -67,6 +70,10 @@ UNIVERSAL_TRANSFER_INTENT_SCHEMA = (
 
 UNIVERSAL_TRANSFER_RECONCILIATION_SCHEMA = (
     "negative_universal_transfer_reconciliation_v2"
+)
+
+MASTER_TRANSFERABLE_BALANCE_SCHEMA = (
+    "negative_master_transferable_balance_barrier_v1"
 )
 
 
@@ -916,6 +923,112 @@ def _mark_guard_blocked(
     return result
 
 
+def _mark_submit_ack_mismatch(
+    db: Session,
+    *,
+    settlement_batch,
+    flow: FundNegativeBybitFlow,
+    current_intent: dict[str, Any],
+    snapshot: dict[str, Any],
+    claim_token: str,
+    guard_event_id: int | None,
+    created_transfer,
+    error: BaseException,
+    now: datetime,
+) -> NegativeBybitFlowResult:
+    current_intent["state"] = (
+        "failed_requires_review"
+    )
+    current_intent["acknowledgement"] = {
+        "outcome": "mismatch",
+        "claim_token": claim_token,
+        "guard_event_id": guard_event_id,
+        "acknowledged_at": now.isoformat(),
+        "expected": {
+            "transfer_id": snapshot[
+                "transfer_id"
+            ],
+            "coin": snapshot["coin"],
+            "amount_usdt": _decimal_text(
+                snapshot["amount_usdt"]
+            ),
+            "from_member_id": snapshot[
+                "from_member_id"
+            ],
+            "to_member_id": snapshot[
+                "to_member_id"
+            ],
+            "from_account_type": snapshot[
+                "from_account_type"
+            ],
+            "to_account_type": snapshot[
+                "to_account_type"
+            ],
+        },
+        "observed": (
+            _transfer_record_snapshot(
+                created_transfer
+            )
+        ),
+        "response": _json_dict(
+            created_transfer.raw
+        ),
+        "error": _bounded_external_error(
+            error
+        ),
+        "bybit_post_performed": True,
+        "no_automatic_resend": True,
+    }
+
+    flow.universal_transfer_intent_json = (
+        current_intent
+    )
+    flow.universal_transfer_status = (
+        created_transfer.status
+    )
+    flow.universal_transfer_created_at = now
+
+    result = _set_failed(
+        flow=flow,
+        settlement_batch=settlement_batch,
+        fund=None,
+        status_before=(
+            BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_SUBMITTING
+        ),
+        settlement_status_before=str(
+            settlement_batch.status
+        ),
+        error=(
+            "Universal Transfer acknowledgement "
+            f"mismatch after POST: {error}"
+        ),
+        now=now,
+        diagnostics={
+            "transition": (
+                "submit_universal_transfer_"
+                "ack_mismatch"
+            ),
+            "did_bybit_post": True,
+            "bybit_post_count": 1,
+            "no_automatic_resend": True,
+            "payload_fingerprint": snapshot[
+                "payload_fingerprint"
+            ],
+            "guard_event_id": guard_event_id,
+            "reserve_release_allowed": False,
+            "pricing_unlock_allowed": False,
+            "acknowledgement_mismatch": True,
+        },
+    )
+
+    db.add(flow)
+    db.add(settlement_batch)
+    db.flush()
+    db.commit()
+
+    return result
+
+
 def _submit_universal_transfer_once(
     db: Session,
     *,
@@ -1293,31 +1406,27 @@ def _submit_universal_transfer_once(
             "ownership mismatch"
         )
 
-    if (
-        created_transfer.transfer_id
-        != snapshot["transfer_id"]
-    ):
-        raise NegativeBybitFlowError(
-            "Universal Transfer acknowledgement "
-            "transfer_id mismatch"
+    try:
+        _validate_exact_transfer_record(
+            record=created_transfer,
+            snapshot=snapshot,
         )
-
-    if (
-        created_transfer.coin
-        != snapshot["coin"]
-    ):
-        raise NegativeBybitFlowError(
-            "Universal Transfer acknowledgement "
-            "coin mismatch"
-        )
-
-    if not _same_decimal(
-        created_transfer.amount_usdt,
-        snapshot["amount_usdt"],
-    ):
-        raise NegativeBybitFlowError(
-            "Universal Transfer acknowledgement "
-            "amount mismatch"
+    except NegativeBybitFlowError as exc:
+        return _mark_submit_ack_mismatch(
+            db,
+            settlement_batch=settlement_batch,
+            flow=flow,
+            current_intent=current_intent,
+            snapshot=snapshot,
+            claim_token=claim_token,
+            guard_event_id=(
+                guard_decision.event_id
+            ),
+            created_transfer=(
+                created_transfer
+            ),
+            error=exc,
+            now=resolved_now,
         )
 
     current_intent["state"] = "reconciling"
@@ -2057,6 +2166,598 @@ def _reconcile_universal_transfer_once(
     )
 
 
+def _store_master_balance_barrier(
+    *,
+    flow: FundNegativeBybitFlow,
+    barrier: dict[str, Any],
+) -> None:
+    current = flow.reconciliation_json
+
+    if current is None:
+        reconciliation: dict[str, Any] = {}
+    elif isinstance(current, dict):
+        reconciliation = deepcopy(current)
+    else:
+        raise NegativeBybitFlowError(
+            "Flow reconciliation_json must be "
+            "a JSON object"
+        )
+
+    reconciliation[
+        "master_transferable_balance_barrier"
+    ] = barrier
+
+    flow.reconciliation_json = _json_dict(
+        reconciliation
+    )
+
+
+def _fail_master_balance_barrier(
+    db: Session,
+    *,
+    settlement_batch,
+    flow: FundNegativeBybitFlow,
+    barrier: dict[str, Any],
+    error: str,
+    resolved_now: datetime,
+    status_before: str | None,
+    settlement_status_before: str | None,
+    transition: str,
+) -> NegativeBybitFlowResult:
+    result = _set_failed(
+        flow=flow,
+        settlement_batch=settlement_batch,
+        fund=None,
+        status_before=status_before,
+        settlement_status_before=(
+            settlement_status_before
+        ),
+        error=error,
+        now=resolved_now,
+        diagnostics={
+            "transition": transition,
+            "did_bybit_post": False,
+            "bybit_post_count": 0,
+            "bybit_get_count": 1,
+            "reserve_release_allowed": False,
+            "pricing_unlock_allowed": False,
+            "master_balance_barrier": (
+                barrier
+            ),
+        },
+    )
+
+    # _set_failed() creates the generic failure
+    # reconciliation envelope. Add the durable
+    # barrier evidence only after that assignment,
+    # otherwise it would be overwritten.
+    _store_master_balance_barrier(
+        flow=flow,
+        barrier=barrier,
+    )
+
+    db.add(flow)
+    db.add(settlement_batch)
+    db.flush()
+    db.commit()
+
+    return result
+
+
+def _master_transferable_balance_barrier_once(
+    db: Session,
+    *,
+    settlement_batch,
+    flow: FundNegativeBybitFlow,
+    bybit_client: BybitV5Client,
+    master_uid: str,
+    resolved_now: datetime,
+    status_before: str | None,
+    settlement_status_before: str | None,
+) -> NegativeBybitFlowResult:
+    if str(flow.status) != (
+        BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED
+    ):
+        raise NegativeBybitFlowError(
+            "Master transferable balance barrier "
+            "requires reconciled Universal Transfer"
+        )
+
+    intent = deepcopy(
+        flow.universal_transfer_intent_json
+    )
+
+    if not isinstance(intent, dict):
+        raise NegativeBybitFlowError(
+            "Confirmed Universal Transfer intent "
+            "is missing"
+        )
+
+    snapshot = _intent_snapshot(
+        flow=flow,
+        intent=intent,
+        allowed_states={"confirmed"},
+    )
+
+    clean_master_uid = _required_text(
+        master_uid,
+        field_name="master_uid",
+    )
+
+    if (
+        clean_master_uid
+        != snapshot["to_member_id"]
+    ):
+        raise NegativeBybitFlowError(
+            "master_uid does not match confirmed "
+            "Universal Transfer destination"
+        )
+
+    account_type = snapshot[
+        "to_account_type"
+    ]
+    coin = snapshot["coin"]
+
+    if account_type != "FUND":
+        raise NegativeBybitFlowError(
+            "Master transferable balance barrier "
+            "requires FUND destination account"
+        )
+
+    required_master_usdt = Decimal(
+        flow.required_master_usdt
+    )
+
+    if required_master_usdt <= Decimal("0"):
+        raise NegativeBybitFlowError(
+            "required_master_usdt must be positive"
+        )
+
+    if (
+        snapshot["amount_usdt"]
+        < required_master_usdt
+    ):
+        raise NegativeBybitFlowError(
+            "Confirmed Universal Transfer amount "
+            "does not cover required_master_usdt"
+        )
+
+    settlement_batch_id = int(
+        settlement_batch.id
+    )
+    expected_flow_id = int(flow.id)
+
+    # Release all service row locks before
+    # the read-only Bybit balance GET.
+    db.commit()
+
+    balance = None
+    query_error: BaseException | None = None
+
+    try:
+        balance = query_account_coin_balance(
+            bybit_client,
+            account_type=account_type,
+            coin=coin,
+            member_id=clean_master_uid,
+            with_transfer_safe_amount=True,
+            with_ltv_transfer_safe_amount=True,
+        )
+    except (
+        BybitApiError,
+        BybitAssetFlowError,
+    ) as exc:
+        query_error = exc
+
+    settlement_batch, flow = (
+        _locked_flow_for_submit(
+            db,
+            settlement_batch_id=(
+                settlement_batch_id
+            ),
+        )
+    )
+
+    if int(flow.id) != expected_flow_id:
+        raise NegativeBybitFlowError(
+            "Negative Bybit flow identity changed "
+            "during master balance barrier"
+        )
+
+    current_intent = deepcopy(
+        flow.universal_transfer_intent_json
+    )
+
+    if not isinstance(current_intent, dict):
+        raise NegativeBybitFlowError(
+            "Universal Transfer intent disappeared "
+            "during master balance barrier"
+        )
+
+    _validate_snapshot_unchanged(
+        flow=flow,
+        intent=current_intent,
+        snapshot=snapshot,
+        allowed_states={"confirmed"},
+    )
+
+    # Another worker may have confirmed the
+    # same barrier while this GET was running.
+    if str(flow.status) == (
+        BYBIT_FLOW_STATUS_MASTER_BALANCE_CONFIRMED
+    ):
+        result = _step_result(
+            ok=True,
+            transition=(
+                "master_transferable_balance_"
+                "already_confirmed"
+            ),
+            settlement_batch=settlement_batch,
+            flow=flow,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            idempotent=True,
+            diagnostics={
+                "did_bybit_post": False,
+                "bybit_post_count": 0,
+                "bybit_get_count": 1,
+            },
+        )
+
+        db.commit()
+
+        return result
+
+    if str(flow.status) != (
+        BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED
+    ):
+        raise NegativeBybitFlowError(
+            "Flow status changed during master "
+            "transferable balance query"
+        )
+
+    if query_error is not None:
+        barrier = {
+            "schema": (
+                MASTER_TRANSFERABLE_BALANCE_SCHEMA
+            ),
+            "state": "pending",
+            "account_type": account_type,
+            "coin": coin,
+            "member_id": clean_master_uid,
+            "required_master_usdt": (
+                _decimal_text(
+                    required_master_usdt
+                )
+            ),
+            "query_succeeded": False,
+            "query_error": (
+                _bounded_external_error(
+                    query_error
+                )
+            ),
+            "observed_at": (
+                resolved_now.isoformat()
+            ),
+            "withdrawal_allowed": False,
+        }
+
+        _store_master_balance_barrier(
+            flow=flow,
+            barrier=barrier,
+        )
+
+        flow.status = (
+            BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED
+        )
+        flow.error = None
+        flow.updated_at = resolved_now
+
+        settlement_batch.status = (
+            BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING
+        )
+        settlement_batch.error = None
+        settlement_batch.updated_at = (
+            resolved_now
+        )
+
+        db.add(flow)
+        db.add(settlement_batch)
+        db.flush()
+
+        result = _step_result(
+            ok=False,
+            transition=(
+                "master_transferable_balance_"
+                "query_pending"
+            ),
+            settlement_batch=settlement_batch,
+            flow=flow,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            diagnostics={
+                "pending": (
+                    "master_transferable_balance"
+                ),
+                "did_bybit_post": False,
+                "bybit_post_count": 0,
+                "bybit_get_count": 1,
+                "query_succeeded": False,
+                "withdrawal_allowed": False,
+            },
+        )
+
+        db.commit()
+
+        return result
+
+    if balance is None:
+        raise NegativeBybitFlowError(
+            "Master balance query returned no result"
+        )
+
+    observed_account_type = str(
+        balance.account_type or ""
+    ).strip().upper()
+
+    observed_coin = str(
+        balance.coin or ""
+    ).strip().upper()
+
+    observed_member_id = str(
+        balance.member_id or ""
+    ).strip()
+
+    balance_snapshot = {
+        "account_type": observed_account_type,
+        "coin": observed_coin,
+        "member_id": observed_member_id,
+        "wallet_balance": _decimal_text(
+            Decimal(balance.wallet_balance)
+        ),
+        "transfer_balance": _decimal_text(
+            Decimal(balance.transfer_balance)
+        ),
+        "transfer_safe_amount": (
+            _decimal_text(
+                Decimal(
+                    balance.transfer_safe_amount
+                )
+            )
+            if (
+                balance.transfer_safe_amount
+                is not None
+            )
+            else None
+        ),
+        "ltv_transfer_safe_amount": (
+            _decimal_text(
+                Decimal(
+                    balance
+                    .ltv_transfer_safe_amount
+                )
+            )
+            if (
+                balance
+                .ltv_transfer_safe_amount
+                is not None
+            )
+            else None
+        ),
+        "raw": _json_dict(balance.raw),
+    }
+
+    mismatch_error: str | None = None
+
+    if observed_account_type != account_type:
+        mismatch_error = (
+            "Master balance account_type mismatch"
+        )
+    elif observed_coin != coin:
+        mismatch_error = (
+            "Master balance coin mismatch"
+        )
+    elif (
+        observed_member_id
+        != clean_master_uid
+    ):
+        mismatch_error = (
+            "Master balance member_id mismatch"
+        )
+
+    if mismatch_error is not None:
+        barrier = {
+            "schema": (
+                MASTER_TRANSFERABLE_BALANCE_SCHEMA
+            ),
+            "state": "failed_requires_review",
+            "required_master_usdt": (
+                _decimal_text(
+                    required_master_usdt
+                )
+            ),
+            "query_succeeded": True,
+            "balance": balance_snapshot,
+            "error": mismatch_error,
+            "observed_at": (
+                resolved_now.isoformat()
+            ),
+            "withdrawal_allowed": False,
+        }
+
+        return _fail_master_balance_barrier(
+            db,
+            settlement_batch=settlement_batch,
+            flow=flow,
+            barrier=barrier,
+            error=mismatch_error,
+            resolved_now=resolved_now,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            transition=(
+                "master_transferable_balance_"
+                "mismatch"
+            ),
+        )
+
+    transfer_balance = Decimal(
+        balance.transfer_balance
+    )
+
+    sufficient = (
+        transfer_balance
+        >= required_master_usdt
+    )
+
+    barrier = {
+        "schema": (
+            MASTER_TRANSFERABLE_BALANCE_SCHEMA
+        ),
+        "state": (
+            "confirmed"
+            if sufficient
+            else "pending"
+        ),
+        "account_type": account_type,
+        "coin": coin,
+        "member_id": clean_master_uid,
+        "required_master_usdt": (
+            _decimal_text(
+                required_master_usdt
+            )
+        ),
+        "balance": balance_snapshot,
+        "query_succeeded": True,
+        "sufficient": sufficient,
+        "observed_at": (
+            resolved_now.isoformat()
+        ),
+        "withdrawal_allowed": sufficient,
+    }
+
+    _store_master_balance_barrier(
+        flow=flow,
+        barrier=barrier,
+    )
+
+    if not sufficient:
+        flow.status = (
+            BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED
+        )
+        flow.error = None
+        flow.updated_at = resolved_now
+
+        settlement_batch.status = (
+            BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING
+        )
+        settlement_batch.error = None
+        settlement_batch.updated_at = (
+            resolved_now
+        )
+
+        db.add(flow)
+        db.add(settlement_batch)
+        db.flush()
+
+        result = _step_result(
+            ok=False,
+            transition=(
+                "master_transferable_balance_"
+                "pending"
+            ),
+            settlement_batch=settlement_batch,
+            flow=flow,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            diagnostics={
+                "pending": (
+                    "master_transferable_balance"
+                ),
+                "did_bybit_post": False,
+                "bybit_post_count": 0,
+                "bybit_get_count": 1,
+                "required_master_usdt": (
+                    _decimal_text(
+                        required_master_usdt
+                    )
+                ),
+                "observed_transfer_balance": (
+                    _decimal_text(
+                        transfer_balance
+                    )
+                ),
+                "withdrawal_allowed": False,
+            },
+        )
+
+        db.commit()
+
+        return result
+
+    flow.status = (
+        BYBIT_FLOW_STATUS_MASTER_BALANCE_CONFIRMED
+    )
+    flow.error = None
+    flow.updated_at = resolved_now
+
+    settlement_batch.status = (
+        BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING
+    )
+    settlement_batch.error = None
+    settlement_batch.updated_at = (
+        resolved_now
+    )
+
+    db.add(flow)
+    db.add(settlement_batch)
+    db.flush()
+
+    result = _step_result(
+        ok=True,
+        transition=(
+            "master_transferable_balance_"
+            "confirmed"
+        ),
+        settlement_batch=settlement_batch,
+        flow=flow,
+        status_before=status_before,
+        settlement_status_before=(
+            settlement_status_before
+        ),
+        diagnostics={
+            "did_bybit_post": False,
+            "bybit_post_count": 0,
+            "bybit_get_count": 1,
+            "required_master_usdt": (
+                _decimal_text(
+                    required_master_usdt
+                )
+            ),
+            "observed_transfer_balance": (
+                _decimal_text(
+                    transfer_balance
+                )
+            ),
+            "withdrawal_allowed": True,
+            "next_transition": (
+                "prepare_withdrawal_intent"
+            ),
+        },
+    )
+
+    db.commit()
+
+    return result
+
+
 def resume_negative_bybit_flow_once(
     db: Session,
     *,
@@ -2231,11 +2932,99 @@ def resume_negative_bybit_flow_once(
                     allowed_states={"confirmed"},
                 )
 
+                if str(flow.status) == (
+                    BYBIT_FLOW_STATUS_MASTER_BALANCE_CONFIRMED
+                ):
+                    result = _step_result(
+                        ok=True,
+                        transition=(
+                            "master_transferable_balance_"
+                            "already_confirmed"
+                        ),
+                        settlement_batch=(
+                            settlement_batch
+                        ),
+                        flow=flow,
+                        status_before=status_before,
+                        settlement_status_before=(
+                            settlement_status_before
+                        ),
+                        idempotent=True,
+                        diagnostics={
+                            "did_bybit_post": False,
+                            "bybit_post_count": 0,
+                            "bybit_get_count": 0,
+                            "withdrawal_allowed": True,
+                            "next_transition": (
+                                "prepare_withdrawal_intent"
+                            ),
+                        },
+                    )
+
+                    db.commit()
+
+                    return result
+
+                if str(flow.status) != (
+                    BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED
+                ):
+                    raise NegativeBybitFlowError(
+                        "Confirmed Universal Transfer "
+                        "has incompatible flow status: "
+                        f"{flow.status}"
+                    )
+
+                return (
+                    _master_transferable_balance_barrier_once(
+                        db,
+                        settlement_batch=(
+                            settlement_batch
+                        ),
+                        flow=flow,
+                        bybit_client=(
+                            bybit_client
+                        ),
+                        master_uid=master_uid,
+                        resolved_now=(
+                            resolved_now
+                        ),
+                        status_before=(
+                            status_before
+                        ),
+                        settlement_status_before=(
+                            settlement_status_before
+                        ),
+                    )
+                )
+
+            if intent_state == (
+                "failed_requires_review"
+            ):
+                _validate_prepared_intent(
+                    flow=flow,
+                    intent=(
+                        flow
+                        .universal_transfer_intent_json
+                    ),
+                    allowed_states={
+                        "failed_requires_review"
+                    },
+                )
+
+                if str(flow.status) != (
+                    BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+                ):
+                    raise NegativeBybitFlowError(
+                        "Failed Universal Transfer "
+                        "intent has incompatible "
+                        f"flow status: {flow.status}"
+                    )
+
                 result = _step_result(
-                    ok=True,
+                    ok=False,
                     transition=(
-                        "universal_transfer_"
-                        "already_confirmed"
+                        "failed_requires_review_"
+                        "already_recorded"
                     ),
                     settlement_batch=(
                         settlement_batch
@@ -2246,9 +3035,14 @@ def resume_negative_bybit_flow_once(
                         settlement_status_before
                     ),
                     idempotent=True,
+                    error=flow.error,
                     diagnostics={
                         "did_bybit_post": False,
                         "bybit_post_count": 0,
+                        "bybit_get_count": 0,
+                        "no_automatic_resend": True,
+                        "reserve_release_allowed": False,
+                        "pricing_unlock_allowed": False,
                     },
                 )
 

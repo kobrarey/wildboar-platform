@@ -10,6 +10,7 @@ import pytest
 
 import app.settlement.negative_bybit_flow_live_service as service
 from app.bybit.asset_flows import (
+    BybitAccountCoinBalance,
     BybitUniversalTransferResult,
 )
 from app.bybit.client import BybitApiError
@@ -25,6 +26,7 @@ from app.settlement.statuses import (
     BATCH_STATUS_NEGATIVE_NET_SALE_EXECUTED,
     BYBIT_FLOW_STATUS_CREATED,
     BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW,
+    BYBIT_FLOW_STATUS_MASTER_BALANCE_CONFIRMED,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_INTENT_PREPARED,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED,
@@ -203,6 +205,192 @@ def make_transfer_record(
             ),
             "status": status,
         },
+    )
+
+
+def make_master_balance(
+    *,
+    account_type: str = "FUND",
+    coin: str = "USDT",
+    member_id: str = "90001",
+    wallet_balance: Decimal = Decimal("101"),
+    transfer_balance: Decimal = Decimal("101"),
+    transfer_safe_amount: Decimal | None = (
+        Decimal("101")
+    ),
+    ltv_transfer_safe_amount: Decimal | None = (
+        Decimal("101")
+    ),
+) -> BybitAccountCoinBalance:
+    return BybitAccountCoinBalance(
+        account_type=account_type,
+        coin=coin,
+        member_id=member_id,
+        wallet_balance=wallet_balance,
+        transfer_balance=transfer_balance,
+        transfer_safe_amount=(
+            transfer_safe_amount
+        ),
+        ltv_transfer_safe_amount=(
+            ltv_transfer_safe_amount
+        ),
+        raw={
+            "accountType": account_type,
+            "coin": coin,
+            "memberId": member_id,
+            "walletBalance": format(
+                wallet_balance,
+                "f",
+            ),
+            "transferBalance": format(
+                transfer_balance,
+                "f",
+            ),
+            "transferSafeAmount": (
+                format(
+                    transfer_safe_amount,
+                    "f",
+                )
+                if transfer_safe_amount
+                is not None
+                else None
+            ),
+            "ltvTransferSafeAmount": (
+                format(
+                    ltv_transfer_safe_amount,
+                    "f",
+                )
+                if ltv_transfer_safe_amount
+                is not None
+                else None
+            ),
+        },
+    )
+
+
+def advance_to_reconciled_transfer(
+    env: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> SimpleNamespace:
+    resume_once(env)
+    resume_once(env)
+    resume_once(env)
+
+    def confirmed_record(
+        bybit_client,
+        *,
+        transfer_id,
+    ):
+        assert env.db.lock_active is False
+
+        env.db.events.append(
+            "query_universal_transfer"
+        )
+
+        bybit_client.get_calls.append(
+            {
+                "path": (
+                    "/v5/asset/transfer/"
+                    "query-universal-transfer-list"
+                ),
+                "params": {
+                    "transferId": transfer_id,
+                },
+            }
+        )
+
+        return make_transfer_record(
+            status="SUCCESS",
+            transfer_id=transfer_id,
+        )
+
+    monkeypatch.setattr(
+        service,
+        "query_universal_transfer",
+        confirmed_record,
+    )
+
+    result = resume_once(env)
+    flow = env.state["flow"]
+
+    assert result.ok is True
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_universal_transfer_"
+        "confirmed"
+    )
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED
+    )
+    assert flow.universal_transfer_intent_json[
+        "state"
+    ] == "confirmed"
+
+    return flow
+
+
+def install_master_balance_query(
+    monkeypatch: pytest.MonkeyPatch,
+    env: SimpleNamespace,
+    *,
+    balance: BybitAccountCoinBalance | None = None,
+    error: BaseException | None = None,
+) -> None:
+    def query_balance(
+        bybit_client,
+        *,
+        account_type,
+        coin,
+        member_id,
+        with_transfer_safe_amount,
+        with_ltv_transfer_safe_amount,
+    ):
+        assert env.db.lock_active is False
+
+        assert account_type == "FUND"
+        assert coin == "USDT"
+        assert member_id == "90001"
+
+        assert (
+            with_transfer_safe_amount
+            is True
+        )
+        assert (
+            with_ltv_transfer_safe_amount
+            is True
+        )
+
+        env.db.events.append(
+            "query_master_transferable_balance"
+        )
+
+        bybit_client.get_calls.append(
+            {
+                "path": (
+                    "/v5/asset/transfer/"
+                    "query-account-coin-balance"
+                ),
+                "params": {
+                    "accountType": account_type,
+                    "coin": coin,
+                    "memberId": member_id,
+                    "withTransferSafeAmount": 1,
+                    "withLtvTransferSafeAmount": 1,
+                },
+            }
+        )
+
+        if error is not None:
+            raise error
+
+        assert balance is not None
+        return balance
+
+    monkeypatch.setattr(
+        service,
+        "query_account_coin_balance",
+        query_balance,
     )
 
 
@@ -1817,3 +2005,549 @@ def test_reconciliation_query_error_stays_pending_without_post(
     assert len(
         env.client.post_calls
     ) == post_count_before
+
+
+def test_master_balance_insufficient_stays_pending_without_withdrawal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    flow = advance_to_reconciled_transfer(
+        env,
+        monkeypatch,
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+    get_count_before = len(
+        env.client.get_calls
+    )
+
+    install_master_balance_query(
+        monkeypatch,
+        env,
+        balance=make_master_balance(
+            wallet_balance=Decimal("101"),
+            transfer_balance=Decimal("100"),
+        ),
+    )
+
+    result = resume_once(env)
+
+    barrier = flow.reconciliation_json[
+        "master_transferable_balance_barrier"
+    ]
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "master_transferable_balance_pending"
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING
+    )
+
+    assert barrier["state"] == "pending"
+    assert barrier[
+        "required_master_usdt"
+    ] == "101"
+    assert barrier[
+        "balance"
+    ]["transfer_balance"] == "100"
+    assert barrier["sufficient"] is False
+    assert barrier[
+        "withdrawal_allowed"
+    ] is False
+
+    assert result.diagnostics[
+        "withdrawal_allowed"
+    ] is False
+
+    assert flow.withdrawal_intent_json is None
+    assert flow.withdrawal_submitted_at is None
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before + 1
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_master_balance_sufficient_confirms_and_rerun_skips_get(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    flow = advance_to_reconciled_transfer(
+        env,
+        monkeypatch,
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+    get_count_before = len(
+        env.client.get_calls
+    )
+
+    install_master_balance_query(
+        monkeypatch,
+        env,
+        balance=make_master_balance(
+            transfer_balance=Decimal("101"),
+        ),
+    )
+
+    result = resume_once(env)
+
+    barrier = flow.reconciliation_json[
+        "master_transferable_balance_barrier"
+    ]
+
+    assert result.ok is True
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "master_transferable_balance_confirmed"
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_MASTER_BALANCE_CONFIRMED
+    )
+
+    assert barrier["state"] == "confirmed"
+    assert barrier["sufficient"] is True
+    assert barrier[
+        "withdrawal_allowed"
+    ] is True
+
+    assert result.diagnostics[
+        "next_transition"
+    ] == "prepare_withdrawal_intent"
+
+    assert flow.withdrawal_intent_json is None
+    assert flow.withdrawal_submitted_at is None
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before + 1
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+    def unexpected_balance_query(
+        *args,
+        **kwargs,
+    ):
+        raise AssertionError(
+            "Confirmed balance barrier must not "
+            "repeat Bybit GET"
+        )
+
+    monkeypatch.setattr(
+        service,
+        "query_account_coin_balance",
+        unexpected_balance_query,
+    )
+
+    get_count_after_confirm = len(
+        env.client.get_calls
+    )
+
+    rerun = resume_once(env)
+
+    assert rerun.ok is True
+    assert rerun.idempotent is True
+
+    assert rerun.diagnostics[
+        "transition"
+    ] == (
+        "master_transferable_balance_"
+        "already_confirmed"
+    )
+
+    assert rerun.diagnostics[
+        "bybit_get_count"
+    ] == 0
+    assert rerun.diagnostics[
+        "withdrawal_allowed"
+    ] is True
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_after_confirm
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+    assert flow.withdrawal_intent_json is None
+    assert flow.withdrawal_submitted_at is None
+
+
+@pytest.mark.parametrize(
+    (
+        "field_name",
+        "field_value",
+        "expected_error",
+    ),
+    [
+        (
+            "account_type",
+            "UNIFIED",
+            "account_type mismatch",
+        ),
+        (
+            "coin",
+            "USDC",
+            "coin mismatch",
+        ),
+        (
+            "member_id",
+            "99999",
+            "member_id mismatch",
+        ),
+    ],
+)
+def test_master_balance_identity_mismatch_requires_review(
+    monkeypatch: pytest.MonkeyPatch,
+    field_name: str,
+    field_value: str,
+    expected_error: str,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    flow = advance_to_reconciled_transfer(
+        env,
+        monkeypatch,
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    balance_kwargs = {
+        field_name: field_value,
+    }
+
+    install_master_balance_query(
+        monkeypatch,
+        env,
+        balance=make_master_balance(
+            **balance_kwargs,
+        ),
+    )
+
+    result = resume_once(env)
+
+    barrier = flow.reconciliation_json[
+        "master_transferable_balance_barrier"
+    ]
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "master_transferable_balance_mismatch"
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert expected_error in str(
+        result.error
+    )
+
+    assert barrier["state"] == (
+        "failed_requires_review"
+    )
+    assert barrier[
+        "withdrawal_allowed"
+    ] is False
+
+    assert result.diagnostics[
+        "reserve_release_allowed"
+    ] is False
+    assert result.diagnostics[
+        "pricing_unlock_allowed"
+    ] is False
+
+    assert flow.withdrawal_intent_json is None
+    assert flow.withdrawal_submitted_at is None
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_master_balance_query_error_blocks_withdrawal(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    flow = advance_to_reconciled_transfer(
+        env,
+        monkeypatch,
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+    get_count_before = len(
+        env.client.get_calls
+    )
+
+    install_master_balance_query(
+        monkeypatch,
+        env,
+        error=BybitApiError(
+            "simulated master balance GET failure"
+        ),
+    )
+
+    result = resume_once(env)
+
+    barrier = flow.reconciliation_json[
+        "master_transferable_balance_barrier"
+    ]
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "master_transferable_balance_"
+        "query_pending"
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING
+    )
+
+    assert barrier["state"] == "pending"
+    assert barrier[
+        "query_succeeded"
+    ] is False
+    assert barrier[
+        "withdrawal_allowed"
+    ] is False
+
+    assert (
+        "simulated master balance GET failure"
+        in barrier["query_error"]
+    )
+
+    assert result.diagnostics[
+        "withdrawal_allowed"
+    ] is False
+
+    assert flow.withdrawal_intent_json is None
+    assert flow.withdrawal_submitted_at is None
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before + 1
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_post_acknowledgement_mismatch_records_post_and_requires_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    resume_once(env)
+    resume_once(env)
+
+    def mismatched_acknowledgement(
+        bybit_client,
+        **kwargs,
+    ):
+        assert env.db.lock_active is False
+        assert env.db.events[-1] == "commit"
+
+        env.db.events.append(
+            "universal_transfer_post"
+        )
+
+        bybit_client.post_calls.append(
+            deepcopy(kwargs)
+        )
+
+        return BybitUniversalTransferResult(
+            transfer_id=kwargs[
+                "transfer_id"
+            ],
+            coin=kwargs["coin"],
+            amount_usdt=Decimal("102"),
+            from_member_id=kwargs[
+                "from_member_id"
+            ],
+            to_member_id=kwargs[
+                "to_member_id"
+            ],
+            from_account_type=kwargs[
+                "from_account_type"
+            ],
+            to_account_type=kwargs[
+                "to_account_type"
+            ],
+            status="PENDING",
+            raw={
+                "retCode": 0,
+                "result": {
+                    "transferId": kwargs[
+                        "transfer_id"
+                    ],
+                    "coin": kwargs["coin"],
+                    "amount": "102",
+                    "status": "PENDING",
+                },
+            },
+        )
+
+    monkeypatch.setattr(
+        service,
+        "create_universal_transfer",
+        mismatched_acknowledgement,
+    )
+
+    result = resume_once(env)
+
+    flow = env.state["flow"]
+    intent = (
+        flow.universal_transfer_intent_json
+    )
+    acknowledgement = intent[
+        "acknowledgement"
+    ]
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "submit_universal_transfer_"
+        "ack_mismatch"
+    )
+
+    assert result.diagnostics[
+        "did_bybit_post"
+    ] is True
+    assert result.diagnostics[
+        "bybit_post_count"
+    ] == 1
+    assert result.diagnostics[
+        "no_automatic_resend"
+    ] is True
+    assert result.diagnostics[
+        "reserve_release_allowed"
+    ] is False
+    assert result.diagnostics[
+        "pricing_unlock_allowed"
+    ] is False
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert intent["state"] == (
+        "failed_requires_review"
+    )
+    assert acknowledgement[
+        "outcome"
+    ] == "mismatch"
+    assert acknowledgement[
+        "bybit_post_performed"
+    ] is True
+    assert acknowledgement[
+        "no_automatic_resend"
+    ] is True
+
+    assert acknowledgement[
+        "expected"
+    ]["amount_usdt"] == "101"
+    assert acknowledgement[
+        "observed"
+    ]["amount_usdt"] == "102"
+    assert acknowledgement[
+        "response"
+    ]["result"]["amount"] == "102"
+
+    assert len(
+        env.client.post_calls
+    ) == 1
+
+    get_count_before_rerun = len(
+        env.client.get_calls
+    )
+    post_count_before_rerun = len(
+        env.client.post_calls
+    )
+
+    rerun = resume_once(env)
+
+    assert rerun.ok is False
+    assert rerun.idempotent is True
+
+    assert rerun.diagnostics[
+        "transition"
+    ] == (
+        "failed_requires_review_"
+        "already_recorded"
+    )
+
+    assert rerun.diagnostics[
+        "did_bybit_post"
+    ] is False
+    assert rerun.diagnostics[
+        "bybit_post_count"
+    ] == 0
+    assert rerun.diagnostics[
+        "bybit_get_count"
+    ] == 0
+    assert rerun.diagnostics[
+        "no_automatic_resend"
+    ] is True
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert (
+        flow
+        .universal_transfer_intent_json[
+            "acknowledgement"
+        ]["outcome"]
+        == "mismatch"
+    )
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before_rerun
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before_rerun
