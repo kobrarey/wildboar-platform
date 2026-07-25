@@ -29,6 +29,8 @@ from app.operation_guard.service import (
 )
 from app.settlement.negative_bybit_flow import (
     _get_fund,
+    _is_bybit_pending,
+    _is_bybit_success,
     _lock_existing_flow,
     _lock_sale_batch_for_settlement,
     _lock_settlement_batch,
@@ -52,6 +54,7 @@ from app.settlement.statuses import (
     BYBIT_FLOW_STATUS_PREFLIGHT_PASSED,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_INTENT_PREPARED,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING,
+    BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_SUBMITTING,
 )
 
@@ -60,6 +63,10 @@ POLICY_VERSION = "negative_cash_delivery_v1"
 
 UNIVERSAL_TRANSFER_INTENT_SCHEMA = (
     "negative_universal_transfer_intent_v2"
+)
+
+UNIVERSAL_TRANSFER_RECONCILIATION_SCHEMA = (
+    "negative_universal_transfer_reconciliation_v2"
 )
 
 
@@ -571,11 +578,18 @@ def _intent_snapshot(
     *,
     flow: FundNegativeBybitFlow,
     intent: dict[str, Any],
+    allowed_states: (
+        set[str] | frozenset[str] | None
+    ) = None,
 ) -> dict[str, Any]:
     _validate_prepared_intent(
         flow=flow,
         intent=intent,
-        allowed_states={"prepared"},
+        allowed_states=(
+            allowed_states
+            if allowed_states is not None
+            else {"prepared"}
+        ),
     )
 
     payload = intent.get("payload")
@@ -1383,6 +1397,666 @@ def _submit_universal_transfer_once(
     return result
 
 
+def _transfer_record_snapshot(
+    record,
+) -> dict[str, Any]:
+    return {
+        "transfer_id": str(
+            record.transfer_id or ""
+        ).strip(),
+        "coin": str(
+            record.coin or ""
+        ).strip().upper(),
+        "amount_usdt": _decimal_text(
+            Decimal(record.amount_usdt)
+        ),
+        "from_member_id": str(
+            record.from_member_id or ""
+        ).strip(),
+        "to_member_id": str(
+            record.to_member_id or ""
+        ).strip(),
+        "from_account_type": str(
+            record.from_account_type or ""
+        ).strip().upper(),
+        "to_account_type": str(
+            record.to_account_type or ""
+        ).strip().upper(),
+        "status": (
+            str(record.status).strip()
+            if record.status is not None
+            else None
+        ),
+        "raw": _json_dict(record.raw),
+    }
+
+
+def _validate_exact_transfer_record(
+    *,
+    record,
+    snapshot: dict[str, Any],
+) -> None:
+    if (
+        str(record.transfer_id or "").strip()
+        != snapshot["transfer_id"]
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer reconciliation "
+            "transfer_id mismatch"
+        )
+
+    if (
+        str(record.coin or "").strip().upper()
+        != snapshot["coin"]
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer reconciliation "
+            "coin mismatch"
+        )
+
+    if not _same_decimal(
+        record.amount_usdt,
+        snapshot["amount_usdt"],
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer reconciliation "
+            "amount mismatch"
+        )
+
+    if (
+        str(
+            record.from_member_id or ""
+        ).strip()
+        != snapshot["from_member_id"]
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer reconciliation "
+            "from_member_id mismatch"
+        )
+
+    if (
+        str(
+            record.to_member_id or ""
+        ).strip()
+        != snapshot["to_member_id"]
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer reconciliation "
+            "to_member_id mismatch"
+        )
+
+    if (
+        str(
+            record.from_account_type or ""
+        ).strip().upper()
+        != snapshot["from_account_type"]
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer reconciliation "
+            "from_account_type mismatch"
+        )
+
+    if (
+        str(
+            record.to_account_type or ""
+        ).strip().upper()
+        != snapshot["to_account_type"]
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer reconciliation "
+            "to_account_type mismatch"
+        )
+
+
+def _fail_universal_transfer_reconciliation(
+    db: Session,
+    *,
+    settlement_batch,
+    flow: FundNegativeBybitFlow,
+    intent: dict[str, Any],
+    reconciliation: dict[str, Any],
+    error: str,
+    now: datetime,
+    status_before: str | None,
+    settlement_status_before: str | None,
+    transition: str,
+) -> NegativeBybitFlowResult:
+    intent["state"] = (
+        "failed_requires_review"
+    )
+    intent["reconciliation"] = (
+        reconciliation
+    )
+
+    flow.universal_transfer_intent_json = (
+        intent
+    )
+    flow.universal_transfer_reconciliation_json = (
+        _json_dict(reconciliation)
+    )
+
+    result = _set_failed(
+        flow=flow,
+        settlement_batch=settlement_batch,
+        fund=None,
+        status_before=status_before,
+        settlement_status_before=(
+            settlement_status_before
+        ),
+        error=error,
+        now=now,
+        diagnostics={
+            "transition": transition,
+            "did_bybit_post": False,
+            "bybit_post_count": 0,
+            "no_automatic_resend": True,
+            "reserve_release_allowed": False,
+            "pricing_unlock_allowed": False,
+            "reconciliation": reconciliation,
+        },
+    )
+
+    db.add(flow)
+    db.add(settlement_batch)
+    db.flush()
+    db.commit()
+
+    return result
+
+
+def _reconcile_universal_transfer_once(
+    db: Session,
+    *,
+    settlement_batch,
+    flow: FundNegativeBybitFlow,
+    bybit_client: BybitV5Client,
+    resolved_now: datetime,
+    status_before: str | None,
+    settlement_status_before: str | None,
+) -> NegativeBybitFlowResult:
+    intent = deepcopy(
+        flow.universal_transfer_intent_json
+    )
+
+    if not isinstance(intent, dict):
+        raise NegativeBybitFlowError(
+            "Universal Transfer intent is missing "
+            "during reconciliation"
+        )
+
+    snapshot = _intent_snapshot(
+        flow=flow,
+        intent=intent,
+        allowed_states={
+            "submitting",
+            "reconciling",
+        },
+    )
+
+    settlement_batch_id = int(
+        settlement_batch.id
+    )
+
+    # Release settlement, sale and flow locks
+    # before the read-only Bybit GET.
+    db.commit()
+
+    record = None
+    query_error: BaseException | None = None
+
+    try:
+        record = query_universal_transfer(
+            bybit_client,
+            transfer_id=snapshot[
+                "transfer_id"
+            ],
+        )
+    except (
+        BybitApiError,
+        BybitAssetFlowError,
+    ) as exc:
+        query_error = exc
+
+    settlement_batch, flow = (
+        _locked_flow_for_submit(
+            db,
+            settlement_batch_id=(
+                settlement_batch_id
+            ),
+        )
+    )
+
+    current_intent = deepcopy(
+        flow.universal_transfer_intent_json
+    )
+
+    if not isinstance(
+        current_intent,
+        dict,
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer intent "
+            "disappeared during reconciliation"
+        )
+
+    _validate_snapshot_unchanged(
+        flow=flow,
+        intent=current_intent,
+        snapshot=snapshot,
+        allowed_states={
+            "submitting",
+            "reconciling",
+        },
+    )
+
+    if query_error is not None:
+        reconciliation = {
+            "schema": (
+                UNIVERSAL_TRANSFER_RECONCILIATION_SCHEMA
+            ),
+            "phase": "exact_transfer_id_query",
+            "transfer_id": snapshot[
+                "transfer_id"
+            ],
+            "record_found": False,
+            "query_succeeded": False,
+            "query_error": (
+                _bounded_external_error(
+                    query_error
+                )
+            ),
+            "observed_at": (
+                resolved_now.isoformat()
+            ),
+            "no_automatic_resend": True,
+        }
+
+        current_intent["state"] = (
+            "reconciling"
+        )
+        current_intent["reconciliation"] = (
+            reconciliation
+        )
+
+        flow.universal_transfer_intent_json = (
+            current_intent
+        )
+        flow.universal_transfer_reconciliation_json = (
+            _json_dict(reconciliation)
+        )
+        flow.status = (
+            BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING
+        )
+        flow.error = None
+        flow.updated_at = resolved_now
+
+        settlement_batch.status = (
+            BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING
+        )
+        settlement_batch.error = None
+        settlement_batch.updated_at = (
+            resolved_now
+        )
+
+        db.add(flow)
+        db.add(settlement_batch)
+        db.flush()
+
+        result = _step_result(
+            ok=False,
+            transition=(
+                "reconcile_universal_transfer_"
+                "query_pending"
+            ),
+            settlement_batch=(
+                settlement_batch
+            ),
+            flow=flow,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            diagnostics={
+                "pending": (
+                    "universal_transfer_"
+                    "reconciliation"
+                ),
+                "did_bybit_post": False,
+                "bybit_post_count": 0,
+                "record_found": False,
+                "query_succeeded": False,
+                "no_automatic_resend": True,
+            },
+        )
+
+        db.commit()
+
+        return result
+
+    if record is None:
+        reconciliation = {
+            "schema": (
+                UNIVERSAL_TRANSFER_RECONCILIATION_SCHEMA
+            ),
+            "phase": "exact_transfer_id_query",
+            "transfer_id": snapshot[
+                "transfer_id"
+            ],
+            "record_found": False,
+            "query_succeeded": True,
+            "observed_at": (
+                resolved_now.isoformat()
+            ),
+            "no_automatic_resend": True,
+        }
+
+        current_intent["state"] = (
+            "reconciling"
+        )
+        current_intent["reconciliation"] = (
+            reconciliation
+        )
+
+        flow.universal_transfer_intent_json = (
+            current_intent
+        )
+        flow.universal_transfer_reconciliation_json = (
+            _json_dict(reconciliation)
+        )
+        flow.status = (
+            BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING
+        )
+        flow.error = None
+        flow.updated_at = resolved_now
+
+        settlement_batch.status = (
+            BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING
+        )
+        settlement_batch.error = None
+        settlement_batch.updated_at = (
+            resolved_now
+        )
+
+        db.add(flow)
+        db.add(settlement_batch)
+        db.flush()
+
+        result = _step_result(
+            ok=False,
+            transition=(
+                "reconcile_universal_transfer_"
+                "missing"
+            ),
+            settlement_batch=(
+                settlement_batch
+            ),
+            flow=flow,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            diagnostics={
+                "pending": (
+                    "universal_transfer_"
+                    "reconciliation"
+                ),
+                "did_bybit_post": False,
+                "bybit_post_count": 0,
+                "record_found": False,
+                "query_succeeded": True,
+                "no_automatic_resend": True,
+            },
+        )
+
+        db.commit()
+
+        return result
+
+    record_snapshot = (
+        _transfer_record_snapshot(record)
+    )
+
+    try:
+        _validate_exact_transfer_record(
+            record=record,
+            snapshot=snapshot,
+        )
+    except NegativeBybitFlowError as exc:
+        reconciliation = {
+            "schema": (
+                UNIVERSAL_TRANSFER_RECONCILIATION_SCHEMA
+            ),
+            "phase": "exact_transfer_id_query",
+            "transfer_id": snapshot[
+                "transfer_id"
+            ],
+            "record_found": True,
+            "query_succeeded": True,
+            "exact_match": False,
+            "record": record_snapshot,
+            "error": str(exc),
+            "observed_at": (
+                resolved_now.isoformat()
+            ),
+            "no_automatic_resend": True,
+        }
+
+        return (
+            _fail_universal_transfer_reconciliation(
+                db,
+                settlement_batch=(
+                    settlement_batch
+                ),
+                flow=flow,
+                intent=current_intent,
+                reconciliation=(
+                    reconciliation
+                ),
+                error=str(exc),
+                now=resolved_now,
+                status_before=status_before,
+                settlement_status_before=(
+                    settlement_status_before
+                ),
+                transition=(
+                    "reconcile_universal_transfer_"
+                    "mismatch"
+                ),
+            )
+        )
+
+    reconciliation = {
+        "schema": (
+            UNIVERSAL_TRANSFER_RECONCILIATION_SCHEMA
+        ),
+        "phase": "exact_transfer_id_query",
+        "transfer_id": snapshot[
+            "transfer_id"
+        ],
+        "record_found": True,
+        "query_succeeded": True,
+        "exact_match": True,
+        "record": record_snapshot,
+        "observed_status": (
+            record.status
+        ),
+        "observed_at": (
+            resolved_now.isoformat()
+        ),
+        "no_automatic_resend": True,
+    }
+
+    if _is_bybit_success(record.status):
+        current_intent["state"] = (
+            "confirmed"
+        )
+        current_intent["reconciliation"] = (
+            reconciliation
+        )
+
+        flow.universal_transfer_intent_json = (
+            current_intent
+        )
+        flow.universal_transfer_reconciliation_json = (
+            _json_dict(reconciliation)
+        )
+        flow.universal_transfer_status = (
+            record.status
+        )
+        flow.universal_transfer_confirmed_at = (
+            resolved_now
+        )
+        flow.status = (
+            BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED
+        )
+        flow.error = None
+        flow.updated_at = resolved_now
+
+        settlement_batch.status = (
+            BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING
+        )
+        settlement_batch.error = None
+        settlement_batch.updated_at = (
+            resolved_now
+        )
+
+        db.add(flow)
+        db.add(settlement_batch)
+        db.flush()
+
+        result = _step_result(
+            ok=True,
+            transition=(
+                "reconcile_universal_transfer_"
+                "confirmed"
+            ),
+            settlement_batch=(
+                settlement_batch
+            ),
+            flow=flow,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            diagnostics={
+                "did_bybit_post": False,
+                "bybit_post_count": 0,
+                "record_found": True,
+                "exact_match": True,
+                "observed_status": (
+                    record.status
+                ),
+                "next_transition": (
+                    "master_transferable_"
+                    "balance_barrier"
+                ),
+            },
+        )
+
+        db.commit()
+
+        return result
+
+    if _is_bybit_pending(record.status):
+        current_intent["state"] = (
+            "reconciling"
+        )
+        current_intent["reconciliation"] = (
+            reconciliation
+        )
+
+        flow.universal_transfer_intent_json = (
+            current_intent
+        )
+        flow.universal_transfer_reconciliation_json = (
+            _json_dict(reconciliation)
+        )
+        flow.universal_transfer_status = (
+            record.status
+        )
+        flow.status = (
+            BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING
+        )
+        flow.error = None
+        flow.updated_at = resolved_now
+
+        settlement_batch.status = (
+            BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING
+        )
+        settlement_batch.error = None
+        settlement_batch.updated_at = (
+            resolved_now
+        )
+
+        db.add(flow)
+        db.add(settlement_batch)
+        db.flush()
+
+        result = _step_result(
+            ok=False,
+            transition=(
+                "reconcile_universal_transfer_"
+                "pending"
+            ),
+            settlement_batch=(
+                settlement_batch
+            ),
+            flow=flow,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            diagnostics={
+                "pending": (
+                    "universal_transfer_"
+                    "reconciliation"
+                ),
+                "did_bybit_post": False,
+                "bybit_post_count": 0,
+                "record_found": True,
+                "exact_match": True,
+                "observed_status": (
+                    record.status
+                ),
+                "no_automatic_resend": True,
+            },
+        )
+
+        db.commit()
+
+        return result
+
+    reconciliation[
+        "terminal_status_requires_review"
+    ] = True
+
+    return (
+        _fail_universal_transfer_reconciliation(
+            db,
+            settlement_batch=(
+                settlement_batch
+            ),
+            flow=flow,
+            intent=current_intent,
+            reconciliation=reconciliation,
+            error=(
+                "Universal Transfer has "
+                "unsupported terminal status: "
+                f"{record.status or 'empty'}"
+            ),
+            now=resolved_now,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            transition=(
+                "reconcile_universal_transfer_"
+                "terminal_status_review"
+            ),
+        )
+    )
+
+
 def resume_negative_bybit_flow_once(
     db: Session,
     *,
@@ -1525,47 +2199,27 @@ def resume_negative_bybit_flow_once(
                 "submitting",
                 "reconciling",
             }:
-                _validate_prepared_intent(
-                    flow=flow,
-                    intent=(
-                        flow
-                        .universal_transfer_intent_json
-                    ),
-                    allowed_states={
-                        "submitting",
-                        "reconciling",
-                    },
-                )
-
-                result = _step_result(
-                    ok=False,
-                    transition=(
-                        "reconcile_universal_transfer_"
-                        "required"
-                    ),
-                    settlement_batch=(
-                        settlement_batch
-                    ),
-                    flow=flow,
-                    status_before=status_before,
-                    settlement_status_before=(
-                        settlement_status_before
-                    ),
-                    idempotent=True,
-                    diagnostics={
-                        "pending": (
-                            "universal_transfer_"
-                            "reconciliation"
+                return (
+                    _reconcile_universal_transfer_once(
+                        db,
+                        settlement_batch=(
+                            settlement_batch
                         ),
-                        "did_bybit_post": False,
-                        "bybit_post_count": 0,
-                        "no_automatic_resend": True,
-                    },
+                        flow=flow,
+                        bybit_client=(
+                            bybit_client
+                        ),
+                        resolved_now=(
+                            resolved_now
+                        ),
+                        status_before=(
+                            status_before
+                        ),
+                        settlement_status_before=(
+                            settlement_status_before
+                        ),
+                    )
                 )
-
-                db.commit()
-
-                return result
 
             if intent_state == "confirmed":
                 _validate_prepared_intent(

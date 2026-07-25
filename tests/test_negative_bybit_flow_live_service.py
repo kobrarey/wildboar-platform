@@ -27,6 +27,7 @@ from app.settlement.statuses import (
     BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_INTENT_PREPARED,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING,
+    BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_SUBMITTING,
 )
 
@@ -145,6 +146,7 @@ def make_flow() -> SimpleNamespace:
         universal_transfer_confirmed_at=None,
         universal_transfer_submitted_at=None,
         universal_transfer_intent_json=None,
+        universal_transfer_reconciliation_json=None,
         withdrawal_intent_json=None,
         withdrawal_submitted_at=None,
         from_sub_uid=None,
@@ -158,6 +160,49 @@ def make_flow() -> SimpleNamespace:
         report_json=None,
         error=None,
         updated_at=None,
+    )
+
+
+def make_transfer_record(
+    *,
+    status: str,
+    transfer_id: str = (
+        "11111111-1111-5111-8111-"
+        "111111111111"
+    ),
+    coin: str = "USDT",
+    amount_usdt: Decimal = Decimal("101"),
+    from_member_id: str = "70001",
+    to_member_id: str = "90001",
+    from_account_type: str = "FUND",
+    to_account_type: str = "FUND",
+) -> BybitUniversalTransferResult:
+    return BybitUniversalTransferResult(
+        transfer_id=transfer_id,
+        coin=coin,
+        amount_usdt=amount_usdt,
+        from_member_id=from_member_id,
+        to_member_id=to_member_id,
+        from_account_type=from_account_type,
+        to_account_type=to_account_type,
+        status=status,
+        raw={
+            "transferId": transfer_id,
+            "coin": coin,
+            "amount": format(
+                amount_usdt,
+                "f",
+            ),
+            "fromMemberId": from_member_id,
+            "toMemberId": to_member_id,
+            "fromAccountType": (
+                from_account_type
+            ),
+            "toAccountType": (
+                to_account_type
+            ),
+            "status": status,
+        },
     )
 
 
@@ -1071,7 +1116,7 @@ def test_guard_blocked_after_claim_performs_no_post(
     )
 
 
-def test_crash_after_claim_never_resends(
+def test_crash_after_claim_recovers_by_exact_query_without_resend(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     env = install_service_fakes(monkeypatch)
@@ -1138,23 +1183,82 @@ def test_crash_after_claim_never_resends(
         env.client.post_calls
     )
 
+    def confirmed_record(
+        bybit_client,
+        *,
+        transfer_id,
+    ):
+        assert env.db.lock_active is False
+
+        env.db.events.append(
+            "query_universal_transfer"
+        )
+
+        bybit_client.get_calls.append(
+            {
+                "path": (
+                    "/v5/asset/transfer/"
+                    "query-universal-transfer-list"
+                ),
+                "params": {
+                    "transferId": transfer_id,
+                },
+            }
+        )
+
+        return make_transfer_record(
+            status="SUCCESS",
+            transfer_id=transfer_id,
+        )
+
+    monkeypatch.setattr(
+        service,
+        "query_universal_transfer",
+        confirmed_record,
+    )
+
     result = resume_once(env)
 
-    assert result.ok is False
-    assert result.idempotent is True
+    intent = (
+        flow.universal_transfer_intent_json
+    )
+
+    assert result.ok is True
     assert result.diagnostics[
         "transition"
     ] == (
         "reconcile_universal_transfer_"
-        "required"
+        "confirmed"
     )
+
     assert result.diagnostics[
-        "no_automatic_resend"
-    ] is True
+        "did_bybit_post"
+    ] is False
+    assert result.diagnostics[
+        "bybit_post_count"
+    ] == 0
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED
+    )
+    assert flow.universal_transfer_status == (
+        "SUCCESS"
+    )
+    assert flow.universal_transfer_confirmed_at == (
+        NOW
+    )
+
+    assert intent["state"] == "confirmed"
+    assert intent[
+        "reconciliation"
+    ]["record_found"] is True
+    assert intent[
+        "reconciliation"
+    ]["exact_match"] is True
 
     assert len(
         env.client.get_calls
-    ) == get_count_after_crash
+    ) == get_count_after_crash + 1
 
     assert len(
         env.client.post_calls
@@ -1239,19 +1343,477 @@ def test_unknown_post_result_never_resends(
 
     rerun = resume_once(env)
 
+    intent = (
+        flow.universal_transfer_intent_json
+    )
+
     assert rerun.ok is False
-    assert rerun.idempotent is True
     assert rerun.diagnostics[
         "transition"
     ] == (
         "reconcile_universal_transfer_"
-        "required"
+        "missing"
     )
+
+    assert rerun.diagnostics[
+        "did_bybit_post"
+    ] is False
+    assert rerun.diagnostics[
+        "bybit_post_count"
+    ] == 0
+    assert rerun.diagnostics[
+        "no_automatic_resend"
+    ] is True
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING
+    )
+
+    assert intent["state"] == "reconciling"
+    assert intent[
+        "reconciliation"
+    ]["record_found"] is False
+    assert intent[
+        "reconciliation"
+    ]["query_succeeded"] is True
 
     assert len(
         env.client.get_calls
-    ) == get_count_after_unknown
+    ) == get_count_after_unknown + 1
 
     assert len(
         env.client.post_calls
     ) == post_count_after_unknown
+
+
+def test_exact_pending_transfer_stays_reconciling_without_post(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    resume_once(env)
+    resume_once(env)
+    resume_once(env)
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    def pending_record(
+        bybit_client,
+        *,
+        transfer_id,
+    ):
+        assert env.db.lock_active is False
+
+        env.db.events.append(
+            "query_universal_transfer"
+        )
+
+        bybit_client.get_calls.append(
+            {
+                "path": (
+                    "/v5/asset/transfer/"
+                    "query-universal-transfer-list"
+                ),
+                "params": {
+                    "transferId": transfer_id,
+                },
+            }
+        )
+
+        return make_transfer_record(
+            status="PROCESSING",
+            transfer_id=transfer_id,
+        )
+
+    monkeypatch.setattr(
+        service,
+        "query_universal_transfer",
+        pending_record,
+    )
+
+    result = resume_once(env)
+
+    flow = env.state["flow"]
+    intent = (
+        flow.universal_transfer_intent_json
+    )
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_universal_transfer_"
+        "pending"
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING
+    )
+    assert flow.universal_transfer_status == (
+        "PROCESSING"
+    )
+
+    assert intent["state"] == "reconciling"
+    assert intent[
+        "reconciliation"
+    ]["exact_match"] is True
+    assert intent[
+        "reconciliation"
+    ]["observed_status"] == (
+        "PROCESSING"
+    )
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_exact_success_transfer_is_confirmed_without_post(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    resume_once(env)
+    resume_once(env)
+    resume_once(env)
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    def success_record(
+        bybit_client,
+        *,
+        transfer_id,
+    ):
+        assert env.db.lock_active is False
+
+        env.db.events.append(
+            "query_universal_transfer"
+        )
+
+        bybit_client.get_calls.append(
+            {
+                "path": (
+                    "/v5/asset/transfer/"
+                    "query-universal-transfer-list"
+                ),
+                "params": {
+                    "transferId": transfer_id,
+                },
+            }
+        )
+
+        return make_transfer_record(
+            status="COMPLETED",
+            transfer_id=transfer_id,
+        )
+
+    monkeypatch.setattr(
+        service,
+        "query_universal_transfer",
+        success_record,
+    )
+
+    result = resume_once(env)
+
+    flow = env.state["flow"]
+    intent = (
+        flow.universal_transfer_intent_json
+    )
+
+    assert result.ok is True
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_universal_transfer_"
+        "confirmed"
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED
+    )
+    assert flow.universal_transfer_status == (
+        "COMPLETED"
+    )
+    assert flow.universal_transfer_confirmed_at == (
+        NOW
+    )
+
+    assert intent["state"] == "confirmed"
+    assert intent[
+        "reconciliation"
+    ]["exact_match"] is True
+
+    assert result.diagnostics[
+        "next_transition"
+    ] == (
+        "master_transferable_balance_barrier"
+    )
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_transfer_record_mismatch_fails_requires_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    resume_once(env)
+    resume_once(env)
+    resume_once(env)
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    def mismatched_record(
+        bybit_client,
+        *,
+        transfer_id,
+    ):
+        assert env.db.lock_active is False
+
+        env.db.events.append(
+            "query_universal_transfer"
+        )
+
+        bybit_client.get_calls.append(
+            {
+                "path": (
+                    "/v5/asset/transfer/"
+                    "query-universal-transfer-list"
+                ),
+                "params": {
+                    "transferId": transfer_id,
+                },
+            }
+        )
+
+        return make_transfer_record(
+            status="SUCCESS",
+            transfer_id=transfer_id,
+            amount_usdt=Decimal("102"),
+        )
+
+    monkeypatch.setattr(
+        service,
+        "query_universal_transfer",
+        mismatched_record,
+    )
+
+    result = resume_once(env)
+
+    flow = env.state["flow"]
+    intent = (
+        flow.universal_transfer_intent_json
+    )
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_universal_transfer_"
+        "mismatch"
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert "amount mismatch" in str(
+        result.error
+    )
+
+    assert intent["state"] == (
+        "failed_requires_review"
+    )
+    assert intent[
+        "reconciliation"
+    ]["exact_match"] is False
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_unknown_terminal_transfer_status_requires_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    resume_once(env)
+    resume_once(env)
+    resume_once(env)
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    def failed_record(
+        bybit_client,
+        *,
+        transfer_id,
+    ):
+        assert env.db.lock_active is False
+
+        env.db.events.append(
+            "query_universal_transfer"
+        )
+
+        bybit_client.get_calls.append(
+            {
+                "path": (
+                    "/v5/asset/transfer/"
+                    "query-universal-transfer-list"
+                ),
+                "params": {
+                    "transferId": transfer_id,
+                },
+            }
+        )
+
+        return make_transfer_record(
+            status="FAILED",
+            transfer_id=transfer_id,
+        )
+
+    monkeypatch.setattr(
+        service,
+        "query_universal_transfer",
+        failed_record,
+    )
+
+    result = resume_once(env)
+
+    flow = env.state["flow"]
+    intent = (
+        flow.universal_transfer_intent_json
+    )
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_universal_transfer_"
+        "terminal_status_review"
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert "unsupported terminal status" in str(
+        result.error
+    )
+
+    assert intent["state"] == (
+        "failed_requires_review"
+    )
+    assert intent[
+        "reconciliation"
+    ][
+        "terminal_status_requires_review"
+    ] is True
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_reconciliation_query_error_stays_pending_without_post(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    resume_once(env)
+    resume_once(env)
+    resume_once(env)
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    def query_error(
+        bybit_client,
+        *,
+        transfer_id,
+    ):
+        assert env.db.lock_active is False
+
+        env.db.events.append(
+            "query_universal_transfer_error"
+        )
+
+        bybit_client.get_calls.append(
+            {
+                "path": (
+                    "/v5/asset/transfer/"
+                    "query-universal-transfer-list"
+                ),
+                "params": {
+                    "transferId": transfer_id,
+                },
+            }
+        )
+
+        raise BybitApiError(
+            "simulated reconciliation GET failure"
+        )
+
+    monkeypatch.setattr(
+        service,
+        "query_universal_transfer",
+        query_error,
+    )
+
+    result = resume_once(env)
+
+    flow = env.state["flow"]
+    intent = (
+        flow.universal_transfer_intent_json
+    )
+    reconciliation = intent[
+        "reconciliation"
+    ]
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_universal_transfer_"
+        "query_pending"
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING
+    )
+    assert intent["state"] == "reconciling"
+
+    assert reconciliation[
+        "record_found"
+    ] is False
+    assert reconciliation[
+        "query_succeeded"
+    ] is False
+    assert "simulated reconciliation GET failure" in (
+        reconciliation["query_error"]
+    )
+
+    assert result.diagnostics[
+        "no_automatic_resend"
+    ] is True
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
