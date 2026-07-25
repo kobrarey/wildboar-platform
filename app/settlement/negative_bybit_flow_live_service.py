@@ -1,17 +1,32 @@
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import datetime, timezone
 from decimal import Decimal
 import hashlib
 import json
 from typing import Any
+from uuid import uuid4
 
 from sqlalchemy.orm import Session
 
-from app.bybit.asset_flows import BybitAssetFlowError
-from app.bybit.client import BybitV5Client
+from app.bybit.asset_flows import (
+    BybitAssetFlowError,
+    create_universal_transfer,
+    query_universal_transfer,
+)
+from app.bybit.client import (
+    BybitApiError,
+    BybitV5Client,
+)
 from app.config import settings
 from app.models import FundNegativeBybitFlow
+from app.operation_guard.hooks import (
+    require_bybit_universal_transfer_guard,
+)
+from app.operation_guard.service import (
+    OperationGuardBlockedError,
+)
 from app.settlement.negative_bybit_flow import (
     _get_fund,
     _lock_existing_flow,
@@ -36,6 +51,8 @@ from app.settlement.statuses import (
     BYBIT_FLOW_STATUS_CREATED,
     BYBIT_FLOW_STATUS_PREFLIGHT_PASSED,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_INTENT_PREPARED,
+    BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING,
+    BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_SUBMITTING,
 )
 
 
@@ -384,6 +401,7 @@ def _validate_prepared_intent(
     *,
     flow: FundNegativeBybitFlow,
     intent: dict[str, Any],
+    allowed_states: set[str] | frozenset[str] | None = None,
 ) -> None:
     if (
         intent.get("schema")
@@ -403,10 +421,21 @@ def _validate_prepared_intent(
             "mismatch"
         )
 
-    if intent.get("state") != "prepared":
+    allowed = frozenset(
+        allowed_states
+        if allowed_states is not None
+        else {"prepared"}
+    )
+
+    intent_state = str(
+        intent.get("state") or ""
+    ).strip()
+
+    if intent_state not in allowed:
         raise NegativeBybitFlowError(
             "Universal Transfer intent state "
-            "mismatch"
+            f"mismatch: state={intent_state or 'empty'}, "
+            f"allowed={sorted(allowed)}"
         )
 
     payload = intent.get("payload")
@@ -472,6 +501,886 @@ def _validate_prepared_intent(
             "Universal Transfer immutable "
             "payload mismatch"
         )
+
+
+def _bounded_external_error(
+    exc: BaseException,
+) -> str:
+    text = (
+        f"{type(exc).__name__}: {str(exc)}"
+    )
+
+    return text[:500]
+
+
+def _require_single_post_client(
+    bybit_client: BybitV5Client,
+) -> None:
+    retries = getattr(
+        bybit_client,
+        "retries",
+        0,
+    )
+
+    try:
+        retry_count = int(retries or 0)
+    except (
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise NegativeBybitFlowError(
+            "Bybit client retries value is invalid"
+        ) from exc
+
+    if retry_count != 0:
+        raise NegativeBybitFlowError(
+            "Financial Bybit POST client must use "
+            "retries=0"
+        )
+
+
+def _locked_flow_for_submit(
+    db: Session,
+    *,
+    settlement_batch_id: int,
+):
+    settlement_batch = _lock_settlement_batch(
+        db,
+        settlement_batch_id=int(
+            settlement_batch_id
+        ),
+    )
+
+    flow = _lock_existing_flow(
+        db,
+        settlement_batch_id=int(
+            settlement_batch_id
+        ),
+    )
+
+    if flow is None:
+        raise NegativeBybitFlowError(
+            "Negative Bybit flow disappeared "
+            "during Universal Transfer submit"
+        )
+
+    return settlement_batch, flow
+
+
+def _intent_snapshot(
+    *,
+    flow: FundNegativeBybitFlow,
+    intent: dict[str, Any],
+) -> dict[str, Any]:
+    _validate_prepared_intent(
+        flow=flow,
+        intent=intent,
+        allowed_states={"prepared"},
+    )
+
+    payload = intent.get("payload")
+
+    if not isinstance(payload, dict):
+        raise NegativeBybitFlowError(
+            "Universal Transfer payload is missing"
+        )
+
+    return {
+        "settlement_batch_id": int(
+            flow.settlement_batch_id
+        ),
+        "fund_id": int(flow.fund_id),
+        "transfer_id": _required_text(
+            intent.get("transfer_id"),
+            field_name="intent.transfer_id",
+        ),
+        "coin": _required_text(
+            intent.get("coin"),
+            field_name="intent.coin",
+        ).upper(),
+        "amount_text": _required_text(
+            intent.get("amount"),
+            field_name="intent.amount",
+        ),
+        "amount_usdt": Decimal(
+            _required_text(
+                intent.get("amount"),
+                field_name="intent.amount",
+            )
+        ),
+        "from_member_id": _required_text(
+            intent.get("from_member_id"),
+            field_name=(
+                "intent.from_member_id"
+            ),
+        ),
+        "to_member_id": _required_text(
+            intent.get("to_member_id"),
+            field_name="intent.to_member_id",
+        ),
+        "from_account_type": _required_text(
+            intent.get("from_account_type"),
+            field_name=(
+                "intent.from_account_type"
+            ),
+        ).upper(),
+        "to_account_type": _required_text(
+            intent.get("to_account_type"),
+            field_name=(
+                "intent.to_account_type"
+            ),
+        ).upper(),
+        "payload": deepcopy(payload),
+        "payload_fingerprint": _required_text(
+            intent.get("payload_fingerprint"),
+            field_name=(
+                "intent.payload_fingerprint"
+            ),
+        ),
+    }
+
+
+def _validate_snapshot_unchanged(
+    *,
+    flow: FundNegativeBybitFlow,
+    intent: dict[str, Any],
+    snapshot: dict[str, Any],
+    allowed_states: set[str],
+) -> None:
+    _validate_prepared_intent(
+        flow=flow,
+        intent=intent,
+        allowed_states=allowed_states,
+    )
+
+    if (
+        intent.get("payload_fingerprint")
+        != snapshot["payload_fingerprint"]
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer intent fingerprint "
+            "changed during submit"
+        )
+
+    if (
+        intent.get("payload")
+        != snapshot["payload"]
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer payload changed "
+            "during submit"
+        )
+
+    if (
+        str(intent.get("transfer_id") or "")
+        != snapshot["transfer_id"]
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer transfer_id changed "
+            "during submit"
+        )
+
+
+def _submit_claim_matches(
+    *,
+    intent: dict[str, Any],
+    claim_token: str,
+) -> bool:
+    claim = intent.get("submit_claim")
+
+    return (
+        isinstance(claim, dict)
+        and str(
+            claim.get("claim_token") or ""
+        ) == claim_token
+    )
+
+
+def _mark_submit_unknown(
+    db: Session,
+    *,
+    settlement_batch_id: int,
+    snapshot: dict[str, Any],
+    claim_token: str,
+    error: BaseException,
+    now: datetime,
+) -> NegativeBybitFlowResult:
+    settlement_batch, flow = (
+        _locked_flow_for_submit(
+            db,
+            settlement_batch_id=(
+                settlement_batch_id
+            ),
+        )
+    )
+
+    intent = deepcopy(
+        flow.universal_transfer_intent_json
+    )
+
+    if not isinstance(intent, dict):
+        raise NegativeBybitFlowError(
+            "Universal Transfer intent missing "
+            "after POST attempt"
+        )
+
+    _validate_snapshot_unchanged(
+        flow=flow,
+        intent=intent,
+        snapshot=snapshot,
+        allowed_states={"submitting"},
+    )
+
+    if not _submit_claim_matches(
+        intent=intent,
+        claim_token=claim_token,
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer submit claim "
+            "ownership mismatch"
+        )
+
+    intent["state"] = "reconciling"
+    intent["acknowledgement"] = {
+        "outcome": "unknown",
+        "claim_token": claim_token,
+        "acknowledged_at": now.isoformat(),
+        "error": _bounded_external_error(
+            error
+        ),
+        "no_automatic_resend": True,
+    }
+
+    flow.universal_transfer_intent_json = (
+        intent
+    )
+    flow.universal_transfer_status = (
+        "UNKNOWN"
+    )
+    flow.status = (
+        BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING
+    )
+    flow.error = None
+    flow.updated_at = now
+
+    settlement_batch.status = (
+        BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING
+    )
+    settlement_batch.error = None
+    settlement_batch.updated_at = now
+
+    db.add(flow)
+    db.add(settlement_batch)
+    db.flush()
+
+    result = _step_result(
+        ok=False,
+        transition=(
+            "submit_universal_transfer_unknown"
+        ),
+        settlement_batch=settlement_batch,
+        flow=flow,
+        status_before=(
+            BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_SUBMITTING
+        ),
+        settlement_status_before=(
+            str(settlement_batch.status)
+        ),
+        diagnostics={
+            "pending": (
+                "universal_transfer_reconciliation"
+            ),
+            "did_bybit_post": True,
+            "bybit_post_count": 1,
+            "no_automatic_resend": True,
+            "payload_fingerprint": snapshot[
+                "payload_fingerprint"
+            ],
+        },
+    )
+
+    db.commit()
+
+    return result
+
+
+def _mark_guard_blocked(
+    db: Session,
+    *,
+    settlement_batch_id: int,
+    snapshot: dict[str, Any],
+    claim_token: str,
+    error: BaseException,
+    now: datetime,
+) -> NegativeBybitFlowResult:
+    settlement_batch, flow = (
+        _locked_flow_for_submit(
+            db,
+            settlement_batch_id=(
+                settlement_batch_id
+            ),
+        )
+    )
+
+    intent = deepcopy(
+        flow.universal_transfer_intent_json
+    )
+
+    if not isinstance(intent, dict):
+        raise NegativeBybitFlowError(
+            "Universal Transfer intent missing "
+            "after Operation Guard"
+        )
+
+    _validate_snapshot_unchanged(
+        flow=flow,
+        intent=intent,
+        snapshot=snapshot,
+        allowed_states={"submitting"},
+    )
+
+    if not _submit_claim_matches(
+        intent=intent,
+        claim_token=claim_token,
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer submit claim "
+            "ownership mismatch"
+        )
+
+    intent["state"] = (
+        "failed_requires_review"
+    )
+    intent["acknowledgement"] = {
+        "outcome": "guard_blocked",
+        "claim_token": claim_token,
+        "acknowledged_at": now.isoformat(),
+        "error": _bounded_external_error(
+            error
+        ),
+        "bybit_post_performed": False,
+    }
+
+    flow.universal_transfer_intent_json = (
+        intent
+    )
+
+    result = _set_failed(
+        flow=flow,
+        settlement_batch=settlement_batch,
+        fund=None,
+        status_before=(
+            BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_SUBMITTING
+        ),
+        settlement_status_before=(
+            str(settlement_batch.status)
+        ),
+        error=(
+            "Operation Guard blocked Bybit "
+            f"Universal Transfer: {error}"
+        ),
+        now=now,
+        diagnostics={
+            "transition": (
+                "submit_universal_transfer_guard_blocked"
+            ),
+            "did_bybit_post": False,
+            "bybit_post_count": 0,
+            "payload_fingerprint": snapshot[
+                "payload_fingerprint"
+            ],
+            "reserve_release_allowed": False,
+            "pricing_unlock_allowed": False,
+        },
+    )
+
+    db.add(flow)
+    db.add(settlement_batch)
+    db.flush()
+    db.commit()
+
+    return result
+
+
+def _submit_universal_transfer_once(
+    db: Session,
+    *,
+    settlement_batch,
+    flow: FundNegativeBybitFlow,
+    fund,
+    bybit_client: BybitV5Client,
+    resolved_now: datetime,
+    status_before: str | None,
+    settlement_status_before: str | None,
+) -> NegativeBybitFlowResult:
+    intent = deepcopy(
+        flow.universal_transfer_intent_json
+    )
+
+    if not isinstance(intent, dict):
+        raise NegativeBybitFlowError(
+            "Universal Transfer intent is missing"
+        )
+
+    _require_single_post_client(
+        bybit_client
+    )
+
+    snapshot = _intent_snapshot(
+        flow=flow,
+        intent=intent,
+    )
+
+    settlement_batch_id = int(
+        settlement_batch.id
+    )
+
+    # Release all FOR UPDATE locks before
+    # read-only Bybit reconciliation.
+    db.commit()
+
+    existing_record = query_universal_transfer(
+        bybit_client,
+        transfer_id=snapshot["transfer_id"],
+    )
+
+    if existing_record is not None:
+        settlement_batch, flow = (
+            _locked_flow_for_submit(
+                db,
+                settlement_batch_id=(
+                    settlement_batch_id
+                ),
+            )
+        )
+
+        current_intent = deepcopy(
+            flow.universal_transfer_intent_json
+        )
+
+        if not isinstance(
+            current_intent,
+            dict,
+        ):
+            raise NegativeBybitFlowError(
+                "Universal Transfer intent "
+                "disappeared before submit"
+            )
+
+        _validate_snapshot_unchanged(
+            flow=flow,
+            intent=current_intent,
+            snapshot=snapshot,
+            allowed_states={"prepared"},
+        )
+
+        current_intent["state"] = (
+            "reconciling"
+        )
+        current_intent["reconciliation"] = {
+            "phase": "pre_submit_query",
+            "record_found": True,
+            "observed_status": (
+                existing_record.status
+            ),
+            "observed_at": (
+                resolved_now.isoformat()
+            ),
+            "no_post_performed": True,
+        }
+
+        flow.universal_transfer_intent_json = (
+            current_intent
+        )
+        flow.universal_transfer_status = (
+            existing_record.status
+        )
+        flow.status = (
+            BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING
+        )
+        flow.updated_at = resolved_now
+
+        settlement_batch.status = (
+            BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING
+        )
+        settlement_batch.error = None
+        settlement_batch.updated_at = (
+            resolved_now
+        )
+
+        db.add(flow)
+        db.add(settlement_batch)
+        db.flush()
+
+        result = _step_result(
+            ok=False,
+            transition=(
+                "submit_universal_transfer_"
+                "preexisting_record"
+            ),
+            settlement_batch=settlement_batch,
+            flow=flow,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            diagnostics={
+                "pending": (
+                    "universal_transfer_reconciliation"
+                ),
+                "did_bybit_post": False,
+                "bybit_post_count": 0,
+                "record_found": True,
+                "payload_fingerprint": snapshot[
+                    "payload_fingerprint"
+                ],
+            },
+        )
+
+        db.commit()
+
+        return result
+
+    # Re-lock and claim the only permitted POST.
+    settlement_batch, flow = (
+        _locked_flow_for_submit(
+            db,
+            settlement_batch_id=(
+                settlement_batch_id
+            ),
+        )
+    )
+
+    current_intent = deepcopy(
+        flow.universal_transfer_intent_json
+    )
+
+    if not isinstance(current_intent, dict):
+        raise NegativeBybitFlowError(
+            "Universal Transfer intent "
+            "disappeared before claim"
+        )
+
+    _validate_snapshot_unchanged(
+        flow=flow,
+        intent=current_intent,
+        snapshot=snapshot,
+        allowed_states={"prepared"},
+    )
+
+    if (
+        current_intent.get("submit_claim")
+        is not None
+    ):
+        db.commit()
+
+        return _step_result(
+            ok=False,
+            transition=(
+                "submit_universal_transfer_"
+                "claim_already_exists"
+            ),
+            settlement_batch=settlement_batch,
+            flow=flow,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            idempotent=True,
+            diagnostics={
+                "pending": (
+                    "universal_transfer_reconciliation"
+                ),
+                "did_bybit_post": False,
+                "bybit_post_count": 0,
+                "no_automatic_resend": True,
+            },
+        )
+
+    claim_token = str(uuid4())
+
+    current_intent["state"] = "submitting"
+    current_intent["submit_claim"] = {
+        "claim_token": claim_token,
+        "claimed_at": resolved_now.isoformat(),
+        "submit_attempt_number": 1,
+    }
+
+    flow.universal_transfer_intent_json = (
+        current_intent
+    )
+    flow.universal_transfer_submitted_at = (
+        resolved_now
+    )
+    flow.status = (
+        BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_SUBMITTING
+    )
+    flow.error = None
+    flow.updated_at = resolved_now
+
+    settlement_batch.status = (
+        BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING
+    )
+    settlement_batch.error = None
+    settlement_batch.updated_at = (
+        resolved_now
+    )
+
+    db.add(flow)
+    db.add(settlement_batch)
+    db.flush()
+
+    # Durable claim boundary.
+    # After this commit no automatic resend is allowed.
+    db.commit()
+
+    try:
+        guard_decision = (
+            require_bybit_universal_transfer_guard(
+                db,
+                fund_id=int(snapshot["fund_id"]),
+                settlement_batch_id=(
+                    settlement_batch_id
+                ),
+                amount_usdt=snapshot[
+                    "amount_usdt"
+                ],
+                request_id=snapshot[
+                    "transfer_id"
+                ],
+                metadata={
+                    "source": (
+                        "negative_bybit_flow_"
+                        "live_service"
+                    ),
+                    "intent_schema": (
+                        UNIVERSAL_TRANSFER_INTENT_SCHEMA
+                    ),
+                    "intent_state": "submitting",
+                    "claim_token": claim_token,
+                    "payload_fingerprint": snapshot[
+                        "payload_fingerprint"
+                    ],
+                    "from_member_id": snapshot[
+                        "from_member_id"
+                    ],
+                    "to_member_id": snapshot[
+                        "to_member_id"
+                    ],
+                    "from_account_type": snapshot[
+                        "from_account_type"
+                    ],
+                    "to_account_type": snapshot[
+                        "to_account_type"
+                    ],
+                },
+            )
+        )
+
+        # Persist the Guard audit and release its
+        # transaction before the HTTP POST.
+        db.commit()
+
+    except OperationGuardBlockedError as exc:
+        # Preserve a possible blocked Guard audit event.
+        db.commit()
+
+        return _mark_guard_blocked(
+            db,
+            settlement_batch_id=(
+                settlement_batch_id
+            ),
+            snapshot=snapshot,
+            claim_token=claim_token,
+            error=exc,
+            now=resolved_now,
+        )
+
+    try:
+        created_transfer = (
+            create_universal_transfer(
+                bybit_client,
+                transfer_id=snapshot[
+                    "transfer_id"
+                ],
+                coin=snapshot["coin"],
+                amount_usdt=snapshot[
+                    "amount_usdt"
+                ],
+                amount_str=snapshot[
+                    "amount_text"
+                ],
+                amount_precision=int(
+                    settings
+                    .NEGATIVE_NET_UNIVERSAL_TRANSFER_AMOUNT_PRECISION
+                ),
+                from_member_id=snapshot[
+                    "from_member_id"
+                ],
+                to_member_id=snapshot[
+                    "to_member_id"
+                ],
+                from_account_type=snapshot[
+                    "from_account_type"
+                ],
+                to_account_type=snapshot[
+                    "to_account_type"
+                ],
+            )
+        )
+
+    except (
+        BybitApiError,
+        BybitAssetFlowError,
+    ) as exc:
+        return _mark_submit_unknown(
+            db,
+            settlement_batch_id=(
+                settlement_batch_id
+            ),
+            snapshot=snapshot,
+            claim_token=claim_token,
+            error=exc,
+            now=resolved_now,
+        )
+
+    settlement_batch, flow = (
+        _locked_flow_for_submit(
+            db,
+            settlement_batch_id=(
+                settlement_batch_id
+            ),
+        )
+    )
+
+    current_intent = deepcopy(
+        flow.universal_transfer_intent_json
+    )
+
+    if not isinstance(current_intent, dict):
+        raise NegativeBybitFlowError(
+            "Universal Transfer intent missing "
+            "after POST acknowledgement"
+        )
+
+    _validate_snapshot_unchanged(
+        flow=flow,
+        intent=current_intent,
+        snapshot=snapshot,
+        allowed_states={"submitting"},
+    )
+
+    if not _submit_claim_matches(
+        intent=current_intent,
+        claim_token=claim_token,
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer submit claim "
+            "ownership mismatch"
+        )
+
+    if (
+        created_transfer.transfer_id
+        != snapshot["transfer_id"]
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer acknowledgement "
+            "transfer_id mismatch"
+        )
+
+    if (
+        created_transfer.coin
+        != snapshot["coin"]
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer acknowledgement "
+            "coin mismatch"
+        )
+
+    if not _same_decimal(
+        created_transfer.amount_usdt,
+        snapshot["amount_usdt"],
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer acknowledgement "
+            "amount mismatch"
+        )
+
+    current_intent["state"] = "reconciling"
+    current_intent["acknowledgement"] = {
+        "outcome": "accepted",
+        "claim_token": claim_token,
+        "guard_event_id": (
+            guard_decision.event_id
+        ),
+        "acknowledged_at": (
+            resolved_now.isoformat()
+        ),
+        "transfer_id": (
+            created_transfer.transfer_id
+        ),
+        "status": created_transfer.status,
+        "response": _json_dict(
+            created_transfer.raw
+        ),
+        "no_automatic_resend": True,
+    }
+
+    flow.universal_transfer_intent_json = (
+        current_intent
+    )
+    flow.universal_transfer_status = (
+        created_transfer.status
+    )
+    flow.universal_transfer_created_at = (
+        resolved_now
+    )
+    flow.status = (
+        BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING
+    )
+    flow.error = None
+    flow.updated_at = resolved_now
+
+    settlement_batch.status = (
+        BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING
+    )
+    settlement_batch.error = None
+    settlement_batch.updated_at = (
+        resolved_now
+    )
+
+    db.add(flow)
+    db.add(settlement_batch)
+    db.flush()
+
+    result = _step_result(
+        ok=True,
+        transition="submit_universal_transfer",
+        settlement_batch=settlement_batch,
+        flow=flow,
+        status_before=status_before,
+        settlement_status_before=(
+            settlement_status_before
+        ),
+        diagnostics={
+            "did_bybit_post": True,
+            "bybit_post_count": 1,
+            "guard_event_id": (
+                guard_decision.event_id
+            ),
+            "claim_token": claim_token,
+            "payload_fingerprint": snapshot[
+                "payload_fingerprint"
+            ],
+            "next_transition": (
+                "reconcile_universal_transfer"
+            ),
+        },
+    )
+
+    db.commit()
+
+    return result
 
 
 def resume_negative_bybit_flow_once(
@@ -585,41 +1494,117 @@ def resume_negative_bybit_flow_once(
             amounts=amounts,
         )
 
-        # Prepared intent is immutable.
-        # Re-running this stage performs no GET/POST.
         if isinstance(
             flow.universal_transfer_intent_json,
             dict,
         ):
-            _validate_prepared_intent(
-                flow=flow,
-                intent=(
-                    flow.universal_transfer_intent_json
-                ),
-            )
+            intent_state = str(
+                flow
+                .universal_transfer_intent_json
+                .get("state")
+                or ""
+            ).strip()
 
-            return _step_result(
-                ok=True,
-                transition=(
-                    "prepare_universal_transfer_intent"
-                ),
-                settlement_batch=settlement_batch,
-                flow=flow,
-                status_before=status_before,
-                settlement_status_before=(
-                    settlement_status_before
-                ),
-                idempotent=True,
-                diagnostics={
-                    "fund_code": str(fund.code),
-                    "payload_fingerprint": (
-                        flow
-                        .universal_transfer_intent_json[
-                            "payload_fingerprint"
-                        ]
+            if intent_state == "prepared":
+                return _submit_universal_transfer_once(
+                    db,
+                    settlement_batch=(
+                        settlement_batch
                     ),
-                    "bybit_get_count": 0,
-                },
+                    flow=flow,
+                    fund=fund,
+                    bybit_client=bybit_client,
+                    resolved_now=resolved_now,
+                    status_before=status_before,
+                    settlement_status_before=(
+                        settlement_status_before
+                    ),
+                )
+
+            if intent_state in {
+                "submitting",
+                "reconciling",
+            }:
+                _validate_prepared_intent(
+                    flow=flow,
+                    intent=(
+                        flow
+                        .universal_transfer_intent_json
+                    ),
+                    allowed_states={
+                        "submitting",
+                        "reconciling",
+                    },
+                )
+
+                result = _step_result(
+                    ok=False,
+                    transition=(
+                        "reconcile_universal_transfer_"
+                        "required"
+                    ),
+                    settlement_batch=(
+                        settlement_batch
+                    ),
+                    flow=flow,
+                    status_before=status_before,
+                    settlement_status_before=(
+                        settlement_status_before
+                    ),
+                    idempotent=True,
+                    diagnostics={
+                        "pending": (
+                            "universal_transfer_"
+                            "reconciliation"
+                        ),
+                        "did_bybit_post": False,
+                        "bybit_post_count": 0,
+                        "no_automatic_resend": True,
+                    },
+                )
+
+                db.commit()
+
+                return result
+
+            if intent_state == "confirmed":
+                _validate_prepared_intent(
+                    flow=flow,
+                    intent=(
+                        flow
+                        .universal_transfer_intent_json
+                    ),
+                    allowed_states={"confirmed"},
+                )
+
+                result = _step_result(
+                    ok=True,
+                    transition=(
+                        "universal_transfer_"
+                        "already_confirmed"
+                    ),
+                    settlement_batch=(
+                        settlement_batch
+                    ),
+                    flow=flow,
+                    status_before=status_before,
+                    settlement_status_before=(
+                        settlement_status_before
+                    ),
+                    idempotent=True,
+                    diagnostics={
+                        "did_bybit_post": False,
+                        "bybit_post_count": 0,
+                    },
+                )
+
+                db.commit()
+
+                return result
+
+            raise NegativeBybitFlowError(
+                "Unsupported Universal Transfer "
+                f"intent state: {intent_state or 'empty'}"
             )
 
         if (
@@ -674,9 +1659,18 @@ def resume_negative_bybit_flow_once(
             )
         )
 
-        # This stage may perform read-only balance GETs
-        # to select the exact source account route.
-        # It never performs a POST.
+        prepare_settlement_batch_id = int(
+            settlement_batch.id
+        )
+        prepare_flow_id = int(flow.id)
+        expected_required_master_usdt = Decimal(
+            amounts["required_master_usdt"]
+        )
+
+        # Release settlement, sale and flow row locks
+        # before any Bybit HTTP GET.
+        db.commit()
+
         route = (
             choose_universal_transfer_account_route(
                 bybit_client,
@@ -688,6 +1682,160 @@ def resume_negative_bybit_flow_once(
                 to_member_id=clean_master_uid,
             )
         )
+
+        # Re-lock and revalidate all immutable inputs
+        # before persisting the prepared intent.
+        settlement_batch = _lock_settlement_batch(
+            db,
+            settlement_batch_id=(
+                prepare_settlement_batch_id
+            ),
+        )
+
+        sale_batch = (
+            _lock_sale_batch_for_settlement(
+                db,
+                settlement_batch_id=(
+                    prepare_settlement_batch_id
+                ),
+            )
+        )
+
+        flow = _lock_existing_flow(
+            db,
+            settlement_batch_id=(
+                prepare_settlement_batch_id
+            ),
+        )
+
+        if flow is None:
+            raise NegativeBybitFlowError(
+                "Negative Bybit flow disappeared "
+                "during Universal Transfer prepare"
+            )
+
+        if int(flow.id) != prepare_flow_id:
+            raise NegativeBybitFlowError(
+                "Negative Bybit flow identity "
+                "changed during prepare"
+            )
+
+        _validate_sale_batch_input(
+            settlement_batch=settlement_batch,
+            sale_batch=sale_batch,
+        )
+
+        current_amounts = _validate_target_fields(
+            settlement_batch=settlement_batch,
+            sale_batch=sale_batch,
+        )
+
+        _validate_existing_flow(
+            flow=flow,
+            settlement_batch=settlement_batch,
+            sale_batch=sale_batch,
+            amounts=current_amounts,
+        )
+
+        if not _same_decimal(
+            current_amounts[
+                "required_master_usdt"
+            ],
+            expected_required_master_usdt,
+        ):
+            raise NegativeBybitFlowError(
+                "required_master_usdt changed "
+                "during Universal Transfer prepare"
+            )
+
+        amounts = current_amounts
+
+        concurrent_intent = (
+            flow.universal_transfer_intent_json
+        )
+
+        if isinstance(
+            concurrent_intent,
+            dict,
+        ):
+            concurrent_state = str(
+                concurrent_intent.get("state")
+                or ""
+            ).strip()
+
+            _validate_prepared_intent(
+                flow=flow,
+                intent=concurrent_intent,
+                allowed_states={
+                    "prepared",
+                    "submitting",
+                    "reconciling",
+                    "confirmed",
+                },
+            )
+
+            result = _step_result(
+                ok=concurrent_state in {
+                    "prepared",
+                    "confirmed",
+                },
+                transition=(
+                    "prepare_universal_transfer_"
+                    "concurrent_state_detected"
+                ),
+                settlement_batch=(
+                    settlement_batch
+                ),
+                flow=flow,
+                status_before=status_before,
+                settlement_status_before=(
+                    settlement_status_before
+                ),
+                idempotent=True,
+                diagnostics={
+                    "concurrent_intent_state": (
+                        concurrent_state
+                    ),
+                    "did_bybit_post": False,
+                    "bybit_post_count": 0,
+                    "bybit_get_count": len(
+                        route.get("checked") or []
+                    ),
+                    "no_automatic_resend": (
+                        concurrent_state
+                        in {
+                            "submitting",
+                            "reconciling",
+                        }
+                    ),
+                },
+            )
+
+            db.commit()
+
+            return result
+
+        if concurrent_intent is not None:
+            raise NegativeBybitFlowError(
+                "Universal Transfer intent must "
+                "be a JSON object"
+            )
+
+        if _has_transfer_evidence(flow):
+            raise NegativeBybitFlowError(
+                "Universal Transfer evidence "
+                "appeared during prepare"
+            )
+
+        if flow.status not in {
+            BYBIT_FLOW_STATUS_CREATED,
+            BYBIT_FLOW_STATUS_PREFLIGHT_PASSED,
+        }:
+            raise NegativeBybitFlowError(
+                "Flow status changed during "
+                "Universal Transfer prepare: "
+                f"{flow.status}"
+            )
 
         from_account_type = _required_text(
             route.get("from_account_type"),

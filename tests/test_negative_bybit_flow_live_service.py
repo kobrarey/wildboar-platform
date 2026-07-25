@@ -9,6 +9,13 @@ from typing import Any
 import pytest
 
 import app.settlement.negative_bybit_flow_live_service as service
+from app.bybit.asset_flows import (
+    BybitUniversalTransferResult,
+)
+from app.bybit.client import BybitApiError
+from app.operation_guard.service import (
+    OperationGuardBlockedError,
+)
 from app.settlement.negative_bybit_flow_types import (
     NegativeBybitFlowError,
 )
@@ -19,6 +26,8 @@ from app.settlement.statuses import (
     BYBIT_FLOW_STATUS_CREATED,
     BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_INTENT_PREPARED,
+    BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING,
+    BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_SUBMITTING,
 )
 
 
@@ -38,6 +47,17 @@ class FakeDb:
         self.flush_count = 0
         self.commit_count = 0
         self.rollback_count = 0
+        self.lock_active = False
+        self.events: list[str] = []
+
+    def mark_locked(
+        self,
+        label: str,
+    ) -> None:
+        self.lock_active = True
+        self.events.append(
+            f"lock:{label}"
+        )
 
     def add(
         self,
@@ -50,15 +70,20 @@ class FakeDb:
 
     def commit(self) -> None:
         self.commit_count += 1
+        self.lock_active = False
+        self.events.append("commit")
 
     def rollback(self) -> None:
         self.rollback_count += 1
+        self.lock_active = False
+        self.events.append("rollback")
 
 
 class FakeBybitClient:
     def __init__(self) -> None:
         self.get_calls: list[dict[str, Any]] = []
         self.post_calls: list[dict[str, Any]] = []
+        self.retries = 0
 
     def get(
         self,
@@ -197,26 +222,46 @@ def install_service_fakes(
         "flow": None,
     }
 
+    def lock_settlement_batch(
+        db,
+        *,
+        settlement_batch_id,
+    ):
+        db.mark_locked("settlement_batch")
+        return settlement_batch
+
+    def lock_sale_batch(
+        db,
+        *,
+        settlement_batch_id,
+    ):
+        db.mark_locked("sale_batch")
+        return sale_batch
+
+    def lock_existing_flow(
+        db,
+        *,
+        settlement_batch_id,
+    ):
+        db.mark_locked("bybit_flow")
+        return state["flow"]
+
     monkeypatch.setattr(
         service,
         "_lock_settlement_batch",
-        lambda db, settlement_batch_id: (
-            settlement_batch
-        ),
+        lock_settlement_batch,
     )
 
     monkeypatch.setattr(
         service,
         "_lock_sale_batch_for_settlement",
-        lambda db, settlement_batch_id: sale_batch,
+        lock_sale_batch,
     )
 
     monkeypatch.setattr(
         service,
         "_lock_existing_flow",
-        lambda db, settlement_batch_id: (
-            state["flow"]
-        ),
+        lock_existing_flow,
     )
 
     monkeypatch.setattr(
@@ -270,6 +315,11 @@ def install_service_fakes(
         from_member_id,
         to_member_id,
     ):
+        assert db.lock_active is False
+        db.events.append(
+            "prepare_route_get"
+        )
+
         bybit_client.get_calls.append(
             {
                 "path": (
@@ -315,6 +365,127 @@ def install_service_fakes(
             "11111111-1111-5111-8111-"
             "111111111111"
         ),
+    )
+
+    def query_transfer(
+        bybit_client,
+        *,
+        transfer_id,
+    ):
+        assert db.lock_active is False
+
+        db.events.append(
+            "query_universal_transfer"
+        )
+
+        bybit_client.get_calls.append(
+            {
+                "path": (
+                    "/v5/asset/transfer/"
+                    "query-universal-transfer-list"
+                ),
+                "params": {
+                    "transferId": transfer_id,
+                },
+            }
+        )
+
+        return None
+
+    def require_guard(
+        db_arg,
+        **kwargs,
+    ):
+        assert db_arg is db
+        assert db.lock_active is False
+        assert db.events[-1] == "commit"
+
+        flow = state["flow"]
+        intent = (
+            flow.universal_transfer_intent_json
+        )
+
+        assert flow.status == (
+            BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_SUBMITTING
+        )
+        assert intent["state"] == "submitting"
+        assert isinstance(
+            intent["submit_claim"],
+            dict,
+        )
+
+        db.events.append(
+            "operation_guard"
+        )
+
+        return SimpleNamespace(
+            allowed=True,
+            event_id=919,
+        )
+
+    def create_transfer(
+        bybit_client,
+        **kwargs,
+    ):
+        assert db.lock_active is False
+        assert db.events[-1] == "commit"
+
+        db.events.append(
+            "universal_transfer_post"
+        )
+
+        bybit_client.post_calls.append(
+            deepcopy(kwargs)
+        )
+
+        return BybitUniversalTransferResult(
+            transfer_id=kwargs[
+                "transfer_id"
+            ],
+            coin=kwargs["coin"],
+            amount_usdt=kwargs[
+                "amount_usdt"
+            ],
+            from_member_id=kwargs[
+                "from_member_id"
+            ],
+            to_member_id=kwargs[
+                "to_member_id"
+            ],
+            from_account_type=kwargs[
+                "from_account_type"
+            ],
+            to_account_type=kwargs[
+                "to_account_type"
+            ],
+            status="PENDING",
+            raw={
+                "retCode": 0,
+                "result": {
+                    "transferId": kwargs[
+                        "transfer_id"
+                    ],
+                    "status": "PENDING",
+                },
+            },
+        )
+
+    monkeypatch.setattr(
+        service,
+        "query_universal_transfer",
+        query_transfer,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "require_bybit_universal_transfer_guard",
+        require_guard,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "create_universal_transfer",
+        create_transfer,
     )
 
     return SimpleNamespace(
@@ -446,7 +617,10 @@ def test_prepare_transfer_intent_persists_exact_contract(
 
     assert len(env.client.get_calls) == 1
     assert env.client.post_calls == []
-    assert env.db.commit_count == 2
+    assert env.db.commit_count == 3
+    assert "prepare_route_get" in (
+        env.db.events
+    )
 
 
 def test_prepare_cycle_never_prepares_withdrawal(
@@ -467,7 +641,7 @@ def test_prepare_cycle_never_prepares_withdrawal(
     assert env.client.post_calls == []
 
 
-def test_prepared_intent_rerun_is_idempotent_without_http(
+def test_prepared_intent_next_cycle_claims_and_posts_once(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     env = install_service_fakes(monkeypatch)
@@ -476,33 +650,113 @@ def test_prepared_intent_rerun_is_idempotent_without_http(
     resume_once(env)
 
     flow = env.state["flow"]
+
     intent_before = deepcopy(
         flow.universal_transfer_intent_json
     )
 
-    get_count_before = len(env.client.get_calls)
-    post_count_before = len(env.client.post_calls)
-    commit_count_before = env.db.commit_count
+    commit_count_before = (
+        env.db.commit_count
+    )
 
     result = resume_once(env)
 
+    intent = (
+        flow.universal_transfer_intent_json
+    )
+
     assert result.ok is True
-    assert result.idempotent is True
-    assert result.diagnostics["transition"] == (
-        "prepare_universal_transfer_intent"
+    assert result.diagnostics[
+        "transition"
+    ] == "submit_universal_transfer"
+
+    assert result.diagnostics[
+        "did_bybit_post"
+    ] is True
+
+    assert result.diagnostics[
+        "bybit_post_count"
+    ] == 1
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING
     )
 
-    assert flow.universal_transfer_intent_json == (
-        intent_before
+    assert flow.universal_transfer_submitted_at == NOW
+    assert flow.universal_transfer_created_at == NOW
+
+    assert intent["state"] == "reconciling"
+
+    assert isinstance(
+        intent["submit_claim"],
+        dict,
     )
 
-    assert len(env.client.get_calls) == (
-        get_count_before
+    assert intent[
+        "submit_claim"
+    ]["submit_attempt_number"] == 1
+
+    assert intent[
+        "acknowledgement"
+    ]["outcome"] == "accepted"
+
+    assert intent[
+        "acknowledgement"
+    ]["guard_event_id"] == 919
+
+    assert intent[
+        "acknowledgement"
+    ]["no_automatic_resend"] is True
+
+    assert intent[
+        "payload"
+    ] == intent_before["payload"]
+
+    assert intent[
+        "payload_fingerprint"
+    ] == intent_before[
+        "payload_fingerprint"
+    ]
+
+    assert len(
+        env.client.post_calls
+    ) == 1
+
+    post = env.client.post_calls[0]
+
+    assert post["transfer_id"] == (
+        "11111111-1111-5111-8111-"
+        "111111111111"
     )
-    assert len(env.client.post_calls) == (
-        post_count_before
+    assert post["coin"] == "USDT"
+    assert post["amount_usdt"] == (
+        Decimal("101")
     )
-    assert env.db.commit_count == commit_count_before
+    assert post["amount_str"] == "101"
+    assert post["from_member_id"] == "70001"
+    assert post["to_member_id"] == "90001"
+    assert post["from_account_type"] == "FUND"
+    assert post["to_account_type"] == "FUND"
+
+    assert env.db.events.index(
+        "query_universal_transfer"
+    ) < env.db.events.index(
+        "operation_guard"
+    )
+
+    assert env.db.events.index(
+        "operation_guard"
+    ) < env.db.events.index(
+        "universal_transfer_post"
+    )
+
+    assert env.db.lock_active is False
+
+    # Release before query, claim commit,
+    # Guard commit and acknowledgement commit.
+    assert env.db.commit_count == (
+        commit_count_before + 4
+    )
 
 
 def test_payload_fingerprint_is_deterministic() -> None:
@@ -603,3 +857,401 @@ def test_legacy_transfer_evidence_without_v2_intent_blocks_resend(
 
     assert env.client.get_calls == []
     assert env.client.post_calls == []
+
+
+def test_submit_rejects_bybit_client_with_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    resume_once(env)
+    resume_once(env)
+
+    env.client.retries = 1
+
+    get_count_before = len(
+        env.client.get_calls
+    )
+
+    result = resume_once(env)
+
+    flow = env.state["flow"]
+
+    assert result.ok is False
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert "retries=0" in str(
+        result.error
+    )
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before
+
+    assert env.client.post_calls == []
+
+
+def test_preexisting_transfer_record_blocks_post(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    resume_once(env)
+    resume_once(env)
+
+    def existing_record(
+        bybit_client,
+        *,
+        transfer_id,
+    ):
+        assert env.db.lock_active is False
+
+        env.db.events.append(
+            "query_universal_transfer"
+        )
+
+        bybit_client.get_calls.append(
+            {
+                "path": (
+                    "/v5/asset/transfer/"
+                    "query-universal-transfer-list"
+                ),
+                "params": {
+                    "transferId": transfer_id,
+                },
+            }
+        )
+
+        return BybitUniversalTransferResult(
+            transfer_id=transfer_id,
+            coin="USDT",
+            amount_usdt=Decimal("101"),
+            from_member_id="70001",
+            to_member_id="90001",
+            from_account_type="FUND",
+            to_account_type="FUND",
+            status="PENDING",
+            raw={
+                "transferId": transfer_id,
+                "coin": "USDT",
+                "amount": "101",
+                "status": "PENDING",
+            },
+        )
+
+    monkeypatch.setattr(
+        service,
+        "query_universal_transfer",
+        existing_record,
+    )
+
+    result = resume_once(env)
+
+    flow = env.state["flow"]
+    intent = (
+        flow.universal_transfer_intent_json
+    )
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "submit_universal_transfer_"
+        "preexisting_record"
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING
+    )
+    assert flow.universal_transfer_status == (
+        "PENDING"
+    )
+
+    assert intent["state"] == "reconciling"
+    assert intent["submit_claim"] is None
+
+    assert intent[
+        "reconciliation"
+    ]["record_found"] is True
+
+    assert intent[
+        "reconciliation"
+    ]["no_post_performed"] is True
+
+    assert env.client.post_calls == []
+    assert (
+        "operation_guard"
+        not in env.db.events
+    )
+    assert (
+        "universal_transfer_post"
+        not in env.db.events
+    )
+
+
+def test_guard_blocked_after_claim_performs_no_post(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    resume_once(env)
+    resume_once(env)
+
+    def blocked_guard(
+        db_arg,
+        **kwargs,
+    ):
+        assert db_arg is env.db
+        assert env.db.lock_active is False
+        assert env.db.events[-1] == "commit"
+
+        flow = env.state["flow"]
+        intent = (
+            flow.universal_transfer_intent_json
+        )
+
+        assert flow.status == (
+            BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_SUBMITTING
+        )
+        assert intent["state"] == "submitting"
+        assert isinstance(
+            intent["submit_claim"],
+            dict,
+        )
+
+        env.db.events.append(
+            "operation_guard_blocked"
+        )
+
+        raise OperationGuardBlockedError(
+            "blocked by test"
+        )
+
+    monkeypatch.setattr(
+        service,
+        "require_bybit_universal_transfer_guard",
+        blocked_guard,
+    )
+
+    result = resume_once(env)
+
+    flow = env.state["flow"]
+    intent = (
+        flow.universal_transfer_intent_json
+    )
+
+    assert result.ok is False
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert intent["state"] == (
+        "failed_requires_review"
+    )
+    assert intent[
+        "acknowledgement"
+    ]["outcome"] == "guard_blocked"
+
+    assert intent[
+        "acknowledgement"
+    ]["bybit_post_performed"] is False
+
+    assert env.client.post_calls == []
+    assert (
+        "universal_transfer_post"
+        not in env.db.events
+    )
+
+
+def test_crash_after_claim_never_resends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    resume_once(env)
+    resume_once(env)
+
+    def crash_after_claim(
+        db_arg,
+        **kwargs,
+    ):
+        assert db_arg is env.db
+        assert env.db.lock_active is False
+        assert env.db.events[-1] == "commit"
+
+        flow = env.state["flow"]
+        intent = (
+            flow.universal_transfer_intent_json
+        )
+
+        assert flow.status == (
+            BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_SUBMITTING
+        )
+        assert intent["state"] == "submitting"
+        assert isinstance(
+            intent["submit_claim"],
+            dict,
+        )
+
+        raise KeyboardInterrupt(
+            "simulated crash after claim commit"
+        )
+
+    monkeypatch.setattr(
+        service,
+        "require_bybit_universal_transfer_guard",
+        crash_after_claim,
+    )
+
+    with pytest.raises(
+        KeyboardInterrupt,
+        match="simulated crash",
+    ):
+        resume_once(env)
+
+    flow = env.state["flow"]
+    intent = (
+        flow.universal_transfer_intent_json
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_SUBMITTING
+    )
+    assert intent["state"] == "submitting"
+    assert isinstance(
+        intent["submit_claim"],
+        dict,
+    )
+
+    get_count_after_crash = len(
+        env.client.get_calls
+    )
+    post_count_after_crash = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    assert result.ok is False
+    assert result.idempotent is True
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_universal_transfer_"
+        "required"
+    )
+    assert result.diagnostics[
+        "no_automatic_resend"
+    ] is True
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_after_crash
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_after_crash
+
+    assert env.client.post_calls == []
+
+
+def test_unknown_post_result_never_resends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    resume_once(env)
+    resume_once(env)
+
+    def unknown_post(
+        bybit_client,
+        **kwargs,
+    ):
+        assert env.db.lock_active is False
+        assert env.db.events[-1] == "commit"
+
+        env.db.events.append(
+            "universal_transfer_post"
+        )
+
+        bybit_client.post_calls.append(
+            deepcopy(kwargs)
+        )
+
+        raise BybitApiError(
+            "simulated timeout after POST"
+        )
+
+    monkeypatch.setattr(
+        service,
+        "create_universal_transfer",
+        unknown_post,
+    )
+
+    result = resume_once(env)
+
+    flow = env.state["flow"]
+    intent = (
+        flow.universal_transfer_intent_json
+    )
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "submit_universal_transfer_unknown"
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING
+    )
+    assert flow.universal_transfer_status == (
+        "UNKNOWN"
+    )
+
+    assert intent["state"] == "reconciling"
+    assert intent[
+        "acknowledgement"
+    ]["outcome"] == "unknown"
+
+    assert intent[
+        "acknowledgement"
+    ]["no_automatic_resend"] is True
+
+    assert len(
+        env.client.post_calls
+    ) == 1
+
+    get_count_after_unknown = len(
+        env.client.get_calls
+    )
+    post_count_after_unknown = len(
+        env.client.post_calls
+    )
+
+    rerun = resume_once(env)
+
+    assert rerun.ok is False
+    assert rerun.idempotent is True
+    assert rerun.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_universal_transfer_"
+        "required"
+    )
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_after_unknown
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_after_unknown
