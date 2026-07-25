@@ -12,8 +12,10 @@ from app.db import SessionLocal
 from app.lifecycle import evaluate_live_gate
 from app.models import Fund, FundBybitAccount, FundNegativeSaleBatch, FundSettlementBatch
 from app.settlement.negative_bybit_flow import (
-    execute_negative_bybit_flow_live,
     execute_negative_bybit_flow_mock,
+)
+from app.settlement.negative_bybit_flow_live_service import (
+    resume_negative_bybit_flow_once,
 )
 from app.settlement.negative_bybit_flow_mock import load_negative_bybit_flow_mock_file
 from app.settlement.accounting_service import (
@@ -157,7 +159,10 @@ def _build_master_bybit_client() -> BybitV5Client:
     return BybitV5Client(
         api_key=api_key,
         api_secret=api_secret,
-        recv_window_ms=settings.BYBIT_MASTER_RECV_WINDOW_MS,
+        recv_window_ms=(
+            settings.BYBIT_MASTER_RECV_WINDOW_MS
+        ),
+        retries=0,
     )
 
 
@@ -206,6 +211,45 @@ def _is_rate_limit_retry_pending(result) -> bool:
             "withdrawal_rate_limit_retry",
             "withdrawal_rate_limit_retry_delay_not_elapsed",
         }
+    )
+
+
+def _claim_live_candidate(
+    db,
+    *,
+    fund_code: str | None = None,
+) -> tuple[int, int] | None:
+    settlement_batch = _candidate_query(
+        db,
+        fund_code=fund_code,
+    ).first()
+
+    if settlement_batch is None:
+        db.rollback()
+        return None
+
+    validate_settlement_share_state_before_external(
+        db,
+        batch=settlement_batch,
+        mark_failed=True,
+    )
+
+    settlement_batch_id = int(
+        settlement_batch.id
+    )
+    fund_id = int(
+        settlement_batch.fund_id
+    )
+
+    # Durable selection boundary:
+    # release settlement, sale, fund, order and
+    # position row locks before reading credentials,
+    # constructing a Bybit client or making HTTP calls.
+    db.commit()
+
+    return (
+        settlement_batch_id,
+        fund_id,
     )
 
 
@@ -263,55 +307,98 @@ def process_one_live_batch(
     fund_code: str | None = None,
 ) -> bool:
     db = SessionLocal()
+
     try:
-        settlement_batch = _candidate_query(db, fund_code=fund_code).first()
-        if settlement_batch is None:
-            db.rollback()
+        candidate = _claim_live_candidate(
+            db,
+            fund_code=fund_code,
+        )
+
+        if candidate is None:
             return False
 
-        validate_settlement_share_state_before_external(
-            db,
-            batch=settlement_batch,
-            mark_failed=True,
-        )
+        (
+            settlement_batch_id,
+            fund_id,
+        ) = candidate
 
-        master_client = _build_master_bybit_client()
+        # No candidate row lock is held beyond this
+        # point. Credentials, UIDs and external clients
+        # may only be resolved after the claim commit.
+        master_client = (
+            _build_master_bybit_client()
+        )
         master_uid = _get_master_uid()
+
         fund_sub_uid = _get_fund_sub_uid(
             db,
-            fund_id=int(settlement_batch.fund_id),
+            fund_id=fund_id,
         )
 
-        result = execute_negative_bybit_flow_live(
+        # Exactly one resumable state-machine step.
+        # The service owns its transaction boundaries
+        # and performs at most one new financial POST.
+        result = resume_negative_bybit_flow_once(
             db,
-            settlement_batch_id=int(settlement_batch.id),
+            settlement_batch_id=(
+                settlement_batch_id
+            ),
             bybit_client=master_client,
             fund_sub_uid=fund_sub_uid,
             master_uid=master_uid,
         )
 
-        db.commit()
+        diagnostics = (
+            result.diagnostics or {}
+        )
 
         print(
             "fund_negative_bybit_flow_worker_live:",
-            "action= commit",
+            "action= service_step_committed",
             "ok=", result.ok,
-            "settlement_batch_id=", result.settlement_batch_id,
+            "transition=",
+            str(
+                diagnostics.get(
+                    "transition"
+                )
+                or ""
+            ),
+            "bybit_post_count=",
+            int(
+                diagnostics.get(
+                    "bybit_post_count"
+                )
+                or 0
+            ),
+            "settlement_batch_id=",
+            result.settlement_batch_id,
             "flow_id=", result.flow_id,
-            "status_after=", result.status_after,
-            "settlement_status_after=", result.settlement_status_after,
-            "transfer_id=", result.universal_transfer_id,
-            "request_id=", result.withdrawal_request_id,
-            "settlement_wallet_address=", result.settlement_wallet_address,
-            "idempotent=", result.idempotent,
-            "fund_code_filter=", fund_code or "",
+            "status_after=",
+            result.status_after,
+            "settlement_status_after=",
+            result.settlement_status_after,
+            "transfer_id=",
+            result.universal_transfer_id,
+            "request_id=",
+            result.withdrawal_request_id,
+            "settlement_wallet_address=",
+            result.settlement_wallet_address,
+            "idempotent=",
+            result.idempotent,
+            "fund_code_filter=",
+            fund_code or "",
         )
-        if _is_rate_limit_retry_pending(result):
+
+        if _is_rate_limit_retry_pending(
+            result
+        ):
             return False
 
         return True
 
     except SettlementShareQuantityError as exc:
+        # Validator has already marked the batch and
+        # affected orders as failed_requires_review.
         db.commit()
 
         print(
@@ -319,13 +406,16 @@ def process_one_live_batch(
             "action= commit_failed_requires_review",
             "external_action= false",
             "error=", str(exc),
-            "fund_code_filter=", fund_code or "",
+            "fund_code_filter=",
+            fund_code or "",
         )
+
         return True
 
     except Exception:
         db.rollback()
         raise
+
     finally:
         db.close()
 
