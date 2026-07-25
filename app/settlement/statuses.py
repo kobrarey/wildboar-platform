@@ -38,7 +38,35 @@ BATCH_STATUS_NEGATIVE_CASH_SETTLEMENT_COMPLETED = "negative_cash_settlement_comp
 # fund_negative_bybit_flows.status
 BYBIT_FLOW_STATUS_CREATED = "created"
 BYBIT_FLOW_STATUS_PREFLIGHT_PASSED = "preflight_passed"
-BYBIT_FLOW_STATUS_PREFLIGHT_FAILED_REQUIRES_REVIEW = "preflight_failed_requires_review"
+BYBIT_FLOW_STATUS_PREFLIGHT_FAILED_REQUIRES_REVIEW = (
+    "preflight_failed_requires_review"
+)
+
+BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_INTENT_PREPARED = (
+    "universal_transfer_intent_prepared"
+)
+BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_SUBMITTING = (
+    "universal_transfer_submitting"
+)
+BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING = (
+    "universal_transfer_reconciling"
+)
+BYBIT_FLOW_STATUS_MASTER_BALANCE_CONFIRMED = (
+    "master_balance_confirmed"
+)
+BYBIT_FLOW_STATUS_WITHDRAWAL_INTENT_PREPARED = (
+    "withdrawal_intent_prepared"
+)
+BYBIT_FLOW_STATUS_WITHDRAWAL_SUBMITTING = (
+    "withdrawal_submitting"
+)
+BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILING = (
+    "withdrawal_reconciling"
+)
+BYBIT_FLOW_STATUS_SETTLEMENT_WALLET_RECEIPT_PENDING = (
+    "settlement_wallet_receipt_pending"
+)
+
 BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_MOCKED = "universal_transfer_mocked"
 BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED = "universal_transfer_reconciled"
 BYBIT_FLOW_STATUS_WITHDRAWAL_MOCKED = "withdrawal_mocked"
