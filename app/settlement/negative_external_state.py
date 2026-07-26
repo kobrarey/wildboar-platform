@@ -8,6 +8,7 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models import (
+    FundBscTransactionIntent,
     FundNegativeBybitFlow,
     FundNegativeFinalizationBatch,
     FundNegativePayoutBatch,
@@ -25,6 +26,28 @@ ZERO = Decimal("0")
 SENSITIVE_AUDIT_FIELDS = frozenset(
     {
         "prepared_raw_tx",
+    }
+)
+
+BSC_DURABLE_EXTERNAL_STATUSES = frozenset(
+    {
+        "prepared",
+        "broadcasting",
+        "broadcast",
+        "visible",
+        "pending_confirmation",
+        "confirmed",
+        "failed_requires_review",
+    }
+)
+
+BYBIT_DURABLE_INTENT_STATES = frozenset(
+    {
+        "prepared",
+        "submitting",
+        "reconciling",
+        "confirmed",
+        "failed_requires_review",
     }
 )
 
@@ -48,6 +71,7 @@ class NegativeExternalState:
     other_external_action_detected: bool
     reasons: tuple[str, ...]
     evidence: tuple[dict[str, Any], ...]
+    bsc_intent_action_detected: bool = False
 
 
 def _dec(value: Any) -> Decimal:
@@ -107,6 +131,263 @@ def _audit_field_value(
         )
 
     return _audit_value(value)
+
+
+def _clean_optional_text(
+    value: Any,
+) -> str | None:
+    if value is None:
+        return None
+
+    text = str(value).strip()
+
+    return text or None
+
+
+def _audit_datetime(
+    value: Any,
+) -> str | None:
+    if value is None:
+        return None
+
+    if isinstance(value, datetime):
+        return value.isoformat()
+
+    text = str(value).strip()
+
+    return text or None
+
+
+def _intent_reconciliation_state(
+    value: Any,
+) -> str | None:
+    if not _present(value):
+        return None
+
+    if not isinstance(value, dict):
+        return "redacted_present"
+
+    return (
+        _clean_optional_text(
+            value.get("state")
+        )
+        or _clean_optional_text(
+            value.get("phase")
+        )
+        or "redacted_present"
+    )
+
+
+def _durable_bybit_intent_audit(
+    *,
+    intent: Any,
+    identifier_field: str,
+    submitted_at: Any,
+) -> dict[str, Any]:
+    if not isinstance(intent, dict):
+        return {
+            "schema": None,
+            "state": "invalid_non_object",
+            identifier_field: None,
+            "payload_fingerprint": None,
+            "prepared_at": None,
+            "claim_token_present": False,
+            "submitted_at": (
+                _audit_datetime(
+                    submitted_at
+                )
+            ),
+            "acknowledgement_present": False,
+            "reconciliation_state": None,
+            "payload": (
+                "redacted_present"
+                if _present(intent)
+                else None
+            ),
+        }
+
+    submit_claim = intent.get(
+        "submit_claim"
+    )
+
+    acknowledgement = intent.get(
+        "acknowledgement"
+    )
+
+    reconciliation = intent.get(
+        "reconciliation"
+    )
+
+    return {
+        "schema": _clean_optional_text(
+            intent.get("schema")
+        ),
+        "state": (
+            _clean_optional_text(
+                intent.get("state")
+            )
+            or "unknown"
+        ),
+        identifier_field: (
+            _clean_optional_text(
+                intent.get(
+                    identifier_field
+                )
+            )
+        ),
+        "payload_fingerprint": (
+            _clean_optional_text(
+                intent.get(
+                    "payload_fingerprint"
+                )
+            )
+        ),
+        "prepared_at": (
+            _audit_datetime(
+                intent.get(
+                    "prepared_at"
+                )
+            )
+        ),
+        "claim_token_present": (
+            _present(submit_claim)
+        ),
+        "submitted_at": (
+            _audit_datetime(
+                submitted_at
+            )
+        ),
+        "acknowledgement_present": (
+            _present(acknowledgement)
+        ),
+        "reconciliation_state": (
+            _intent_reconciliation_state(
+                reconciliation
+            )
+        ),
+        "payload": (
+            "redacted_present"
+            if _present(
+                intent.get("payload")
+            )
+            else None
+        ),
+    }
+
+
+def _bsc_intent_action(
+    action_type: Any,
+) -> str:
+    normalized = str(
+        action_type or ""
+    ).strip().lower()
+
+    if "gas" in normalized:
+        return "gas_topup"
+
+    if (
+        "payout" in normalized
+        or "redeem" in normalized
+    ):
+        return "payout"
+
+    return "other"
+
+
+def _bsc_intent_audit(
+    intent: FundBscTransactionIntent,
+) -> dict[str, Any]:
+    return {
+        "id": int(intent.id),
+        "scope_key": (
+            _clean_optional_text(
+                intent.scope_key
+            )
+        ),
+        "action_type": (
+            _clean_optional_text(
+                intent.action_type
+            )
+        ),
+        "payout_batch_id": (
+            int(intent.payout_batch_id)
+            if intent.payout_batch_id
+            is not None
+            else None
+        ),
+        "payout_leg_id": (
+            int(intent.payout_leg_id)
+            if intent.payout_leg_id
+            is not None
+            else None
+        ),
+        "asset": (
+            _clean_optional_text(
+                intent.asset
+            )
+        ),
+        "amount": _audit_value(
+            intent.amount
+        ),
+        "from_address": (
+            _clean_optional_text(
+                intent.from_address
+            )
+        ),
+        "to_address": (
+            _clean_optional_text(
+                intent.to_address
+            )
+        ),
+        "source_nonce": (
+            int(intent.source_nonce)
+            if intent.source_nonce
+            is not None
+            else None
+        ),
+        "prepared_tx_hash": (
+            _clean_optional_text(
+                intent.prepared_tx_hash
+            )
+        ),
+        "intent_fingerprint": (
+            _clean_optional_text(
+                intent.intent_fingerprint
+            )
+        ),
+        "status": (
+            _clean_optional_text(
+                intent.status
+            )
+        ),
+        "prepared_at": (
+            _audit_datetime(
+                intent.prepared_at
+            )
+        ),
+        "broadcast_started_at": (
+            _audit_datetime(
+                intent.broadcast_started_at
+            )
+        ),
+        "broadcast_at": (
+            _audit_datetime(
+                intent.broadcast_at
+            )
+        ),
+        "confirmed_at": (
+            _audit_datetime(
+                intent.confirmed_at
+            )
+        ),
+        "prepared_raw_tx": (
+            "redacted_present"
+            if _present(
+                intent.prepared_raw_tx
+            )
+            else None
+        ),
+    }
 
 
 def _is_earn_leg(leg: FundNegativeSaleLeg) -> bool:
@@ -209,6 +490,22 @@ def inspect_negative_external_state(
         .all()
     )
 
+    bsc_intents = (
+        db.query(
+            FundBscTransactionIntent
+        )
+        .filter(
+            FundBscTransactionIntent
+            .settlement_batch_id
+            == int(settlement_batch_id)
+        )
+        .order_by(
+            FundBscTransactionIntent.id.asc()
+        )
+        .with_for_update()
+        .all()
+    )
+
     finalization = (
         db.query(FundNegativeFinalizationBatch)
         .filter(
@@ -238,6 +535,7 @@ def inspect_negative_external_state(
         "withdrawal": False,
         "payout": False,
         "gas_topup": False,
+        "bsc_intent": False,
         "other": False,
     }
 
@@ -271,6 +569,37 @@ def inspect_negative_external_state(
 
         if evidence_item not in evidence:
             evidence.append(evidence_item)
+
+    def add_structured_evidence(
+        *,
+        action: str,
+        model: str,
+        row_id: int | None,
+        field: str,
+        value: dict[str, Any],
+        reason: str,
+        bsc_intent: bool = False,
+    ) -> None:
+        flags[action] = True
+
+        if bsc_intent:
+            flags["bsc_intent"] = True
+
+        if reason not in reasons:
+            reasons.append(reason)
+
+        evidence_item = {
+            "action": action,
+            "model": model,
+            "row_id": row_id,
+            "field": field,
+            "value": value,
+        }
+
+        if evidence_item not in evidence:
+            evidence.append(
+                evidence_item
+            )
 
     if batch.accounting_finalized_at is not None:
         add_evidence(
@@ -562,6 +891,88 @@ def inspect_negative_external_state(
             )
 
     if bybit_flow is not None:
+        durable_bybit_intents = (
+            (
+                "universal_transfer",
+                "universal_transfer_intent_json",
+                "transfer_id",
+                "universal_transfer_submitted_at",
+            ),
+            (
+                "withdrawal",
+                "withdrawal_intent_json",
+                "request_id",
+                "withdrawal_submitted_at",
+            ),
+        )
+
+        for (
+            action,
+            intent_field,
+            identifier_field,
+            submitted_field,
+        ) in durable_bybit_intents:
+            intent_value = getattr(
+                bybit_flow,
+                intent_field,
+                None,
+            )
+
+            submitted_at = getattr(
+                bybit_flow,
+                submitted_field,
+                None,
+            )
+
+            if (
+                not _present(intent_value)
+                and not _present(
+                    submitted_at
+                )
+            ):
+                continue
+
+            summary = (
+                _durable_bybit_intent_audit(
+                    intent=intent_value,
+                    identifier_field=(
+                        identifier_field
+                    ),
+                    submitted_at=submitted_at,
+                )
+            )
+
+            intent_state = str(
+                summary.get("state")
+                or "unknown"
+            ).strip().lower()
+
+            reason_suffix = (
+                intent_state
+                if intent_state
+                in BYBIT_DURABLE_INTENT_STATES
+                else (
+                    "unknown_or_invalid_"
+                    f"state:{intent_state}"
+                )
+            )
+
+            add_structured_evidence(
+                action=action,
+                model=(
+                    "FundNegativeBybitFlow"
+                ),
+                row_id=int(
+                    bybit_flow.id
+                ),
+                field=intent_field,
+                value=summary,
+                reason=(
+                    f"{action}_durable_intent:"
+                    f"{reason_suffix}"
+                ),
+            )
+
         universal_fields = (
             "universal_transfer_id",
             "universal_transfer_status",
@@ -700,6 +1111,44 @@ def inspect_negative_external_state(
                     f"{bybit_status}"
                 ),
             )
+
+    for intent in bsc_intents:
+        normalized_status = str(
+            intent.status or ""
+        ).strip().lower()
+
+        action = _bsc_intent_action(
+            intent.action_type
+        )
+
+        if (
+            normalized_status
+            in BSC_DURABLE_EXTERNAL_STATUSES
+        ):
+            reason = (
+                "bsc_durable_intent:"
+                f"{normalized_status}"
+            )
+        else:
+            reason = (
+                "bsc_durable_intent:"
+                "unknown_or_invalid_status:"
+                f"{normalized_status or 'empty'}"
+            )
+
+        add_structured_evidence(
+            action=action,
+            model=(
+                "FundBscTransactionIntent"
+            ),
+            row_id=int(intent.id),
+            field="durable_intent",
+            value=_bsc_intent_audit(
+                intent
+            ),
+            reason=reason,
+            bsc_intent=True,
+        )
 
     if payout_batch is not None:
         if _present(
@@ -1006,6 +1455,7 @@ def inspect_negative_external_state(
             flags["withdrawal"],
             flags["payout"],
             flags["gas_topup"],
+            flags["bsc_intent"],
             flags["other"],
         )
     )
@@ -1040,6 +1490,9 @@ def inspect_negative_external_state(
         ),
         other_external_action_detected=bool(
             flags["other"]
+        ),
+        bsc_intent_action_detected=bool(
+            flags["bsc_intent"]
         ),
         reasons=tuple(reasons),
         evidence=tuple(evidence),

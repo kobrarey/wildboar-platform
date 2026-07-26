@@ -1012,7 +1012,7 @@ def test_row_locks_and_no_commit_contract() -> None:
         classifier_source.count(
             ".with_for_update("
         )
-        == 9
+        == 10
     )
     assert ".commit(" not in redeem_source
     assert ".commit(" not in failure_source
