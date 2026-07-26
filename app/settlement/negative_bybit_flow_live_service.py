@@ -63,9 +63,11 @@ from app.settlement.negative_bybit_flow_types import (
 from app.settlement.gas_service import get_web3
 from app.settlement.statuses import (
     BATCH_STATUS_FAILED_REQUIRES_REVIEW,
+    BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT,
     BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING,
     BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_PENDING,
     BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING,
+    BYBIT_FLOW_STATUS_COMPLETED,
     BYBIT_FLOW_STATUS_CREATED,
     BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW,
     BYBIT_FLOW_STATUS_MASTER_BALANCE_CONFIRMED,
@@ -109,6 +111,14 @@ WITHDRAWAL_RECORD_LOOKUP_LIMIT = 50
 
 SETTLEMENT_WALLET_RECEIPT_SCHEMA = (
     "negative_settlement_wallet_receipt_v1"
+)
+
+CASH_DELIVERY_COMPLETION_SCHEMA = (
+    "negative_cash_delivery_completion_v1"
+)
+
+CASH_DELIVERY_REPORT_SCHEMA = (
+    "negative_cash_delivery_report_v1"
 )
 
 ERC20_TRANSFER_EVENT_SIGNATURE = (
@@ -8128,6 +8138,1507 @@ def _reconcile_settlement_wallet_receipt_once(
     return result
 
 
+def _completion_decimal(
+    value: Any,
+    *,
+    field_name: str,
+) -> Decimal:
+    try:
+        return Decimal(
+            _required_text(
+                value,
+                field_name=field_name,
+            )
+        )
+    except (
+        ArithmeticError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise NegativeBybitFlowError(
+            f"{field_name} must be a valid decimal"
+        ) from exc
+
+
+def _completion_integer(
+    value: Any,
+    *,
+    field_name: str,
+) -> int:
+    try:
+        return int(
+            _required_text(
+                value,
+                field_name=field_name,
+            )
+        )
+    except (
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise NegativeBybitFlowError(
+            f"{field_name} must be a valid integer"
+        ) from exc
+
+
+def _cash_delivery_snapshot(
+    *,
+    flow: FundNegativeBybitFlow,
+    settlement_batch,
+    amounts: dict[str, Decimal],
+    allowed_flow_statuses: set[str],
+) -> dict[str, Any]:
+    if str(flow.status) not in (
+        allowed_flow_statuses
+    ):
+        raise NegativeBybitFlowError(
+            "Cash-delivery completion has "
+            "incompatible flow status: "
+            f"{flow.status}"
+        )
+
+    universal_intent = (
+        flow.universal_transfer_intent_json
+    )
+
+    if not isinstance(
+        universal_intent,
+        dict,
+    ):
+        raise NegativeBybitFlowError(
+            "Confirmed Universal Transfer intent "
+            "is missing"
+        )
+
+    _validate_prepared_intent(
+        flow=flow,
+        intent=universal_intent,
+        allowed_states={"confirmed"},
+    )
+
+    universal_reconciliation = (
+        universal_intent.get(
+            "reconciliation"
+        )
+    )
+
+    if not isinstance(
+        universal_reconciliation,
+        dict,
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer reconciliation "
+            "evidence is missing"
+        )
+
+    if (
+        universal_reconciliation.get(
+            "schema"
+        )
+        != UNIVERSAL_TRANSFER_RECONCILIATION_SCHEMA
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer reconciliation "
+            "schema mismatch"
+        )
+
+    if (
+        universal_reconciliation.get(
+            "phase"
+        )
+        != "exact_transfer_id_query"
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer reconciliation "
+            "phase mismatch"
+        )
+
+    if (
+        str(
+            universal_reconciliation.get(
+                "transfer_id"
+            )
+            or ""
+        ).strip()
+        != str(
+            flow.universal_transfer_id
+            or ""
+        ).strip()
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer reconciliation "
+            "transfer_id mismatch"
+        )
+
+    if (
+        universal_reconciliation.get(
+            "record_found"
+        )
+        is not True
+        or universal_reconciliation.get(
+            "query_succeeded"
+        )
+        is not True
+        or universal_reconciliation.get(
+            "exact_match"
+        )
+        is not True
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer reconciliation "
+            "is not confirmed"
+        )
+
+    if not _is_bybit_success(
+        universal_reconciliation.get(
+            "observed_status"
+        )
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer reconciliation "
+            "is not confirmed"
+        )
+
+    if (
+        universal_reconciliation.get(
+            "no_automatic_resend"
+        )
+        is not True
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer reconciliation "
+            "no-resend marker is missing"
+        )
+
+    if not isinstance(
+        universal_reconciliation.get(
+            "record"
+        ),
+        dict,
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer reconciliation "
+            "record evidence is missing"
+        )
+
+    durable_universal_reconciliation = (
+        flow
+        .universal_transfer_reconciliation_json
+    )
+
+    if not isinstance(
+        durable_universal_reconciliation,
+        dict,
+    ):
+        raise NegativeBybitFlowError(
+            "Durable Universal Transfer "
+            "reconciliation evidence is missing"
+        )
+
+    if (
+        durable_universal_reconciliation
+        != universal_reconciliation
+    ):
+        raise NegativeBybitFlowError(
+            "Durable Universal Transfer "
+            "reconciliation evidence mismatch"
+        )
+
+    if not _is_bybit_success(
+        flow.universal_transfer_status
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer status is not "
+            "successful"
+        )
+
+    if (
+        flow.universal_transfer_confirmed_at
+        is None
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer confirmed_at "
+            "is missing"
+        )
+
+    if not _same_decimal(
+        flow.universal_transfer_amount_usdt,
+        amounts["required_master_usdt"],
+    ):
+        raise NegativeBybitFlowError(
+            "Universal Transfer amount does not "
+            "match required master amount"
+        )
+
+    master_barrier = (
+        _confirmed_master_balance_barrier(
+            flow
+        )
+    )
+
+    withdrawal_intent = (
+        flow.withdrawal_intent_json
+    )
+
+    if not isinstance(
+        withdrawal_intent,
+        dict,
+    ):
+        raise NegativeBybitFlowError(
+            "Confirmed withdrawal intent is missing"
+        )
+
+    withdrawal_snapshot = (
+        _withdrawal_intent_snapshot(
+            flow=flow,
+            intent=withdrawal_intent,
+            allowed_states={"confirmed"},
+        )
+    )
+
+    if not _same_decimal(
+        withdrawal_snapshot[
+            "amount_usdt"
+        ],
+        amounts[
+            "withdrawal_request_amount_usdt"
+        ],
+    ):
+        raise NegativeBybitFlowError(
+            "Confirmed withdrawal amount does not "
+            "match settlement target"
+        )
+
+    if not _same_decimal(
+        withdrawal_snapshot["fee_usdt"],
+        amounts["bybit_withdrawal_fee_usdt"],
+    ):
+        raise NegativeBybitFlowError(
+            "Confirmed withdrawal fee does not "
+            "match settlement target"
+        )
+
+    withdrawal_reconciliation = (
+        withdrawal_intent.get(
+            "reconciliation"
+        )
+    )
+
+    if not isinstance(
+        withdrawal_reconciliation,
+        dict,
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal reconciliation evidence "
+            "is missing"
+        )
+
+    if (
+        withdrawal_reconciliation.get(
+            "schema"
+        )
+        != WITHDRAWAL_RECONCILIATION_SCHEMA
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal reconciliation schema "
+            "mismatch"
+        )
+
+    if withdrawal_reconciliation.get(
+        "state"
+    ) != "confirmed":
+        raise NegativeBybitFlowError(
+            "Withdrawal reconciliation is not "
+            "confirmed"
+        )
+
+    if (
+        withdrawal_reconciliation.get(
+            "selected_source"
+        )
+        != "exact_request_id_query"
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal was not confirmed by exact "
+            "requestId query"
+        )
+
+    if not _is_withdrawal_success_like(
+        flow.withdrawal_status
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal status is not successful"
+        )
+
+    _required_text(
+        flow.withdrawal_id,
+        field_name="flow.withdrawal_id",
+    )
+
+    withdrawal_tx_hash = _required_text(
+        flow.withdrawal_tx_hash,
+        field_name=(
+            "flow.withdrawal_tx_hash"
+        ),
+    )
+
+    if (
+        _normalized_hex(
+            withdrawal_reconciliation.get(
+                "tx_hash"
+            )
+        )
+        != _normalized_hex(
+            withdrawal_tx_hash
+        )
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal reconciliation tx hash "
+            "mismatch"
+        )
+
+    if flow.withdrawal_confirmed_at is None:
+        raise NegativeBybitFlowError(
+            "Withdrawal confirmed_at is missing"
+        )
+
+    receipt = (
+        flow.settlement_wallet_receipt_json
+    )
+
+    if not isinstance(receipt, dict):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt evidence "
+            "is missing"
+        )
+
+    if (
+        receipt.get("schema")
+        != SETTLEMENT_WALLET_RECEIPT_SCHEMA
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt schema "
+            "mismatch"
+        )
+
+    if (
+        receipt.get("policy_version")
+        != settings
+        .NEGATIVE_NET_WITHDRAWAL_POLICY_VERSION
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt policy "
+            "mismatch"
+        )
+
+    if receipt.get("state") != "confirmed":
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt is not "
+            "confirmed"
+        )
+
+    if (
+        receipt.get(
+            "exact_transfer_log_match"
+        )
+        is not True
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt lacks exact "
+            "Transfer log match"
+        )
+
+    if (
+        receipt.get(
+            "exact_balance_delta_match"
+        )
+        is not True
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt lacks exact "
+            "balance delta match"
+        )
+
+    if (
+        receipt.get("raw_receipt_omitted")
+        is not True
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt raw-state "
+            "redaction marker is missing"
+        )
+
+    if (
+        _normalized_hex(
+            receipt.get("tx_hash")
+        )
+        != _normalized_hex(
+            withdrawal_tx_hash
+        )
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt tx hash "
+            "mismatch"
+        )
+
+    if (
+        _normalized_hex(
+            flow
+            .settlement_wallet_receipt_tx_hash
+        )
+        != _normalized_hex(
+            withdrawal_tx_hash
+        )
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt flow tx hash "
+            "mismatch"
+        )
+
+    if (
+        str(
+            flow
+            .settlement_wallet_receipt_status
+            or ""
+        ).strip().upper()
+        != "CONFIRMED"
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt flow status "
+            "is not CONFIRMED"
+        )
+
+    expected_amount = Decimal(
+        withdrawal_snapshot[
+            "amount_usdt"
+        ]
+    )
+
+    if not _same_decimal(
+        flow.settlement_wallet_received_usdt,
+        expected_amount,
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet received amount "
+            "mismatch"
+        )
+
+    if not _same_decimal(
+        _completion_decimal(
+            receipt.get(
+                "expected_amount_usdt"
+            ),
+            field_name=(
+                "receipt.expected_amount_usdt"
+            ),
+        ),
+        expected_amount,
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt expected "
+            "amount mismatch"
+        )
+
+    if not _same_decimal(
+        _completion_decimal(
+            receipt.get(
+                "balance_delta_usdt"
+            ),
+            field_name=(
+                "receipt.balance_delta_usdt"
+            ),
+        ),
+        expected_amount,
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt balance "
+            "delta mismatch"
+        )
+
+    required_confirmations = int(
+        settings
+        .NEGATIVE_NET_BSC_INTENT_CONFIRMATIONS_REQUIRED
+    )
+
+    observed_confirmations = (
+        _completion_integer(
+            flow
+            .settlement_wallet_receipt_confirmations,
+            field_name=(
+                "flow.settlement_wallet_receipt_"
+                "confirmations"
+            ),
+        )
+    )
+
+    evidence_confirmations = (
+        _completion_integer(
+            receipt.get("confirmations"),
+            field_name=(
+                "receipt.confirmations"
+            ),
+        )
+    )
+
+    if (
+        observed_confirmations
+        != evidence_confirmations
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt "
+            "confirmations mismatch"
+        )
+
+    if (
+        observed_confirmations
+        < required_confirmations
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt has "
+            "insufficient confirmations"
+        )
+
+    receipt_block_number = (
+        _completion_integer(
+            receipt.get(
+                "receipt_block_number"
+            ),
+            field_name=(
+                "receipt.receipt_block_number"
+            ),
+        )
+    )
+
+    flow_receipt_block_number = (
+        _completion_integer(
+            flow
+            .settlement_wallet_receipt_block_number,
+            field_name=(
+                "flow.settlement_wallet_receipt_"
+                "block_number"
+            ),
+        )
+    )
+
+    if (
+        receipt_block_number
+        != flow_receipt_block_number
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt block "
+            "number mismatch"
+        )
+
+    if receipt_block_number < 0:
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt block "
+            "number is invalid"
+        )
+
+    if (
+        flow
+        .settlement_wallet_receipt_confirmed_at
+        is None
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt "
+            "confirmed_at is missing"
+        )
+
+    balance_before = receipt.get(
+        "balance_before"
+    )
+
+    if (
+        balance_before
+        != withdrawal_snapshot[
+            "balance_baseline"
+        ]
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt baseline "
+            "changed"
+        )
+
+    balance_after = receipt.get(
+        "balance_after"
+    )
+
+    if not isinstance(
+        balance_after,
+        dict,
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet balance-after "
+            "snapshot is missing"
+        )
+
+    if (
+        str(
+            balance_after.get("address")
+            or ""
+        ).strip().lower()
+        != withdrawal_snapshot[
+            "address"
+        ].lower()
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet balance-after "
+            "address mismatch"
+        )
+
+    if (
+        str(
+            balance_after.get("contract")
+            or ""
+        ).strip().lower()
+        != str(
+            settings.BSC_USDT_CONTRACT
+        ).strip().lower()
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet balance-after "
+            "contract mismatch"
+        )
+
+    decimals = _completion_integer(
+        balance_after.get("decimals"),
+        field_name=(
+            "balance_after.decimals"
+        ),
+    )
+
+    if decimals != int(
+        settings.BSC_USDT_DECIMALS
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet balance-after "
+            "decimals mismatch"
+        )
+
+    before_usdt = _completion_decimal(
+        withdrawal_snapshot[
+            "balance_baseline"
+        ].get("balance_usdt"),
+        field_name=(
+            "balance_baseline.balance_usdt"
+        ),
+    )
+
+    after_usdt = _completion_decimal(
+        balance_after.get(
+            "balance_usdt"
+        ),
+        field_name=(
+            "balance_after.balance_usdt"
+        ),
+    )
+
+    if not _same_decimal(
+        flow
+        .settlement_wallet_balance_before_usdt,
+        before_usdt,
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet balance-before "
+            "field mismatch"
+        )
+
+    if not _same_decimal(
+        flow
+        .settlement_wallet_balance_after_usdt,
+        after_usdt,
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet balance-after "
+            "field mismatch"
+        )
+
+    if not _same_decimal(
+        after_usdt - before_usdt,
+        expected_amount,
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet final balance delta "
+            "does not match received amount"
+        )
+
+    expected_raw_decimal = (
+        expected_amount
+        * (
+            Decimal("10")
+            ** decimals
+        )
+    )
+
+    expected_raw = int(
+        expected_raw_decimal
+    )
+
+    if (
+        Decimal(expected_raw)
+        != expected_raw_decimal
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet received amount "
+            "cannot be represented exactly"
+        )
+
+    if (
+        _completion_integer(
+            receipt.get(
+                "expected_amount_raw"
+            ),
+            field_name=(
+                "receipt.expected_amount_raw"
+            ),
+        )
+        != expected_raw
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt expected "
+            "raw amount mismatch"
+        )
+
+    if (
+        _completion_integer(
+            receipt.get(
+                "balance_delta_raw"
+            ),
+            field_name=(
+                "receipt.balance_delta_raw"
+            ),
+        )
+        != expected_raw
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt raw balance "
+            "delta mismatch"
+        )
+
+    if (
+        _completion_integer(
+            receipt.get(
+                "matched_transfer_log_count"
+            ),
+            field_name=(
+                "receipt.matched_transfer_log_count"
+            ),
+        )
+        != 1
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt must contain "
+            "exactly one matching Transfer log"
+        )
+
+    matched_logs = receipt.get(
+        "matched_transfer_logs"
+    )
+
+    if (
+        not isinstance(matched_logs, list)
+        or len(matched_logs) != 1
+        or not isinstance(
+            matched_logs[0],
+            dict,
+        )
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt matching "
+            "Transfer log evidence is invalid"
+        )
+
+    if (
+        _completion_integer(
+            matched_logs[0].get(
+                "amount_raw"
+            ),
+            field_name=(
+                "receipt.matched_transfer_logs."
+                "amount_raw"
+            ),
+        )
+        != expected_raw
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt matching "
+            "Transfer log amount mismatch"
+        )
+
+    return {
+        "settlement_batch_id": int(
+            settlement_batch.id
+        ),
+        "flow_id": int(flow.id),
+        "fund_id": int(flow.fund_id),
+        "withdrawal_snapshot": (
+            withdrawal_snapshot
+        ),
+        "universal_intent": deepcopy(
+            universal_intent
+        ),
+        "universal_reconciliation": (
+            deepcopy(
+                universal_reconciliation
+            )
+        ),
+        "master_barrier": deepcopy(
+            master_barrier
+        ),
+        "withdrawal_intent": deepcopy(
+            withdrawal_intent
+        ),
+        "withdrawal_reconciliation": (
+            deepcopy(
+                withdrawal_reconciliation
+            )
+        ),
+        "receipt": deepcopy(receipt),
+        "withdrawal_tx_hash": (
+            withdrawal_tx_hash
+        ),
+        "expected_amount_usdt": (
+            expected_amount
+        ),
+        "confirmations": (
+            observed_confirmations
+        ),
+        "receipt_block_number": (
+            receipt_block_number
+        ),
+        "balance_before_usdt": (
+            before_usdt
+        ),
+        "balance_after_usdt": (
+            after_usdt
+        ),
+    }
+
+
+def _validate_completion_wallet(
+    db: Session,
+    *,
+    flow: FundNegativeBybitFlow,
+    snapshot: dict[str, Any],
+) -> None:
+    wallet = _get_active_settlement_wallet(
+        db,
+        fund_id=int(flow.fund_id),
+    )
+
+    withdrawal_snapshot = snapshot[
+        "withdrawal_snapshot"
+    ]
+
+    if int(wallet.id) != int(
+        withdrawal_snapshot[
+            "settlement_wallet_id"
+        ]
+    ):
+        raise NegativeBybitFlowError(
+            "Active settlement wallet ID changed "
+            "before cash-delivery completion"
+        )
+
+    if (
+        str(wallet.address)
+        .strip()
+        .lower()
+        != withdrawal_snapshot[
+            "address"
+        ].lower()
+    ):
+        raise NegativeBybitFlowError(
+            "Active settlement wallet address "
+            "changed before cash-delivery "
+            "completion"
+        )
+
+
+def _completion_fingerprints(
+    snapshot: dict[str, Any],
+) -> dict[str, str]:
+    return {
+        "universal_reconciliation": (
+            _payload_fingerprint(
+                snapshot[
+                    "universal_reconciliation"
+                ]
+            )
+        ),
+        "master_balance_barrier": (
+            _payload_fingerprint(
+                snapshot[
+                    "master_barrier"
+                ]
+            )
+        ),
+        "withdrawal_reconciliation": (
+            _payload_fingerprint(
+                snapshot[
+                    "withdrawal_reconciliation"
+                ]
+            )
+        ),
+        "settlement_wallet_receipt": (
+            _payload_fingerprint(
+                snapshot["receipt"]
+            )
+        ),
+    }
+
+
+def _completion_identity(
+    *,
+    flow: FundNegativeBybitFlow,
+    snapshot: dict[str, Any],
+) -> dict[str, Any]:
+    withdrawal_snapshot = snapshot[
+        "withdrawal_snapshot"
+    ]
+
+    address_hash = hashlib.sha256(
+        withdrawal_snapshot[
+            "address"
+        ].strip().lower().encode(
+            "utf-8"
+        )
+    ).hexdigest()
+
+    return {
+        "settlement_batch_id": str(
+            int(flow.settlement_batch_id)
+        ),
+        "flow_id": str(int(flow.id)),
+        "fund_id": str(int(flow.fund_id)),
+        "settlement_wallet_id": str(
+            int(
+                withdrawal_snapshot[
+                    "settlement_wallet_id"
+                ]
+            )
+        ),
+        "settlement_wallet_address_sha256": (
+            address_hash
+        ),
+        "universal_transfer_id": (
+            _required_text(
+                flow.universal_transfer_id,
+                field_name=(
+                    "flow.universal_transfer_id"
+                ),
+            )
+        ),
+        "withdrawal_request_id": (
+            withdrawal_snapshot[
+                "request_id"
+            ]
+        ),
+        "withdrawal_id": _required_text(
+            flow.withdrawal_id,
+            field_name="flow.withdrawal_id",
+        ),
+        "withdrawal_tx_hash": (
+            snapshot[
+                "withdrawal_tx_hash"
+            ]
+        ),
+        "required_master_usdt": (
+            _decimal_text(
+                Decimal(
+                    flow.required_master_usdt
+                )
+            )
+        ),
+        "withdrawal_amount_usdt": (
+            _decimal_text(
+                snapshot[
+                    "expected_amount_usdt"
+                ]
+            )
+        ),
+        "withdrawal_fee_usdt": (
+            _decimal_text(
+                Decimal(
+                    flow
+                    .bybit_withdrawal_fee_usdt
+                )
+            )
+        ),
+        "retained_fees_usdt": (
+            _decimal_text(
+                Decimal(
+                    flow.retained_fees_usdt
+                )
+            )
+        ),
+        "balance_before_usdt": (
+            _decimal_text(
+                snapshot[
+                    "balance_before_usdt"
+                ]
+            )
+        ),
+        "balance_after_usdt": (
+            _decimal_text(
+                snapshot[
+                    "balance_after_usdt"
+                ]
+            )
+        ),
+        "confirmations": int(
+            snapshot["confirmations"]
+        ),
+        "receipt_block_number": int(
+            snapshot[
+                "receipt_block_number"
+            ]
+        ),
+    }
+
+
+def _complete_negative_cash_delivery_once(
+    db: Session,
+    *,
+    settlement_batch,
+    flow: FundNegativeBybitFlow,
+    amounts: dict[str, Decimal],
+    resolved_now: datetime,
+    status_before: str | None,
+    settlement_status_before: str | None,
+) -> NegativeBybitFlowResult:
+    if str(flow.status) != (
+        BYBIT_FLOW_STATUS_SETTLEMENT_WALLET_RECEIPT_CONFIRMED
+    ):
+        raise NegativeBybitFlowError(
+            "Cash-delivery completion requires "
+            "confirmed settlement wallet receipt"
+        )
+
+    if str(settlement_batch.status) != (
+        BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING
+    ):
+        raise NegativeBybitFlowError(
+            "Cash-delivery completion has "
+            "incompatible settlement batch status"
+        )
+
+    snapshot = _cash_delivery_snapshot(
+        flow=flow,
+        settlement_batch=settlement_batch,
+        amounts=amounts,
+        allowed_flow_statuses={
+            BYBIT_FLOW_STATUS_SETTLEMENT_WALLET_RECEIPT_CONFIRMED
+        },
+    )
+
+    _validate_completion_wallet(
+        db,
+        flow=flow,
+        snapshot=snapshot,
+    )
+
+    fingerprints = (
+        _completion_fingerprints(
+            snapshot
+        )
+    )
+
+    identity = _completion_identity(
+        flow=flow,
+        snapshot=snapshot,
+    )
+
+    completion = {
+        "schema": (
+            CASH_DELIVERY_COMPLETION_SCHEMA
+        ),
+        "policy_version": POLICY_VERSION,
+        "state": "completed",
+        "completed_at": (
+            resolved_now.isoformat()
+        ),
+        **identity,
+        "evidence_fingerprints": (
+            fingerprints
+        ),
+        "db_only_transition": True,
+        "bybit_get_count": 0,
+        "bybit_post_count": 0,
+        "bsc_rpc_read_count": 0,
+        "seller_payouts_started": False,
+        "accounting_finalized": False,
+        "reserve_release_allowed": False,
+        "pricing_unlock_allowed": False,
+        "next_stage": (
+            "negative_payout_pipeline"
+        ),
+    }
+
+    prior_reconciliation = (
+        deepcopy(flow.reconciliation_json)
+        if isinstance(
+            flow.reconciliation_json,
+            dict,
+        )
+        else {}
+    )
+
+    prior_reconciliation[
+        "cash_delivery_completion"
+    ] = completion
+
+    flow.reconciliation_json = (
+        _json_dict(
+            prior_reconciliation
+        )
+    )
+
+    flow.report_json = _json_dict(
+        {
+            "schema": (
+                CASH_DELIVERY_REPORT_SCHEMA
+            ),
+            "policy_version": (
+                POLICY_VERSION
+            ),
+            "state": "completed",
+            "completed_at": (
+                resolved_now.isoformat()
+            ),
+            **identity,
+            "evidence_fingerprints": (
+                fingerprints
+            ),
+            "cash_ready_for_payout": True,
+            "seller_payouts_started": False,
+            "accounting_finalized": False,
+            "reserve_release_allowed": False,
+            "pricing_unlock_allowed": False,
+            "next_stage": (
+                "negative_payout_pipeline"
+            ),
+        }
+    )
+
+    flow.status = BYBIT_FLOW_STATUS_COMPLETED
+    flow.error = None
+    flow.updated_at = resolved_now
+
+    settlement_batch.status = (
+        BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT
+    )
+    settlement_batch.error = None
+    settlement_batch.updated_at = (
+        resolved_now
+    )
+
+    db.add(flow)
+    db.add(settlement_batch)
+    db.flush()
+
+    result = _step_result(
+        ok=True,
+        transition=(
+            "complete_negative_cash_delivery"
+        ),
+        settlement_batch=settlement_batch,
+        flow=flow,
+        status_before=status_before,
+        settlement_status_before=(
+            settlement_status_before
+        ),
+        diagnostics={
+            "did_bybit_post": False,
+            "bybit_post_count": 0,
+            "bybit_get_count": 0,
+            "bsc_rpc_read_count": 0,
+            "db_only_transition": True,
+            "cash_ready_for_payout": True,
+            "seller_payouts_started": False,
+            "accounting_finalized": False,
+            "reserve_release_allowed": False,
+            "pricing_unlock_allowed": False,
+            "next_transition": (
+                "negative_payout_pipeline"
+            ),
+        },
+    )
+
+    db.commit()
+
+    return result
+
+
+def _completed_negative_cash_delivery_once(
+    db: Session,
+    *,
+    settlement_batch,
+    flow: FundNegativeBybitFlow,
+    amounts: dict[str, Decimal],
+    status_before: str | None,
+    settlement_status_before: str | None,
+) -> NegativeBybitFlowResult:
+    if str(flow.status) != (
+        BYBIT_FLOW_STATUS_COMPLETED
+    ):
+        raise NegativeBybitFlowError(
+            "Completed cash-delivery flow status "
+            "mismatch"
+        )
+
+    if str(settlement_batch.status) != (
+        BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT
+    ):
+        raise NegativeBybitFlowError(
+            "Completed cash-delivery settlement "
+            "batch status mismatch"
+        )
+
+    snapshot = _cash_delivery_snapshot(
+        flow=flow,
+        settlement_batch=settlement_batch,
+        amounts=amounts,
+        allowed_flow_statuses={
+            BYBIT_FLOW_STATUS_COMPLETED
+        },
+    )
+
+    _validate_completion_wallet(
+        db,
+        flow=flow,
+        snapshot=snapshot,
+    )
+
+    fingerprints = (
+        _completion_fingerprints(
+            snapshot
+        )
+    )
+
+    identity = _completion_identity(
+        flow=flow,
+        snapshot=snapshot,
+    )
+
+    reconciliation = (
+        flow.reconciliation_json
+    )
+
+    if not isinstance(
+        reconciliation,
+        dict,
+    ):
+        raise NegativeBybitFlowError(
+            "Completed cash-delivery "
+            "reconciliation is missing"
+        )
+
+    completion = reconciliation.get(
+        "cash_delivery_completion"
+    )
+
+    if not isinstance(completion, dict):
+        raise NegativeBybitFlowError(
+            "Cash-delivery completion evidence "
+            "is missing"
+        )
+
+    if completion.get("schema") != (
+        CASH_DELIVERY_COMPLETION_SCHEMA
+    ):
+        raise NegativeBybitFlowError(
+            "Cash-delivery completion schema "
+            "mismatch"
+        )
+
+    if (
+        completion.get("policy_version")
+        != POLICY_VERSION
+    ):
+        raise NegativeBybitFlowError(
+            "Cash-delivery completion policy "
+            "mismatch"
+        )
+
+    if completion.get("state") != "completed":
+        raise NegativeBybitFlowError(
+            "Cash-delivery completion state "
+            "mismatch"
+        )
+
+    _aware_utc_datetime(
+        completion.get("completed_at"),
+        field_name=(
+            "cash_delivery_completion."
+            "completed_at"
+        ),
+    )
+
+    for key, expected in identity.items():
+        actual = completion.get(key)
+
+        if actual != expected:
+            raise NegativeBybitFlowError(
+                "Cash-delivery completion identity "
+                f"mismatch: {key}"
+            )
+
+    if (
+        completion.get(
+            "evidence_fingerprints"
+        )
+        != fingerprints
+    ):
+        raise NegativeBybitFlowError(
+            "Cash-delivery completion evidence "
+            "fingerprints mismatch"
+        )
+
+    if (
+        completion.get(
+            "db_only_transition"
+        )
+        is not True
+    ):
+        raise NegativeBybitFlowError(
+            "Cash-delivery completion DB-only "
+            "marker is missing"
+        )
+
+    if (
+        completion.get(
+            "seller_payouts_started"
+        )
+        is not False
+    ):
+        raise NegativeBybitFlowError(
+            "Cash-delivery completion incorrectly "
+            "claims seller payout execution"
+        )
+
+    if (
+        completion.get(
+            "accounting_finalized"
+        )
+        is not False
+    ):
+        raise NegativeBybitFlowError(
+            "Cash-delivery completion incorrectly "
+            "claims accounting finalization"
+        )
+
+    report = flow.report_json
+
+    if not isinstance(report, dict):
+        raise NegativeBybitFlowError(
+            "Completed cash-delivery report "
+            "is missing"
+        )
+
+    if report.get("schema") != (
+        CASH_DELIVERY_REPORT_SCHEMA
+    ):
+        raise NegativeBybitFlowError(
+            "Cash-delivery report schema mismatch"
+        )
+
+    if report.get("policy_version") != (
+        POLICY_VERSION
+    ):
+        raise NegativeBybitFlowError(
+            "Cash-delivery report policy mismatch"
+        )
+
+    if report.get("state") != "completed":
+        raise NegativeBybitFlowError(
+            "Cash-delivery report state mismatch"
+        )
+
+    for key, expected in identity.items():
+        if report.get(key) != expected:
+            raise NegativeBybitFlowError(
+                "Cash-delivery report identity "
+                f"mismatch: {key}"
+            )
+
+    if (
+        report.get(
+            "evidence_fingerprints"
+        )
+        != fingerprints
+    ):
+        raise NegativeBybitFlowError(
+            "Cash-delivery report evidence "
+            "fingerprints mismatch"
+        )
+
+    if (
+        report.get("cash_ready_for_payout")
+        is not True
+    ):
+        raise NegativeBybitFlowError(
+            "Cash-delivery report cash-ready "
+            "marker is missing"
+        )
+
+    if (
+        report.get("seller_payouts_started")
+        is not False
+        or report.get(
+            "accounting_finalized"
+        )
+        is not False
+        or report.get(
+            "reserve_release_allowed"
+        )
+        is not False
+        or report.get(
+            "pricing_unlock_allowed"
+        )
+        is not False
+    ):
+        raise NegativeBybitFlowError(
+            "Cash-delivery report violates strict "
+            "finalization boundary"
+        )
+
+    result = _step_result(
+        ok=True,
+        transition=(
+            "negative_cash_delivery_"
+            "already_completed"
+        ),
+        settlement_batch=settlement_batch,
+        flow=flow,
+        status_before=status_before,
+        settlement_status_before=(
+            settlement_status_before
+        ),
+        idempotent=True,
+        diagnostics={
+            "did_bybit_post": False,
+            "bybit_post_count": 0,
+            "bybit_get_count": 0,
+            "bsc_rpc_read_count": 0,
+            "db_only_transition": True,
+            "cash_ready_for_payout": True,
+            "seller_payouts_started": False,
+            "accounting_finalized": False,
+            "reserve_release_allowed": False,
+            "pricing_unlock_allowed": False,
+            "next_transition": (
+                "negative_payout_pipeline"
+            ),
+        },
+    )
+
+    db.commit()
+
+    return result
+
+
 def resume_negative_bybit_flow_once(
     db: Session,
     *,
@@ -8458,41 +9969,45 @@ def resume_negative_bybit_flow_once(
                         if str(flow.status) == (
                             BYBIT_FLOW_STATUS_SETTLEMENT_WALLET_RECEIPT_CONFIRMED
                         ):
-                            result = _step_result(
-                                ok=True,
-                                transition=(
-                                    "settlement_wallet_"
-                                    "receipt_already_"
-                                    "confirmed"
-                                ),
-                                settlement_batch=(
-                                    settlement_batch
-                                ),
-                                flow=flow,
-                                status_before=(
-                                    status_before
-                                ),
-                                settlement_status_before=(
-                                    settlement_status_before
-                                ),
-                                idempotent=True,
-                                diagnostics={
-                                    "did_bybit_post": False,
-                                    "bybit_post_count": 0,
-                                    "bybit_get_count": 0,
-                                    "bsc_rpc_read_count": 0,
-                                    "reserve_release_allowed": False,
-                                    "pricing_unlock_allowed": False,
-                                    "next_transition": (
-                                        "complete_negative_"
-                                        "cash_delivery"
+                            return (
+                                _complete_negative_cash_delivery_once(
+                                    db,
+                                    settlement_batch=(
+                                        settlement_batch
                                     ),
-                                },
+                                    flow=flow,
+                                    amounts=amounts,
+                                    resolved_now=(
+                                        resolved_now
+                                    ),
+                                    status_before=(
+                                        status_before
+                                    ),
+                                    settlement_status_before=(
+                                        settlement_status_before
+                                    ),
+                                )
                             )
 
-                            db.commit()
-
-                            return result
+                        if str(flow.status) == (
+                            BYBIT_FLOW_STATUS_COMPLETED
+                        ):
+                            return (
+                                _completed_negative_cash_delivery_once(
+                                    db,
+                                    settlement_batch=(
+                                        settlement_batch
+                                    ),
+                                    flow=flow,
+                                    amounts=amounts,
+                                    status_before=(
+                                        status_before
+                                    ),
+                                    settlement_status_before=(
+                                        settlement_status_before
+                                    ),
+                                )
+                            )
 
                         raise NegativeBybitFlowError(
                             "Confirmed withdrawal intent "

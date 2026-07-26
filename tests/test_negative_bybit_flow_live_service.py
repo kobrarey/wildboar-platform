@@ -24,10 +24,12 @@ from app.settlement.negative_bybit_flow_types import (
 )
 from app.settlement.statuses import (
     BATCH_STATUS_FAILED_REQUIRES_REVIEW,
+    BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT,
     BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING,
     BATCH_STATUS_NEGATIVE_NET_SALE_EXECUTED,
     BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_PENDING,
     BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING,
+    BYBIT_FLOW_STATUS_COMPLETED,
     BYBIT_FLOW_STATUS_CREATED,
     BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW,
     BYBIT_FLOW_STATUS_MASTER_BALANCE_CONFIRMED,
@@ -1366,6 +1368,59 @@ def install_bsc_receipt_web3(
         contract_calls=contract_calls,
         receipt=receipt,
         logs=logs,
+    )
+
+
+def advance_to_settlement_wallet_receipt_confirmed(
+    env: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> SimpleNamespace:
+    advanced = (
+        advance_to_withdrawal_reconciled(
+            env,
+            monkeypatch,
+        )
+    )
+
+    calls = install_bsc_receipt_web3(
+        monkeypatch,
+        env,
+        receipt_status=1,
+        receipt_tx_hash="0xabc123",
+        receipt_block_number=55500010,
+        current_block_number=55500021,
+        transfer_amounts_usdt=(
+            Decimal("100"),
+        ),
+        balance_after_usdt=Decimal(
+            "107.25"
+        ),
+    )
+
+    result = resume_once(env)
+
+    assert result.ok is True
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_settlement_wallet_"
+        "receipt_confirmed"
+    )
+
+    assert advanced.flow.status == (
+        BYBIT_FLOW_STATUS_SETTLEMENT_WALLET_RECEIPT_CONFIRMED
+    )
+
+    assert env.batch.status == (
+        BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING
+    )
+
+    return SimpleNamespace(
+        flow=advanced.flow,
+        calls=calls,
+        withdrawal_record=(
+            advanced.withdrawal_record
+        ),
     )
 
 
@@ -5798,7 +5853,7 @@ def test_settlement_wallet_receipt_balance_delta_mismatch_requires_review(
     ) == post_count_before
 
 
-def test_settlement_wallet_receipt_exact_confirmation_is_idempotent(
+def test_settlement_wallet_receipt_then_db_only_completion_is_idempotent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     env = install_service_fakes(monkeypatch)
@@ -5924,11 +5979,209 @@ def test_settlement_wallet_receipt_exact_confirmation_is_idempotent(
     balance_call_count_before = len(
         calls.balance_calls
     )
+    get_count_before_completion = len(
+        env.client.get_calls
+    )
+    post_count_before_completion = len(
+        env.client.post_calls
+    )
+
+    completion = resume_once(env)
+
+    assert completion.ok is True
+    assert completion.idempotent is False
+    assert completion.diagnostics[
+        "transition"
+    ] == (
+        "complete_negative_cash_delivery"
+    )
+
+    assert completion.diagnostics[
+        "db_only_transition"
+    ] is True
+    assert completion.diagnostics[
+        "cash_ready_for_payout"
+    ] is True
+
+    assert completion.diagnostics[
+        "bybit_get_count"
+    ] == 0
+    assert completion.diagnostics[
+        "bybit_post_count"
+    ] == 0
+    assert completion.diagnostics[
+        "bsc_rpc_read_count"
+    ] == 0
+
+    assert completion.diagnostics[
+        "seller_payouts_started"
+    ] is False
+    assert completion.diagnostics[
+        "accounting_finalized"
+    ] is False
+    assert completion.diagnostics[
+        "reserve_release_allowed"
+    ] is False
+    assert completion.diagnostics[
+        "pricing_unlock_allowed"
+    ] is False
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_COMPLETED
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT
+    )
+
+    assert flow.error is None
+    assert env.batch.error is None
+
+    completion_evidence = (
+        flow.reconciliation_json[
+            "cash_delivery_completion"
+        ]
+    )
+
+    report = flow.report_json
+
+    assert completion_evidence[
+        "schema"
+    ] == (
+        service
+        .CASH_DELIVERY_COMPLETION_SCHEMA
+    )
+    assert completion_evidence[
+        "state"
+    ] == "completed"
+    assert completion_evidence[
+        "db_only_transition"
+    ] is True
+
+    assert completion_evidence[
+        "seller_payouts_started"
+    ] is False
+    assert completion_evidence[
+        "accounting_finalized"
+    ] is False
+    assert completion_evidence[
+        "reserve_release_allowed"
+    ] is False
+    assert completion_evidence[
+        "pricing_unlock_allowed"
+    ] is False
+
+    assert completion_evidence[
+        "next_stage"
+    ] == "negative_payout_pipeline"
+
+    assert (
+        "settlement_wallet_address"
+        not in completion_evidence
+    )
+    assert len(
+        completion_evidence[
+            "settlement_wallet_address_sha256"
+        ]
+    ) == 64
+
+    assert completion_evidence[
+        "withdrawal_tx_hash"
+    ] == "0xabc123"
+    assert completion_evidence[
+        "withdrawal_amount_usdt"
+    ] == "100"
+    assert completion_evidence[
+        "required_master_usdt"
+    ] == "101"
+    assert completion_evidence[
+        "withdrawal_fee_usdt"
+    ] == "1"
+    assert completion_evidence[
+        "balance_before_usdt"
+    ] == "7.25"
+    assert completion_evidence[
+        "balance_after_usdt"
+    ] == "107.25"
+    assert completion_evidence[
+        "confirmations"
+    ] == 12
+    assert completion_evidence[
+        "receipt_block_number"
+    ] == 55500010
+
+    fingerprints = completion_evidence[
+        "evidence_fingerprints"
+    ]
+
+    assert set(fingerprints) == {
+        "universal_reconciliation",
+        "master_balance_barrier",
+        "withdrawal_reconciliation",
+        "settlement_wallet_receipt",
+    }
+
+    assert all(
+        len(value) == 64
+        for value in fingerprints.values()
+    )
+
+    assert report["schema"] == (
+        service
+        .CASH_DELIVERY_REPORT_SCHEMA
+    )
+    assert report["state"] == "completed"
+    assert report[
+        "cash_ready_for_payout"
+    ] is True
+    assert report[
+        "seller_payouts_started"
+    ] is False
+    assert report[
+        "accounting_finalized"
+    ] is False
+    assert report[
+        "reserve_release_allowed"
+    ] is False
+    assert report[
+        "pricing_unlock_allowed"
+    ] is False
+    assert report[
+        "next_stage"
+    ] == "negative_payout_pipeline"
+
+    assert len(
+        calls.receipt_calls
+    ) == receipt_call_count_before
+    assert len(
+        calls.balance_calls
+    ) == balance_call_count_before
+    assert len(
+        env.client.get_calls
+    ) == get_count_before_completion
+    assert len(
+        env.client.post_calls
+    ) == post_count_before_completion
+
+    reconciliation_before_rerun = (
+        deepcopy(
+            flow.reconciliation_json
+        )
+    )
+    report_before_rerun = deepcopy(
+        flow.report_json
+    )
+
     get_count_before_rerun = len(
         env.client.get_calls
     )
     post_count_before_rerun = len(
         env.client.post_calls
+    )
+    receipt_count_before_rerun = len(
+        calls.receipt_calls
+    )
+    balance_count_before_rerun = len(
+        calls.balance_calls
     )
 
     rerun = resume_once(env)
@@ -5938,32 +6191,329 @@ def test_settlement_wallet_receipt_exact_confirmation_is_idempotent(
     assert rerun.diagnostics[
         "transition"
     ] == (
-        "settlement_wallet_receipt_"
-        "already_confirmed"
+        "negative_cash_delivery_"
+        "already_completed"
     )
 
     assert rerun.diagnostics[
-        "bsc_rpc_read_count"
-    ] == 0
+        "db_only_transition"
+    ] is True
     assert rerun.diagnostics[
         "bybit_get_count"
     ] == 0
     assert rerun.diagnostics[
         "bybit_post_count"
     ] == 0
+    assert rerun.diagnostics[
+        "bsc_rpc_read_count"
+    ] == 0
 
-    assert len(
-        calls.receipt_calls
-    ) == receipt_call_count_before
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_COMPLETED
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT
+    )
 
-    assert len(
-        calls.balance_calls
-    ) == balance_call_count_before
+    assert flow.reconciliation_json == (
+        reconciliation_before_rerun
+    )
+    assert flow.report_json == (
+        report_before_rerun
+    )
 
     assert len(
         env.client.get_calls
     ) == get_count_before_rerun
-
     assert len(
         env.client.post_calls
     ) == post_count_before_rerun
+    assert len(
+        calls.receipt_calls
+    ) == receipt_count_before_rerun
+    assert len(
+        calls.balance_calls
+    ) == balance_count_before_rerun
+
+
+@pytest.mark.parametrize(
+    (
+        "tamper_case",
+        "expected_error",
+    ),
+    [
+        (
+            "universal_reconciliation",
+            (
+                "universal transfer reconciliation "
+                "is not confirmed"
+            ),
+        ),
+        (
+            "withdrawal_reconciliation",
+            (
+                "withdrawal was not confirmed by "
+                "exact requestid query"
+            ),
+        ),
+        (
+            "receipt_balance_delta",
+            (
+                "settlement wallet receipt balance "
+                "delta mismatch"
+            ),
+        ),
+        (
+            "receipt_confirmations",
+            (
+                "settlement wallet receipt "
+                "confirmations mismatch"
+            ),
+        ),
+    ],
+)
+def test_cash_delivery_completion_detects_tampered_external_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tamper_case: str,
+    expected_error: str,
+) -> None:
+    env = install_service_fakes(
+        monkeypatch
+    )
+
+    advanced = (
+        advance_to_settlement_wallet_receipt_confirmed(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    if tamper_case == (
+        "universal_reconciliation"
+    ):
+        flow.universal_transfer_intent_json[
+            "reconciliation"
+        ]["exact_match"] = False
+
+    elif tamper_case == (
+        "withdrawal_reconciliation"
+    ):
+        flow.withdrawal_intent_json[
+            "reconciliation"
+        ]["selected_source"] = (
+            "bounded_record_lookup"
+        )
+
+    elif tamper_case == (
+        "receipt_balance_delta"
+    ):
+        flow.settlement_wallet_receipt_json[
+            "balance_delta_usdt"
+        ] = "99"
+
+    elif tamper_case == (
+        "receipt_confirmations"
+    ):
+        flow.settlement_wallet_receipt_confirmations = (
+            13
+        )
+
+    else:
+        raise AssertionError(
+            f"Unsupported tamper case: {tamper_case}"
+        )
+
+    get_count_before = len(
+        env.client.get_calls
+    )
+    post_count_before = len(
+        env.client.post_calls
+    )
+    receipt_count_before = len(
+        advanced.calls.receipt_calls
+    )
+    balance_count_before = len(
+        advanced.calls.balance_calls
+    )
+
+    result = resume_once(env)
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == "failed_requires_review"
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert expected_error in str(
+        result.error
+    ).lower()
+
+    assert result.diagnostics[
+        "did_bybit_post"
+    ] is False
+    assert result.diagnostics[
+        "bybit_post_count"
+    ] == 0
+    assert result.diagnostics[
+        "reserve_release_allowed"
+    ] is False
+    assert result.diagnostics[
+        "pricing_unlock_allowed"
+    ] is False
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+    assert len(
+        advanced.calls.receipt_calls
+    ) == receipt_count_before
+    assert len(
+        advanced.calls.balance_calls
+    ) == balance_count_before
+
+
+@pytest.mark.parametrize(
+    (
+        "tamper_case",
+        "expected_error",
+    ),
+    [
+        (
+            "completion_fingerprint",
+            (
+                "cash-delivery completion evidence "
+                "fingerprints mismatch"
+            ),
+        ),
+        (
+            "report_finalization_boundary",
+            (
+                "cash-delivery report violates "
+                "strict finalization boundary"
+            ),
+        ),
+    ],
+)
+def test_completed_cash_delivery_detects_tampered_completion_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+    tamper_case: str,
+    expected_error: str,
+) -> None:
+    env = install_service_fakes(
+        monkeypatch
+    )
+
+    advanced = (
+        advance_to_settlement_wallet_receipt_confirmed(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    completion = resume_once(env)
+
+    assert completion.ok is True
+    assert completion.diagnostics[
+        "transition"
+    ] == (
+        "complete_negative_cash_delivery"
+    )
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_COMPLETED
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_NEGATIVE_NET_CASH_READY_FOR_PAYOUT
+    )
+
+    if tamper_case == (
+        "completion_fingerprint"
+    ):
+        flow.reconciliation_json[
+            "cash_delivery_completion"
+        ][
+            "evidence_fingerprints"
+        ][
+            "settlement_wallet_receipt"
+        ] = "0" * 64
+
+    elif tamper_case == (
+        "report_finalization_boundary"
+    ):
+        flow.report_json[
+            "seller_payouts_started"
+        ] = True
+
+    else:
+        raise AssertionError(
+            f"Unsupported tamper case: {tamper_case}"
+        )
+
+    get_count_before = len(
+        env.client.get_calls
+    )
+    post_count_before = len(
+        env.client.post_calls
+    )
+    receipt_count_before = len(
+        advanced.calls.receipt_calls
+    )
+    balance_count_before = len(
+        advanced.calls.balance_calls
+    )
+
+    result = resume_once(env)
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == "failed_requires_review"
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert expected_error in str(
+        result.error
+    ).lower()
+
+    assert result.diagnostics[
+        "did_bybit_post"
+    ] is False
+    assert result.diagnostics[
+        "bybit_post_count"
+    ] == 0
+    assert result.diagnostics[
+        "reserve_release_allowed"
+    ] is False
+    assert result.diagnostics[
+        "pricing_unlock_allowed"
+    ] is False
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+    assert len(
+        advanced.calls.receipt_calls
+    ) == receipt_count_before
+    assert len(
+        advanced.calls.balance_calls
+    ) == balance_count_before
