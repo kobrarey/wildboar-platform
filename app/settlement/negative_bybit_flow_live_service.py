@@ -8010,9 +8010,27 @@ def _query_settlement_wallet_receipt_observation(
         "current_block_number": None,
         "confirmations": 0,
         "matched_transfer_log_count": 0,
+        "matched_transfer_logs": [],
+        "matched_transfer_log_indexes": [],
+        "matched_transfer_amounts_raw": [],
+        "matched_transfer_total_raw": None,
+        "matched_transfer_logs_fingerprint": None,
+        "malformed_matching_log_count": 0,
+        "malformed_matching_logs": [],
+        "balance_before_raw": str(
+            baseline_raw_balance
+        ),
         "balance_after": None,
+        "balance_after_raw": None,
         "balance_delta_raw": None,
         "balance_delta_usdt": None,
+        "expected_raw": str(
+            expected_raw
+        ),
+        "unrelated_additional_incoming_raw": (
+            None
+        ),
+        "balance_delta_covers_expected": False,
         "exact_transfer_log_match": False,
         "exact_balance_delta_match": False,
         "raw_receipt_omitted": True,
@@ -8218,20 +8236,37 @@ def _query_settlement_wallet_receipt_observation(
             ].lower()
         )
 
-        logs = list(
-            _rpc_value(
-                receipt,
-                "logs",
-                [],
+        logs_value = _rpc_value(
+            receipt,
+            "logs",
+            [],
+        )
+
+        if isinstance(
+            logs_value,
+            (
+                str,
+                bytes,
+                bytearray,
+            ),
+        ):
+            raise NegativeBybitFlowError(
+                "BSC receipt logs container is invalid"
             )
-            or []
+
+        logs = list(
+            logs_value or []
         )
 
         matched_logs: list[
             dict[str, Any]
         ] = []
 
-        for log_index, log in enumerate(
+        malformed_matching_logs: list[
+            dict[str, Any]
+        ] = []
+
+        for receipt_position, log in enumerate(
             logs
         ):
             log_address = str(
@@ -8248,50 +8283,155 @@ def _query_settlement_wallet_receipt_observation(
             ):
                 continue
 
-            topics = list(
-                _rpc_value(
-                    log,
-                    "topics",
-                    [],
+            topics_value = _rpc_value(
+                log,
+                "topics",
+                [],
+            )
+
+            if isinstance(
+                topics_value,
+                (
+                    str,
+                    bytes,
+                    bytearray,
+                ),
+            ):
+                malformed_matching_logs.append(
+                    {
+                        "receipt_position": (
+                            receipt_position
+                        ),
+                        "reason": (
+                            "invalid_topics_container"
+                        ),
+                    }
                 )
-                or []
+                continue
+
+            topics = list(
+                topics_value or []
             )
 
-            if len(topics) < 3:
+            normalized_topics = [
+                _normalized_hex(topic)
+                for topic in topics
+            ]
+
+            transfer_like = (
+                len(normalized_topics) >= 1
+                and normalized_topics[0]
+                == transfer_topic
+            )
+
+            destination_like = (
+                len(normalized_topics) >= 3
+                and normalized_topics[2]
+                == destination_topic
+            )
+
+            if (
+                transfer_like
+                and len(normalized_topics) < 3
+            ):
+                malformed_matching_logs.append(
+                    {
+                        "receipt_position": (
+                            receipt_position
+                        ),
+                        "reason": (
+                            "transfer_topics_missing"
+                        ),
+                    }
+                )
+                continue
+
+            if not destination_like:
+                # Valid USDT Transfer to another
+                # destination or unrelated USDT log.
                 continue
 
             if (
-                _normalized_hex(topics[0])
-                != transfer_topic
+                not transfer_like
+                or len(normalized_topics) != 3
+                or any(
+                    topic is None
+                    or len(topic) != 66
+                    for topic
+                    in normalized_topics
+                )
             ):
+                malformed_matching_logs.append(
+                    {
+                        "receipt_position": (
+                            receipt_position
+                        ),
+                        "reason": (
+                            "invalid_transfer_topics"
+                        ),
+                    }
+                )
+                continue
+
+            try:
+                log_index = _rpc_integer(
+                    _rpc_value(
+                        log,
+                        "logIndex",
+                        receipt_position,
+                    ),
+                    field_name=(
+                        "receipt.logs.logIndex"
+                    ),
+                )
+
+                amount_raw = _rpc_integer(
+                    _rpc_value(
+                        log,
+                        "data",
+                        None,
+                    ),
+                    field_name=(
+                        "receipt.logs.data"
+                    ),
+                )
+
+            except Exception as exc:
+                malformed_matching_logs.append(
+                    {
+                        "receipt_position": (
+                            receipt_position
+                        ),
+                        "reason": (
+                            "invalid_log_index_or_amount"
+                        ),
+                        "error": str(exc)[:300],
+                    }
+                )
                 continue
 
             if (
-                _normalized_hex(topics[2])
-                != destination_topic
+                log_index < 0
+                or amount_raw < 0
             ):
+                malformed_matching_logs.append(
+                    {
+                        "receipt_position": (
+                            receipt_position
+                        ),
+                        "reason": (
+                            "negative_log_index_or_amount"
+                        ),
+                    }
+                )
                 continue
-
-            amount_raw = _rpc_integer(
-                _rpc_value(
-                    log,
-                    "data",
-                    None,
-                ),
-                field_name=(
-                    "receipt.logs.data"
-                ),
-            )
 
             matched_logs.append(
                 {
-                    "log_index": int(
-                        _rpc_value(
-                            log,
-                            "logIndex",
-                            log_index,
-                        )
+                    "receipt_position": (
+                        receipt_position
                     ),
+                    "log_index": log_index,
                     "amount_raw": str(
                         amount_raw
                     ),
@@ -8309,36 +8449,136 @@ def _query_settlement_wallet_receipt_observation(
 
         return evidence
 
+    matched_logs.sort(
+        key=lambda item: (
+            int(item["log_index"]),
+            int(item["receipt_position"]),
+        )
+    )
+
+    log_indexes = [
+        int(item["log_index"])
+        for item in matched_logs
+    ]
+
+    matched_amounts_raw = [
+        str(item["amount_raw"])
+        for item in matched_logs
+    ]
+
+    matched_total_raw = sum(
+        int(item["amount_raw"])
+        for item in matched_logs
+    )
+
+    logs_fingerprint = (
+        _payload_fingerprint(
+            {
+                "schema": (
+                    "negative_settlement_wallet_"
+                    "matched_logs_v1"
+                ),
+                "tx_hash": (
+                    expected_tx_hash
+                ),
+                "contract": (
+                    contract_checksum.lower()
+                ),
+                "destination_topic": (
+                    destination_topic
+                ),
+                "logs": [
+                    {
+                        "log_index": int(
+                            item["log_index"]
+                        ),
+                        "amount_raw": str(
+                            item["amount_raw"]
+                        ),
+                    }
+                    for item in matched_logs
+                ],
+            }
+        )
+    )
+
     evidence[
         "matched_transfer_log_count"
     ] = len(matched_logs)
 
     evidence["matched_transfer_logs"] = (
-        matched_logs[:5]
+        matched_logs
     )
 
-    if len(matched_logs) != 1:
+    evidence[
+        "matched_transfer_log_indexes"
+    ] = log_indexes
+
+    evidence[
+        "matched_transfer_amounts_raw"
+    ] = matched_amounts_raw
+
+    evidence[
+        "matched_transfer_total_raw"
+    ] = str(matched_total_raw)
+
+    evidence[
+        "matched_transfer_logs_fingerprint"
+    ] = logs_fingerprint
+
+    evidence[
+        "malformed_matching_log_count"
+    ] = len(
+        malformed_matching_logs
+    )
+
+    evidence[
+        "malformed_matching_logs"
+    ] = malformed_matching_logs
+
+    if malformed_matching_logs:
         evidence["state"] = (
             "failed_requires_review"
         )
         evidence["error"] = (
-            "BSC receipt must contain exactly one "
-            "USDT Transfer to settlement wallet"
+            "BSC receipt contains malformed "
+            "USDT Transfer-like log for settlement "
+            "wallet"
         )
 
         return evidence
 
-    matched_amount_raw = int(
-        matched_logs[0]["amount_raw"]
-    )
-
-    if matched_amount_raw != expected_raw:
+    if not matched_logs:
         evidence["state"] = (
             "failed_requires_review"
         )
         evidence["error"] = (
-            "BSC USDT Transfer amount does not "
-            "match expected withdrawal amount"
+            "BSC receipt must contain one or more "
+            "valid USDT Transfers to settlement wallet"
+        )
+
+        return evidence
+
+    if len(set(log_indexes)) != len(
+        log_indexes
+    ):
+        evidence["state"] = (
+            "failed_requires_review"
+        )
+        evidence["error"] = (
+            "BSC receipt contains duplicate matching "
+            "Transfer log indexes"
+        )
+
+        return evidence
+
+    if matched_total_raw != expected_raw:
+        evidence["state"] = (
+            "failed_requires_review"
+        )
+        evidence["error"] = (
+            "BSC USDT Transfer aggregate amount does "
+            "not match expected withdrawal amount"
         )
 
         return evidence
@@ -8384,33 +8624,62 @@ def _query_settlement_wallet_receipt_observation(
         )
     )
 
+    unrelated_additional_incoming_raw = (
+        balance_delta_raw
+        - expected_raw
+    )
+
+    balance_delta_covers_expected = (
+        balance_delta_raw
+        >= expected_raw
+    )
+
     evidence["balance_after"] = (
         balance_after
     )
+
+    evidence["balance_after_raw"] = str(
+        balance_after_raw
+    )
+
     evidence["balance_delta_raw"] = str(
         balance_delta_raw
     )
+
     evidence["balance_delta_usdt"] = (
         _decimal_text(
             balance_delta_usdt
         )
     )
 
-    if balance_delta_raw != expected_raw:
+    evidence[
+        "unrelated_additional_incoming_raw"
+    ] = str(
+        unrelated_additional_incoming_raw
+    )
+
+    evidence[
+        "balance_delta_covers_expected"
+    ] = balance_delta_covers_expected
+
+    evidence[
+        "exact_balance_delta_match"
+    ] = (
+        balance_delta_raw
+        == expected_raw
+    )
+
+    if not balance_delta_covers_expected:
         evidence["state"] = (
             "failed_requires_review"
         )
         evidence["error"] = (
             "Settlement wallet USDT balance delta "
-            "does not exactly match withdrawal "
-            "amount"
+            "does not cover expected withdrawal amount"
         )
 
         return evidence
 
-    evidence[
-        "exact_balance_delta_match"
-    ] = True
     evidence["state"] = "confirmed"
 
     return evidence
@@ -9009,11 +9278,11 @@ def _reconcile_settlement_wallet_receipt_once(
         )
 
     if observation.get(
-        "exact_balance_delta_match"
+        "balance_delta_covers_expected"
     ) is not True:
         raise NegativeBybitFlowError(
-            "Confirmed receipt lacks exact "
-            "settlement wallet balance delta"
+            "Confirmed receipt balance delta does "
+            "not cover expected withdrawal amount"
         )
 
     balance_after = observation.get(
@@ -9048,13 +9317,95 @@ def _reconcile_settlement_wallet_receipt_once(
         )
     )
 
-    if not _same_decimal(
-        balance_delta_usdt,
-        snapshot["amount_usdt"],
+    if (
+        balance_delta_usdt
+        < snapshot["amount_usdt"]
     ):
         raise NegativeBybitFlowError(
             "Confirmed settlement wallet balance "
-            "delta amount mismatch"
+            "delta is below expected amount"
+        )
+
+    expected_raw = int(
+        _required_text(
+            observation.get(
+                "expected_raw"
+            ),
+            field_name=(
+                "receipt.expected_raw"
+            ),
+        )
+    )
+
+    balance_before_raw = int(
+        _required_text(
+            observation.get(
+                "balance_before_raw"
+            ),
+            field_name=(
+                "receipt.balance_before_raw"
+            ),
+        )
+    )
+
+    balance_after_raw = int(
+        _required_text(
+            observation.get(
+                "balance_after_raw"
+            ),
+            field_name=(
+                "receipt.balance_after_raw"
+            ),
+        )
+    )
+
+    balance_delta_raw = int(
+        _required_text(
+            observation.get(
+                "balance_delta_raw"
+            ),
+            field_name=(
+                "receipt.balance_delta_raw"
+            ),
+        )
+    )
+
+    unrelated_additional_raw = int(
+        _required_text(
+            observation.get(
+                "unrelated_additional_incoming_raw"
+            ),
+            field_name=(
+                "receipt.unrelated_additional_"
+                "incoming_raw"
+            ),
+        )
+    )
+
+    if (
+        balance_after_raw
+        - balance_before_raw
+        != balance_delta_raw
+    ):
+        raise NegativeBybitFlowError(
+            "Confirmed settlement wallet raw "
+            "balance arithmetic mismatch"
+        )
+
+    if balance_delta_raw < expected_raw:
+        raise NegativeBybitFlowError(
+            "Confirmed settlement wallet raw "
+            "balance delta is below expected amount"
+        )
+
+    if (
+        unrelated_additional_raw
+        != balance_delta_raw
+        - expected_raw
+    ):
+        raise NegativeBybitFlowError(
+            "Confirmed settlement wallet unrelated "
+            "incoming amount mismatch"
         )
 
     flow.settlement_wallet_balance_after_usdt = (
@@ -9129,7 +9480,13 @@ def _reconcile_settlement_wallet_receipt_once(
                 )
             ),
             "exact_transfer_log_match": True,
-            "exact_balance_delta_match": True,
+            "balance_delta_covers_expected": True,
+            "exact_balance_delta_match": (
+                observation.get(
+                    "exact_balance_delta_match"
+                )
+                is True
+            ),
             "reserve_release_allowed": False,
             "pricing_unlock_allowed": False,
             "next_transition": (
@@ -9170,13 +9527,24 @@ def _completion_integer(
     *,
     field_name: str,
 ) -> int:
-    try:
-        return int(
-            _required_text(
-                value,
-                field_name=field_name,
-            )
+    if (
+        value is None
+        or isinstance(value, bool)
+    ):
+        raise NegativeBybitFlowError(
+            f"{field_name} must be a valid integer"
         )
+
+    clean_value = str(value).strip()
+
+    if not clean_value:
+        raise NegativeBybitFlowError(
+            f"{field_name} must be a valid integer"
+        )
+
+    try:
+        return int(clean_value)
+
     except (
         TypeError,
         ValueError,
@@ -9723,13 +10091,13 @@ def _cash_delivery_snapshot(
 
     if (
         receipt.get(
-            "exact_balance_delta_match"
+            "balance_delta_covers_expected"
         )
         is not True
     ):
         raise NegativeBybitFlowError(
-            "Settlement wallet receipt lacks exact "
-            "balance delta match"
+            "Settlement wallet receipt balance "
+            "delta does not cover expected amount"
         )
 
     if (
@@ -9812,7 +10180,7 @@ def _cash_delivery_snapshot(
             "amount mismatch"
         )
 
-    if not _same_decimal(
+    balance_delta_usdt = (
         _completion_decimal(
             receipt.get(
                 "balance_delta_usdt"
@@ -9820,12 +10188,13 @@ def _cash_delivery_snapshot(
             field_name=(
                 "receipt.balance_delta_usdt"
             ),
-        ),
-        expected_amount,
-    ):
+        )
+    )
+
+    if balance_delta_usdt < expected_amount:
         raise NegativeBybitFlowError(
             "Settlement wallet receipt balance "
-            "delta mismatch"
+            "delta is below expected amount"
         )
 
     required_confirmations = int(
@@ -10027,13 +10396,13 @@ def _cash_delivery_snapshot(
             "field mismatch"
         )
 
-    if not _same_decimal(
-        after_usdt - before_usdt,
-        expected_amount,
+    if (
+        after_usdt - before_usdt
+        < expected_amount
     ):
         raise NegativeBybitFlowError(
             "Settlement wallet final balance delta "
-            "does not match received amount"
+            "is below received amount"
         )
 
     expected_raw_decimal = (
@@ -10073,7 +10442,46 @@ def _cash_delivery_snapshot(
             "raw amount mismatch"
         )
 
-    if (
+    receipt_expected_raw = (
+        _completion_integer(
+            receipt.get(
+                "expected_raw"
+            ),
+            field_name=(
+                "receipt.expected_raw"
+            ),
+        )
+    )
+
+    if receipt_expected_raw != expected_raw:
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt expected "
+            "raw value mismatch"
+        )
+
+    balance_before_raw = (
+        _completion_integer(
+            receipt.get(
+                "balance_before_raw"
+            ),
+            field_name=(
+                "receipt.balance_before_raw"
+            ),
+        )
+    )
+
+    balance_after_raw = (
+        _completion_integer(
+            receipt.get(
+                "balance_after_raw"
+            ),
+            field_name=(
+                "receipt.balance_after_raw"
+            ),
+        )
+    )
+
+    balance_delta_raw = (
         _completion_integer(
             receipt.get(
                 "balance_delta_raw"
@@ -10082,27 +10490,132 @@ def _cash_delivery_snapshot(
                 "receipt.balance_delta_raw"
             ),
         )
-        != expected_raw
-    ):
+    )
+
+    baseline_raw = (
+        _completion_integer(
+            withdrawal_snapshot[
+                "balance_baseline"
+            ].get(
+                "raw_balance"
+            ),
+            field_name=(
+                "balance_baseline.raw_balance"
+            ),
+        )
+    )
+
+    balance_after_snapshot_raw = (
+        _completion_integer(
+            balance_after.get(
+                "raw_balance"
+            ),
+            field_name=(
+                "balance_after.raw_balance"
+            ),
+        )
+    )
+
+    if balance_before_raw != baseline_raw:
         raise NegativeBybitFlowError(
-            "Settlement wallet receipt raw balance "
-            "delta mismatch"
+            "Settlement wallet receipt raw "
+            "balance-before mismatch"
         )
 
     if (
+        balance_after_raw
+        != balance_after_snapshot_raw
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt raw "
+            "balance-after mismatch"
+        )
+
+    if (
+        balance_after_raw
+        - balance_before_raw
+        != balance_delta_raw
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt raw "
+            "balance arithmetic mismatch"
+        )
+
+    if balance_delta_raw < expected_raw:
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt raw balance "
+            "delta is below expected amount"
+        )
+
+    unrelated_additional_raw = (
+        _completion_integer(
+            receipt.get(
+                "unrelated_additional_incoming_raw"
+            ),
+            field_name=(
+                "receipt.unrelated_additional_"
+                "incoming_raw"
+            ),
+        )
+    )
+
+    if unrelated_additional_raw < 0:
+        raise NegativeBybitFlowError(
+            "Settlement wallet unrelated incoming "
+            "amount cannot be negative"
+        )
+
+    if (
+        unrelated_additional_raw
+        != balance_delta_raw
+        - expected_raw
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt unrelated "
+            "incoming amount mismatch"
+        )
+
+    malformed_count = (
+        _completion_integer(
+            receipt.get(
+                "malformed_matching_log_count"
+            ),
+            field_name=(
+                "receipt.malformed_matching_"
+                "log_count"
+            ),
+        )
+    )
+
+    malformed_logs = receipt.get(
+        "malformed_matching_logs"
+    )
+
+    if (
+        malformed_count != 0
+        or malformed_logs != []
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt contains "
+            "malformed matching Transfer evidence"
+        )
+
+    matched_log_count = (
         _completion_integer(
             receipt.get(
                 "matched_transfer_log_count"
             ),
             field_name=(
-                "receipt.matched_transfer_log_count"
+                "receipt.matched_transfer_"
+                "log_count"
             ),
         )
-        != 1
-    ):
+    )
+
+    if matched_log_count <= 0:
         raise NegativeBybitFlowError(
             "Settlement wallet receipt must contain "
-            "exactly one matching Transfer log"
+            "one or more matching Transfer logs"
         )
 
     matched_logs = receipt.get(
@@ -10111,32 +10624,264 @@ def _cash_delivery_snapshot(
 
     if (
         not isinstance(matched_logs, list)
-        or len(matched_logs) != 1
-        or not isinstance(
-            matched_logs[0],
-            dict,
-        )
+        or len(matched_logs)
+        != matched_log_count
     ):
         raise NegativeBybitFlowError(
             "Settlement wallet receipt matching "
             "Transfer log evidence is invalid"
         )
 
-    if (
-        _completion_integer(
-            matched_logs[0].get(
+    normalized_logs: list[
+        dict[str, Any]
+    ] = []
+
+    for position, matched_log in enumerate(
+        matched_logs
+    ):
+        if not isinstance(
+            matched_log,
+            dict,
+        ):
+            raise NegativeBybitFlowError(
+                "Settlement wallet receipt matching "
+                "Transfer log entry is invalid"
+            )
+
+        log_index = _completion_integer(
+            matched_log.get(
+                "log_index"
+            ),
+            field_name=(
+                "receipt.matched_transfer_logs."
+                f"{position}.log_index"
+            ),
+        )
+
+        amount_raw = _completion_integer(
+            matched_log.get(
                 "amount_raw"
             ),
             field_name=(
                 "receipt.matched_transfer_logs."
-                "amount_raw"
+                f"{position}.amount_raw"
             ),
         )
-        != expected_raw
+
+        if (
+            log_index < 0
+            or amount_raw < 0
+        ):
+            raise NegativeBybitFlowError(
+                "Settlement wallet receipt matching "
+                "Transfer log contains negative value"
+            )
+
+        normalized_logs.append(
+            {
+                "log_index": log_index,
+                "amount_raw": amount_raw,
+            }
+        )
+
+    if normalized_logs != sorted(
+        normalized_logs,
+        key=lambda item: (
+            item["log_index"]
+        ),
     ):
         raise NegativeBybitFlowError(
             "Settlement wallet receipt matching "
-            "Transfer log amount mismatch"
+            "Transfer logs are not ordered"
+        )
+
+    matched_indexes = [
+        item["log_index"]
+        for item in normalized_logs
+    ]
+
+    if len(set(matched_indexes)) != len(
+        matched_indexes
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt contains "
+            "duplicate matching Transfer indexes"
+        )
+
+    evidence_indexes = receipt.get(
+        "matched_transfer_log_indexes"
+    )
+
+    if not isinstance(
+        evidence_indexes,
+        list,
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt matching "
+            "Transfer index evidence is missing"
+        )
+
+    normalized_evidence_indexes = [
+        _completion_integer(
+            value,
+            field_name=(
+                "receipt.matched_transfer_"
+                f"log_indexes.{position}"
+            ),
+        )
+        for position, value in enumerate(
+            evidence_indexes
+        )
+    ]
+
+    if normalized_evidence_indexes != (
+        matched_indexes
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt matching "
+            "Transfer indexes mismatch"
+        )
+
+    matched_amounts = [
+        item["amount_raw"]
+        for item in normalized_logs
+    ]
+
+    evidence_amounts = receipt.get(
+        "matched_transfer_amounts_raw"
+    )
+
+    if not isinstance(
+        evidence_amounts,
+        list,
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt matching "
+            "Transfer amount evidence is missing"
+        )
+
+    normalized_evidence_amounts = [
+        _completion_integer(
+            value,
+            field_name=(
+                "receipt.matched_transfer_"
+                f"amounts_raw.{position}"
+            ),
+        )
+        for position, value in enumerate(
+            evidence_amounts
+        )
+    ]
+
+    if normalized_evidence_amounts != (
+        matched_amounts
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt matching "
+            "Transfer amounts mismatch"
+        )
+
+    matched_total_raw = sum(
+        matched_amounts
+    )
+
+    if matched_total_raw != expected_raw:
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt matching "
+            "Transfer aggregate amount mismatch"
+        )
+
+    if (
+        _completion_integer(
+            receipt.get(
+                "matched_transfer_total_raw"
+            ),
+            field_name=(
+                "receipt.matched_transfer_"
+                "total_raw"
+            ),
+        )
+        != matched_total_raw
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt matching "
+            "Transfer total evidence mismatch"
+        )
+
+    destination_address = str(
+        withdrawal_snapshot["address"]
+    ).strip().lower()
+
+    if (
+        not destination_address.startswith(
+            "0x"
+        )
+        or len(destination_address) != 42
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt destination "
+            "address is invalid"
+        )
+
+    destination_topic = (
+        "0x"
+        + ("0" * 24)
+        + destination_address[2:]
+    )
+
+    expected_logs_fingerprint = (
+        _payload_fingerprint(
+            {
+                "schema": (
+                    "negative_settlement_wallet_"
+                    "matched_logs_v1"
+                ),
+                "tx_hash": (
+                    _normalized_hex(
+                        withdrawal_tx_hash
+                    )
+                ),
+                "contract": str(
+                    settings.BSC_USDT_CONTRACT
+                ).strip().lower(),
+                "destination_topic": (
+                    destination_topic
+                ),
+                "logs": [
+                    {
+                        "log_index": (
+                            item["log_index"]
+                        ),
+                        "amount_raw": str(
+                            item["amount_raw"]
+                        ),
+                    }
+                    for item
+                    in normalized_logs
+                ],
+            }
+        )
+    )
+
+    observed_logs_fingerprint = (
+        _required_text(
+            receipt.get(
+                "matched_transfer_logs_fingerprint"
+            ),
+            field_name=(
+                "receipt.matched_transfer_"
+                "logs_fingerprint"
+            ),
+        ).lower()
+    )
+
+    if (
+        observed_logs_fingerprint
+        != expected_logs_fingerprint
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet receipt matching "
+            "Transfer log fingerprint mismatch"
         )
 
     return {

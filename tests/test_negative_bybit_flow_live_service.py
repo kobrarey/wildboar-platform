@@ -5785,20 +5785,20 @@ def test_settlement_wallet_receipt_tx_hash_mismatch_requires_review(
     [
         (
             (),
-            "exactly one usdt transfer",
+            "one or more valid usdt transfers",
         ),
         (
             (
                 Decimal("100"),
                 Decimal("100"),
             ),
-            "exactly one usdt transfer",
+            "aggregate amount does not match",
         ),
         (
             (
                 Decimal("99"),
             ),
-            "transfer amount does not match",
+            "aggregate amount does not match",
         ),
     ],
 )
@@ -5869,6 +5869,438 @@ def test_settlement_wallet_receipt_transfer_log_mismatch_requires_review(
     assert len(
         env.client.post_calls
     ) == post_count_before
+
+
+def test_settlement_wallet_receipt_accepts_split_transfer_logs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(
+        monkeypatch
+    )
+
+    advanced = (
+        advance_to_withdrawal_reconciled(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    install_bsc_receipt_web3(
+        monkeypatch,
+        env,
+        transfer_amounts_usdt=(
+            Decimal("40"),
+            Decimal("60"),
+        ),
+        balance_after_usdt=Decimal(
+            "107.25"
+        ),
+    )
+
+    result = resume_once(env)
+
+    evidence = (
+        flow.settlement_wallet_receipt_json
+    )
+
+    assert result.ok is True
+
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_settlement_wallet_"
+        "receipt_confirmed"
+    )
+
+    assert evidence["state"] == (
+        "confirmed"
+    )
+
+    assert evidence[
+        "matched_transfer_log_count"
+    ] == 2
+
+    assert evidence[
+        "matched_transfer_log_indexes"
+    ] == [
+        0,
+        1,
+    ]
+
+    assert evidence[
+        "matched_transfer_amounts_raw"
+    ] == [
+        str(
+            int(
+                Decimal("40")
+                * (
+                    Decimal("10")
+                    ** int(
+                        service.settings
+                        .BSC_USDT_DECIMALS
+                    )
+                )
+            )
+        ),
+        str(
+            int(
+                Decimal("60")
+                * (
+                    Decimal("10")
+                    ** int(
+                        service.settings
+                        .BSC_USDT_DECIMALS
+                    )
+                )
+            )
+        ),
+    ]
+
+    assert evidence[
+        "matched_transfer_total_raw"
+    ] == evidence[
+        "expected_raw"
+    ]
+
+    assert len(
+        evidence[
+            "matched_transfer_logs_fingerprint"
+        ]
+    ) == 64
+
+    assert evidence[
+        "exact_transfer_log_match"
+    ] is True
+
+    assert evidence[
+        "balance_delta_covers_expected"
+    ] is True
+
+
+def test_settlement_wallet_receipt_accepts_additional_incoming_balance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(
+        monkeypatch
+    )
+
+    advanced = (
+        advance_to_withdrawal_reconciled(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    install_bsc_receipt_web3(
+        monkeypatch,
+        env,
+        transfer_amounts_usdt=(
+            Decimal("100"),
+        ),
+        # Baseline 7.25, therefore delta=105.
+        balance_after_usdt=Decimal(
+            "112.25"
+        ),
+    )
+
+    result = resume_once(env)
+
+    evidence = (
+        flow.settlement_wallet_receipt_json
+    )
+
+    decimals = int(
+        service.settings.BSC_USDT_DECIMALS
+    )
+
+    extra_raw = int(
+        Decimal("5")
+        * (
+            Decimal("10")
+            ** decimals
+        )
+    )
+
+    assert result.ok is True
+
+    assert evidence["state"] == (
+        "confirmed"
+    )
+
+    assert evidence[
+        "balance_delta_usdt"
+    ] == "105"
+
+    assert evidence[
+        "balance_delta_covers_expected"
+    ] is True
+
+    assert evidence[
+        "exact_balance_delta_match"
+    ] is False
+
+    assert evidence[
+        "unrelated_additional_incoming_raw"
+    ] == str(extra_raw)
+
+    assert (
+        int(
+            evidence[
+                "balance_after_raw"
+            ]
+        )
+        - int(
+            evidence[
+                "balance_before_raw"
+            ]
+        )
+        == int(
+            evidence[
+                "balance_delta_raw"
+            ]
+        )
+    )
+
+
+def test_cash_delivery_completion_accepts_split_logs_and_additional_incoming(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(
+        monkeypatch
+    )
+
+    advanced = (
+        advance_to_withdrawal_reconciled(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    install_bsc_receipt_web3(
+        monkeypatch,
+        env,
+        transfer_amounts_usdt=(
+            Decimal("40"),
+            Decimal("60"),
+        ),
+        # Baseline 7.25, therefore delta=105.
+        balance_after_usdt=Decimal(
+            "112.25"
+        ),
+    )
+
+    receipt_result = resume_once(env)
+
+    assert receipt_result.ok is True
+
+    assert receipt_result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_settlement_wallet_"
+        "receipt_confirmed"
+    )
+
+    evidence = (
+        flow.settlement_wallet_receipt_json
+    )
+
+    assert evidence[
+        "matched_transfer_log_count"
+    ] == 2
+
+    assert evidence[
+        "balance_delta_covers_expected"
+    ] is True
+
+    assert evidence[
+        "exact_balance_delta_match"
+    ] is False
+
+    # Completion must not require this legacy
+    # exact-equality marker.
+    evidence.pop(
+        "exact_balance_delta_match",
+        None,
+    )
+
+    completion = resume_once(env)
+
+    assert completion.ok is True
+
+    assert completion.diagnostics[
+        "transition"
+    ] == (
+        "complete_negative_cash_delivery"
+    )
+
+    assert completion.diagnostics[
+        "cash_ready_for_payout"
+    ] is True
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_COMPLETED
+    )
+
+
+def test_settlement_wallet_receipt_ignores_unrelated_logs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(
+        monkeypatch
+    )
+
+    advanced = (
+        advance_to_withdrawal_reconciled(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    calls = install_bsc_receipt_web3(
+        monkeypatch,
+        env,
+    )
+
+    valid_log = deepcopy(
+        calls.logs[0]
+    )
+
+    unrelated_contract_log = deepcopy(
+        valid_log
+    )
+
+    unrelated_contract_log[
+        "address"
+    ] = (
+        "0x9999999999999999999999999999999999999999"
+    )
+
+    unrelated_contract_log[
+        "logIndex"
+    ] = 8
+
+    unrelated_destination_log = deepcopy(
+        valid_log
+    )
+
+    unrelated_destination_log[
+        "topics"
+    ][2] = (
+        "0x"
+        + ("0" * 24)
+        + ("3" * 40)
+    )
+
+    unrelated_destination_log[
+        "logIndex"
+    ] = 9
+
+    calls.receipt["logs"] = [
+        unrelated_contract_log,
+        unrelated_destination_log,
+        valid_log,
+    ]
+
+    result = resume_once(env)
+
+    evidence = (
+        flow.settlement_wallet_receipt_json
+    )
+
+    assert result.ok is True
+
+    assert evidence[
+        "matched_transfer_log_count"
+    ] == 1
+
+    assert evidence[
+        "matched_transfer_log_indexes"
+    ] == [
+        0,
+    ]
+
+    assert evidence[
+        "malformed_matching_log_count"
+    ] == 0
+
+
+def test_settlement_wallet_receipt_malformed_matching_log_requires_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(
+        monkeypatch
+    )
+
+    advanced = (
+        advance_to_withdrawal_reconciled(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    calls = install_bsc_receipt_web3(
+        monkeypatch,
+        env,
+    )
+
+    malformed_log = deepcopy(
+        calls.logs[0]
+    )
+
+    # Destination is still the settlement wallet,
+    # but the event signature is invalid.
+    malformed_log["topics"][0] = (
+        "0x"
+        + ("cd" * 32)
+    )
+
+    malformed_log["logIndex"] = 8
+
+    calls.receipt["logs"] = [
+        malformed_log,
+        deepcopy(
+            calls.logs[0]
+        ),
+    ]
+
+    result = resume_once(env)
+
+    evidence = (
+        flow.settlement_wallet_receipt_json
+    )
+
+    assert result.ok is False
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert evidence["state"] == (
+        "failed_requires_review"
+    )
+
+    assert evidence[
+        "malformed_matching_log_count"
+    ] == 1
+
+    assert evidence[
+        "matched_transfer_log_count"
+    ] == 1
+
+    assert (
+        "malformed"
+        in evidence["error"].lower()
+    )
 
 
 def test_settlement_wallet_receipt_balance_delta_mismatch_requires_review(
@@ -6348,7 +6780,21 @@ def test_settlement_wallet_receipt_then_db_only_completion_is_idempotent(
             "receipt_balance_delta",
             (
                 "settlement wallet receipt balance "
-                "delta mismatch"
+                "delta is below expected amount"
+            ),
+        ),
+        (
+            "receipt_logs_fingerprint",
+            (
+                "matching transfer log fingerprint "
+                "mismatch"
+            ),
+        ),
+        (
+            "receipt_unrelated_additional",
+            (
+                "receipt unrelated incoming amount "
+                "mismatch"
             ),
         ),
         (
@@ -6400,6 +6846,20 @@ def test_cash_delivery_completion_detects_tampered_external_evidence(
         flow.settlement_wallet_receipt_json[
             "balance_delta_usdt"
         ] = "99"
+
+    elif tamper_case == (
+        "receipt_logs_fingerprint"
+    ):
+        flow.settlement_wallet_receipt_json[
+            "matched_transfer_logs_fingerprint"
+        ] = "0" * 64
+
+    elif tamper_case == (
+        "receipt_unrelated_additional"
+    ):
+        flow.settlement_wallet_receipt_json[
+            "unrelated_additional_incoming_raw"
+        ] = "1"
 
     elif tamper_case == (
         "receipt_confirmations"
