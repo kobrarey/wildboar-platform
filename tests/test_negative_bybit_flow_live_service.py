@@ -11,6 +11,7 @@ import pytest
 import app.settlement.negative_bybit_flow_live_service as service
 from app.bybit.asset_flows import (
     BybitAccountCoinBalance,
+    BybitCoinChainInfo,
     BybitUniversalTransferResult,
 )
 from app.bybit.client import BybitApiError
@@ -31,6 +32,7 @@ from app.settlement.statuses import (
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_SUBMITTING,
+    BYBIT_FLOW_STATUS_WITHDRAWAL_INTENT_PREPARED,
 )
 
 
@@ -138,8 +140,25 @@ def make_flow() -> SimpleNamespace:
         ),
         bybit_withdrawal_fee_usdt=Decimal("1"),
         retained_fees_usdt=Decimal("0"),
+        settlement_wallet_id=None,
         settlement_wallet_address=None,
+        settlement_wallet_balance_before_usdt=None,
+        settlement_wallet_balance_after_usdt=None,
+        withdrawal_policy_version=None,
+        coin_info_snapshot_json=None,
         withdrawal_request_id=None,
+        withdrawal_id=None,
+        withdrawal_status=None,
+        withdrawal_amount_usdt=None,
+        withdrawal_fee_usdt=None,
+        withdrawal_coin=None,
+        withdrawal_chain=None,
+        withdrawal_address=None,
+        withdrawal_tx_hash=None,
+        withdrawal_created_at=None,
+        withdrawal_confirmed_at=None,
+        withdrawal_record_json=None,
+        withdrawal_reconciliation_json=None,
         universal_transfer_id=None,
         universal_transfer_status=None,
         universal_transfer_amount_usdt=None,
@@ -391,6 +410,231 @@ def install_master_balance_query(
         service,
         "query_account_coin_balance",
         query_balance,
+    )
+
+
+def advance_to_master_balance_confirmed(
+    env: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> SimpleNamespace:
+    flow = advance_to_reconciled_transfer(
+        env,
+        monkeypatch,
+    )
+
+    install_master_balance_query(
+        monkeypatch,
+        env,
+        balance=make_master_balance(
+            transfer_balance=Decimal("101"),
+        ),
+    )
+
+    result = resume_once(env)
+
+    assert result.ok is True
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "master_transferable_balance_confirmed"
+    )
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_MASTER_BALANCE_CONFIRMED
+    )
+
+    return flow
+
+
+def make_coin_info(
+    *,
+    withdraw_fee: Decimal = Decimal("1"),
+    withdraw_min: Decimal = Decimal("10"),
+    min_accuracy: int = 6,
+    chain_withdraw: str | None = "1",
+    withdraw_percentage_fee: (
+        Decimal | None
+    ) = Decimal("0"),
+    withdraw_max: Decimal | None = (
+        Decimal("1000000")
+    ),
+) -> BybitCoinChainInfo:
+    return BybitCoinChainInfo(
+        coin="USDT",
+        chain="BSC",
+        withdraw_fee=withdraw_fee,
+        withdraw_min=withdraw_min,
+        min_accuracy=min_accuracy,
+        chain_withdraw=chain_withdraw,
+        withdraw_percentage_fee=(
+            withdraw_percentage_fee
+        ),
+        withdraw_max=withdraw_max,
+        raw={
+            "coin": "USDT",
+            "chain": "BSC",
+            "withdrawFee": format(
+                withdraw_fee,
+                "f",
+            ),
+            "withdrawMin": format(
+                withdraw_min,
+                "f",
+            ),
+            "minAccuracy": str(
+                min_accuracy
+            ),
+            "chainWithdraw": chain_withdraw,
+            "withdrawPercentageFee": (
+                format(
+                    withdraw_percentage_fee,
+                    "f",
+                )
+                if (
+                    withdraw_percentage_fee
+                    is not None
+                )
+                else None
+            ),
+            "withdrawMax": (
+                format(
+                    withdraw_max,
+                    "f",
+                )
+                if withdraw_max is not None
+                else None
+            ),
+        },
+    )
+
+
+def install_withdrawal_prepare_reads(
+    monkeypatch: pytest.MonkeyPatch,
+    env: SimpleNamespace,
+    *,
+    coin_info: BybitCoinChainInfo | None = None,
+    baseline_balance: Decimal = Decimal("7.25"),
+    baseline_block: int = 55500000,
+) -> SimpleNamespace:
+    wallet = SimpleNamespace(
+        id=404,
+        fund_id=7,
+        blockchain="BSC",
+        wallet_type="settlement",
+        is_active=True,
+        address=(
+            "0x1111111111111111111111111111111111111111"
+        ),
+    )
+
+    resolved_coin_info = (
+        coin_info
+        if coin_info is not None
+        else make_coin_info()
+    )
+
+    raw_balance = int(
+        baseline_balance
+        * (
+            Decimal("10")
+            ** 18
+        )
+    )
+
+    baseline = {
+        "address": wallet.address,
+        "contract": (
+            service.settings.BSC_USDT_CONTRACT
+        ),
+        "block_number": baseline_block,
+        "decimals": 18,
+        "raw_balance": str(raw_balance),
+        "balance_usdt": format(
+            baseline_balance,
+            "f",
+        ),
+    }
+
+    wallet_calls = {
+        "count": 0,
+    }
+
+    def active_wallet(
+        db,
+        *,
+        fund_id,
+    ):
+        assert db is env.db
+        assert fund_id == 7
+        assert env.db.lock_active is True
+
+        wallet_calls["count"] += 1
+        env.db.events.append(
+            "lock:settlement_wallet"
+        )
+
+        return wallet
+
+    def query_coin(
+        bybit_client,
+        *,
+        coin,
+        chain,
+    ):
+        assert env.db.lock_active is False
+        assert coin == "USDT"
+        assert chain == "BSC"
+
+        env.db.events.append(
+            "query_coin_info"
+        )
+
+        bybit_client.get_calls.append(
+            {
+                "path": (
+                    "/v5/asset/coin/query-info"
+                ),
+                "params": {
+                    "coin": coin,
+                    "chain": chain,
+                },
+            }
+        )
+
+        return resolved_coin_info
+
+    def query_baseline(
+        address,
+    ):
+        assert env.db.lock_active is False
+        assert address == wallet.address
+
+        env.db.events.append(
+            "query_settlement_wallet_baseline"
+        )
+
+        return deepcopy(baseline)
+
+    monkeypatch.setattr(
+        service,
+        "_get_active_settlement_wallet",
+        active_wallet,
+    )
+    monkeypatch.setattr(
+        service,
+        "query_coin_info",
+        query_coin,
+    )
+    monkeypatch.setattr(
+        service,
+        "_query_settlement_wallet_usdt_baseline",
+        query_baseline,
+    )
+
+    return SimpleNamespace(
+        wallet=wallet,
+        coin_info=resolved_coin_info,
+        baseline=baseline,
+        wallet_calls=wallet_calls,
     )
 
 
@@ -2081,7 +2325,7 @@ def test_master_balance_insufficient_stays_pending_without_withdrawal(
     ) == post_count_before
 
 
-def test_master_balance_sufficient_confirms_and_rerun_skips_get(
+def test_master_balance_sufficient_confirms_and_next_cycle_skips_balance_get(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     env = install_service_fakes(monkeypatch)
@@ -2149,8 +2393,8 @@ def test_master_balance_sufficient_confirms_and_rerun_skips_get(
         **kwargs,
     ):
         raise AssertionError(
-            "Confirmed balance barrier must not "
-            "repeat Bybit GET"
+            "Confirmed master balance must not "
+            "repeat balance GET"
         )
 
     monkeypatch.setattr(
@@ -2159,39 +2403,54 @@ def test_master_balance_sufficient_confirms_and_rerun_skips_get(
         unexpected_balance_query,
     )
 
+    install_withdrawal_prepare_reads(
+        monkeypatch,
+        env,
+    )
+
     get_count_after_confirm = len(
         env.client.get_calls
     )
-
-    rerun = resume_once(env)
-
-    assert rerun.ok is True
-    assert rerun.idempotent is True
-
-    assert rerun.diagnostics[
-        "transition"
-    ] == (
-        "master_transferable_balance_"
-        "already_confirmed"
+    post_count_after_confirm = len(
+        env.client.post_calls
     )
 
-    assert rerun.diagnostics[
-        "bybit_get_count"
-    ] == 0
-    assert rerun.diagnostics[
-        "withdrawal_allowed"
-    ] is True
+    next_step = resume_once(env)
 
+    assert next_step.ok is True
+    assert next_step.idempotent is False
+
+    assert next_step.diagnostics[
+        "transition"
+    ] == "prepare_withdrawal_intent"
+
+    assert next_step.diagnostics[
+        "bybit_get_count"
+    ] == 1
+    assert next_step.diagnostics[
+        "bsc_rpc_read_count"
+    ] == 1
+    assert next_step.diagnostics[
+        "bybit_post_count"
+    ] == 0
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_INTENT_PREPARED
+    )
+    assert isinstance(
+        flow.withdrawal_intent_json,
+        dict,
+    )
+
+    # Only coin-info GET was added. The master
+    # transferable-balance GET was not repeated.
     assert len(
         env.client.get_calls
-    ) == get_count_after_confirm
+    ) == get_count_after_confirm + 1
 
     assert len(
         env.client.post_calls
-    ) == post_count_before
-
-    assert flow.withdrawal_intent_json is None
-    assert flow.withdrawal_submitted_at is None
+    ) == post_count_after_confirm
 
 
 @pytest.mark.parametrize(
@@ -2551,3 +2810,376 @@ def test_post_acknowledgement_mismatch_records_post_and_requires_review(
     assert len(
         env.client.post_calls
     ) == post_count_before_rerun
+
+
+def test_prepare_withdrawal_intent_persists_fee_and_baseline_without_post(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    flow = advance_to_master_balance_confirmed(
+        env,
+        monkeypatch,
+    )
+
+    reads = install_withdrawal_prepare_reads(
+        monkeypatch,
+        env,
+    )
+
+    get_count_before = len(
+        env.client.get_calls
+    )
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    intent = flow.withdrawal_intent_json
+    assert isinstance(intent, dict)
+
+    payload = intent["payload_template"]
+    fee_snapshot = intent["fee_snapshot"]
+    baseline = intent[
+        "settlement_wallet_balance_baseline"
+    ]
+
+    assert result.ok is True
+    assert result.diagnostics[
+        "transition"
+    ] == "prepare_withdrawal_intent"
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_INTENT_PREPARED
+    )
+
+    assert intent["schema"] == (
+        service.WITHDRAWAL_INTENT_SCHEMA
+    )
+    assert intent["state"] == "prepared"
+    assert intent["policy_version"] == (
+        "bsc_exact_received_v1"
+    )
+
+    assert intent["request_id"] == (
+        flow.withdrawal_request_id
+    )
+    assert len(
+        flow.withdrawal_request_id
+    ) == 32
+    assert flow.withdrawal_request_id.isalnum()
+    assert flow.withdrawal_request_id.startswith(
+        "wbng"
+    )
+
+    assert payload == {
+        "requestId": (
+            flow.withdrawal_request_id
+        ),
+        "coin": "USDT",
+        "chain": "BSC",
+        "address": reads.wallet.address,
+        "amount": "100",
+        "forceChain": 1,
+        "feeType": 0,
+        "accountType": "FUND",
+    }
+
+    assert intent[
+        "payload_fingerprint"
+    ] == service._payload_fingerprint(
+        payload
+    )
+
+    assert intent["amount"] == "100"
+    assert intent["fee_usdt"] == "1"
+    assert intent["amount_precision"] == 6
+    assert intent["timestamp_policy"] == (
+        "submit_time_utc_ms"
+    )
+
+    assert intent["submit_claim"] is None
+    assert intent["acknowledgement"] is None
+    assert intent["reconciliation"] is None
+
+    assert fee_snapshot["schema"] == (
+        "negative_withdrawal_fee_snapshot_v1"
+    )
+    assert fee_snapshot[
+        "withdraw_fee_usdt"
+    ] == "1"
+    assert fee_snapshot[
+        "withdraw_min_usdt"
+    ] == "10"
+    assert fee_snapshot[
+        "withdraw_max_usdt"
+    ] == "1000000"
+    assert fee_snapshot[
+        "withdraw_percentage_fee"
+    ] == "0"
+    assert fee_snapshot["min_accuracy"] == 6
+    assert fee_snapshot["chain_withdraw"] == "1"
+    assert fee_snapshot["max_age_sec"] == (
+        service.settings
+        .NEGATIVE_NET_WITHDRAWAL_FEE_MAX_AGE_SEC
+    )
+
+    assert baseline == reads.baseline
+    assert baseline["block_number"] == 55500000
+    assert baseline["balance_usdt"] == "7.25"
+    assert baseline["raw_balance"] == (
+        "7250000000000000000"
+    )
+
+    assert flow.settlement_wallet_id == 404
+    assert flow.settlement_wallet_address == (
+        reads.wallet.address
+    )
+    assert (
+        flow.settlement_wallet_balance_before_usdt
+        == Decimal("7.25")
+    )
+
+    assert flow.withdrawal_policy_version == (
+        "bsc_exact_received_v1"
+    )
+    assert flow.coin_info_snapshot_json == (
+        fee_snapshot
+    )
+
+    assert flow.withdrawal_amount_usdt == (
+        Decimal("100")
+    )
+    assert flow.withdrawal_fee_usdt == (
+        Decimal("1")
+    )
+    assert flow.withdrawal_coin == "USDT"
+    assert flow.withdrawal_chain == "BSC"
+    assert flow.withdrawal_address == (
+        reads.wallet.address
+    )
+
+    assert flow.withdrawal_submitted_at is None
+    assert flow.withdrawal_created_at is None
+    assert flow.withdrawal_id is None
+    assert flow.withdrawal_tx_hash is None
+
+    assert reads.wallet_calls["count"] == 2
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before + 1
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+    assert result.diagnostics[
+        "did_bybit_post"
+    ] is False
+    assert result.diagnostics[
+        "bybit_post_count"
+    ] == 0
+    assert result.diagnostics[
+        "bybit_get_count"
+    ] == 1
+    assert result.diagnostics[
+        "bsc_rpc_read_count"
+    ] == 1
+    assert result.diagnostics[
+        "next_transition"
+    ] == "submit_withdrawal"
+
+    def unexpected_external_read(
+        *args,
+        **kwargs,
+    ):
+        raise AssertionError(
+            "Prepared withdrawal intent rerun "
+            "must not perform external reads"
+        )
+
+    monkeypatch.setattr(
+        service,
+        "_get_active_settlement_wallet",
+        unexpected_external_read,
+    )
+    monkeypatch.setattr(
+        service,
+        "query_coin_info",
+        unexpected_external_read,
+    )
+    monkeypatch.setattr(
+        service,
+        "_query_settlement_wallet_usdt_baseline",
+        unexpected_external_read,
+    )
+
+    get_count_before_rerun = len(
+        env.client.get_calls
+    )
+    post_count_before_rerun = len(
+        env.client.post_calls
+    )
+
+    rerun = resume_once(env)
+
+    assert rerun.ok is True
+    assert rerun.idempotent is True
+    assert rerun.diagnostics[
+        "transition"
+    ] == "withdrawal_intent_already_prepared"
+
+    assert rerun.diagnostics[
+        "bybit_get_count"
+    ] == 0
+    assert rerun.diagnostics[
+        "bsc_rpc_read_count"
+    ] == 0
+    assert rerun.diagnostics[
+        "bybit_post_count"
+    ] == 0
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before_rerun
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before_rerun
+
+
+def test_withdrawal_fee_mismatch_fails_closed_and_preserves_barrier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    flow = advance_to_master_balance_confirmed(
+        env,
+        monkeypatch,
+    )
+
+    install_withdrawal_prepare_reads(
+        monkeypatch,
+        env,
+        coin_info=make_coin_info(
+            withdraw_fee=Decimal("2"),
+        ),
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == "failed_requires_review"
+
+    assert (
+        "withdrawal fee snapshot does not match"
+        in str(result.error).lower()
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert flow.withdrawal_intent_json is None
+    assert flow.withdrawal_submitted_at is None
+    assert flow.withdrawal_created_at is None
+    assert flow.withdrawal_id is None
+
+    barrier = flow.reconciliation_json[
+        "master_transferable_balance_barrier"
+    ]
+
+    assert barrier["state"] == "confirmed"
+    assert barrier[
+        "withdrawal_allowed"
+    ] is True
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_withdrawal_intent_payload_tamper_requires_review_without_external_call(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    flow = advance_to_master_balance_confirmed(
+        env,
+        monkeypatch,
+    )
+
+    install_withdrawal_prepare_reads(
+        monkeypatch,
+        env,
+    )
+
+    prepared = resume_once(env)
+
+    assert prepared.ok is True
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_INTENT_PREPARED
+    )
+
+    flow.withdrawal_intent_json[
+        "payload_template"
+    ]["amount"] = "99"
+
+    get_count_before = len(
+        env.client.get_calls
+    )
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == "failed_requires_review"
+
+    assert (
+        "payload fingerprint mismatch"
+        in str(result.error).lower()
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert flow.withdrawal_submitted_at is None
+    assert flow.withdrawal_created_at is None
+    assert flow.withdrawal_id is None
+    assert flow.withdrawal_tx_hash is None
+
+    barrier = flow.reconciliation_json[
+        "master_transferable_balance_barrier"
+    ]
+
+    assert barrier["state"] == "confirmed"
+    assert barrier[
+        "withdrawal_allowed"
+    ] is True
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
