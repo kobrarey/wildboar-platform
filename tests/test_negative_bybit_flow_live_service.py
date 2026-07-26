@@ -14,6 +14,8 @@ from app.bybit.asset_flows import (
     BybitCoinChainInfo,
     BybitUniversalTransferResult,
     BybitWithdrawalResult,
+    BybitWithdrawalPageEvidence,
+    BybitWithdrawalPaginationResult,
 )
 from app.bybit.client import BybitApiError
 from app.operation_guard.service import (
@@ -822,7 +824,7 @@ def install_withdrawal_submit_fakes(
 
 def make_withdrawal_record(
     *,
-    request_id: str,
+    request_id: str | None,
     status: str,
     withdrawal_id: str | None = (
         "withdrawal-123"
@@ -834,8 +836,18 @@ def make_withdrawal_record(
     ),
     amount_usdt: Decimal = Decimal("100"),
     fee_type: int = 0,
+    fee_usdt: Decimal | None = Decimal("1"),
+    created_time_ms: int | None = None,
     tx_hash: str | None = None,
 ) -> BybitWithdrawalResult:
+    resolved_created_time_ms = (
+        created_time_ms
+        if created_time_ms is not None
+        else int(
+            NOW.timestamp() * 1000
+        )
+    )
+
     return BybitWithdrawalResult(
         request_id=request_id,
         withdrawal_id=withdrawal_id,
@@ -856,10 +868,25 @@ def make_withdrawal_record(
                 amount_usdt,
                 "f",
             ),
+            "withdrawFee": (
+                format(
+                    fee_usdt,
+                    "f",
+                )
+                if fee_usdt is not None
+                else None
+            ),
             "feeType": fee_type,
             "status": status,
             "txID": tx_hash,
+            "createdTime": str(
+                resolved_created_time_ms
+            ),
         },
+        fee_usdt=fee_usdt,
+        created_time_ms=(
+            resolved_created_time_ms
+        ),
     )
 
 
@@ -871,71 +898,52 @@ def install_withdrawal_reconciliation_reads(
         BybitWithdrawalResult | None
     ) = None,
     bounded_records: (
-        list[BybitWithdrawalResult] | None
+        list[
+            BybitWithdrawalResult
+        ]
+        | None
     ) = None,
-    exact_error: BaseException | None = None,
-    bounded_error: BaseException | None = None,
+    exact_error: (
+        BaseException | None
+    ) = None,
+    bounded_error: (
+        BaseException | None
+    ) = None,
 ) -> SimpleNamespace:
     exact_calls: list[str] = []
-    bounded_calls: list[dict[str, Any]] = []
+    bounded_calls: list[
+        dict[str, Any]
+    ] = []
 
     resolved_bounded_records = list(
         bounded_records or []
     )
 
-    def query_exact(
-        bybit_client,
-        *,
-        request_id,
-    ):
-        assert env.db.lock_active is False
-
-        flow = env.state["flow"]
-
-        assert request_id == (
-            flow.withdrawal_request_id
-        )
-
-        exact_calls.append(request_id)
-
-        env.db.events.append(
-            "query_master_withdrawal"
-        )
-
-        bybit_client.get_calls.append(
-            {
-                "path": (
-                    "/v5/asset/withdraw/"
-                    "query-record"
-                ),
-                "params": {
-                    "requestId": request_id,
-                },
-            }
-        )
-
-        if exact_error is not None:
-            raise exact_error
-
-        return exact_record
-
-    def query_bounded(
+    def paginated_lookup(
         bybit_client,
         *,
         coin,
         start_time_ms,
         end_time_ms,
         limit,
+        max_pages,
+        withdrawal_id=None,
+        tx_hash=None,
     ):
         assert env.db.lock_active is False
-
-        flow = env.state["flow"]
-
         assert coin == "USDT"
+
         assert limit == (
             service
             .WITHDRAWAL_RECORD_LOOKUP_LIMIT
         )
+
+        assert max_pages == int(
+            service.settings
+            .NEGATIVE_NET_BYBIT_WITHDRAWAL_LOOKUP_MAX_PAGES
+        )
+
+        flow = env.state["flow"]
 
         lookback_hours = int(
             service.settings
@@ -955,52 +963,98 @@ def install_withdrawal_reconciliation_reads(
         assert start_time_ms == (
             expected_start_ms
         )
+
         assert end_time_ms == int(
             NOW.timestamp() * 1000
         )
 
-        call = {
+        params = {
             "coin": coin,
-            "start_time_ms": start_time_ms,
+            "start_time_ms": (
+                start_time_ms
+            ),
             "end_time_ms": end_time_ms,
             "limit": limit,
+            "max_pages": max_pages,
+            "withdrawal_id": (
+                withdrawal_id
+            ),
+            "tx_hash": tx_hash,
         }
 
-        bounded_calls.append(
-            deepcopy(call)
+        bybit_client.get(
+            "/v5/asset/withdraw/query-record",
+            params,
         )
 
-        env.db.events.append(
-            "list_master_withdrawals"
-        )
+        if withdrawal_id is not None:
+            exact_calls.append(
+                withdrawal_id
+            )
 
-        bybit_client.get_calls.append(
-            {
-                "path": (
-                    "/v5/asset/withdraw/"
-                    "query-record"
+            if exact_error is not None:
+                raise exact_error
+
+            records = (
+                [exact_record]
+                if exact_record is not None
+                else []
+            )
+
+            page_fingerprint = (
+                "a" * 64
+            )
+
+        elif tx_hash is not None:
+            records = []
+
+            page_fingerprint = (
+                "b" * 64
+            )
+
+        else:
+            bounded_calls.append(
+                deepcopy(params)
+            )
+
+            if bounded_error is not None:
+                raise bounded_error
+
+            records = list(
+                resolved_bounded_records
+            )
+
+            page_fingerprint = (
+                "c" * 64
+            )
+
+        return (
+            BybitWithdrawalPaginationResult(
+                records=tuple(records),
+                pages=(
+                    BybitWithdrawalPageEvidence(
+                        page_number=1,
+                        request_cursor=None,
+                        next_cursor=None,
+                        record_count=len(
+                            records
+                        ),
+                        page_fingerprint=(
+                            page_fingerprint
+                        ),
+                    ),
                 ),
-                "params": deepcopy(call),
-            }
-        )
-
-        if bounded_error is not None:
-            raise bounded_error
-
-        return list(
-            resolved_bounded_records
+                exhausted=True,
+                stop_reason=(
+                    "end_of_pages"
+                ),
+            )
         )
 
     monkeypatch.setattr(
         service,
-        "query_master_withdrawal",
-        query_exact,
-    )
-
-    monkeypatch.setattr(
-        service,
-        "list_master_withdrawals",
-        query_bounded,
+        "list_master_withdrawals_paginated",
+        paginated_lookup,
     )
 
     return SimpleNamespace(
@@ -4425,7 +4479,7 @@ def test_withdrawal_process_crash_after_claim_never_resends(
 
     assert rerun.diagnostics[
         "bybit_get_count"
-    ] == 2
+    ] == 1
     assert rerun.diagnostics[
         "bybit_post_count"
     ] == 0
@@ -4442,7 +4496,7 @@ def test_withdrawal_process_crash_after_claim_never_resends(
 
     assert len(
         env.client.get_calls
-    ) == get_count_before_rerun + 2
+    ) == get_count_before_rerun + 1
 
     assert len(
         env.client.post_calls
@@ -4546,7 +4600,7 @@ def test_withdrawal_post_unknown_moves_to_reconciliation_without_resend(
 
     assert rerun.diagnostics[
         "bybit_get_count"
-    ] == 2
+    ] == 1
     assert rerun.diagnostics[
         "bybit_post_count"
     ] == 0
@@ -4556,7 +4610,7 @@ def test_withdrawal_post_unknown_moves_to_reconciliation_without_resend(
 
     assert len(
         env.client.get_calls
-    ) == get_count_before_rerun + 2
+    ) == get_count_before_rerun + 1
 
     assert len(
         env.client.post_calls
@@ -4814,11 +4868,43 @@ def test_withdrawal_reconciliation_record_not_found_remains_retryable(
         "record_not_found"
     )
     assert reconciliation[
-        "exact_query_found"
+        "recovery_state"
+    ] == "record_not_found"
+
+    assert reconciliation[
+        "selected_source"
+    ] is None
+
+    assert reconciliation[
+        "unique_match"
     ] is False
-    assert reconciliation["lookup"][
-        "matching_request_id_count"
-    ] == 0
+
+    assert reconciliation[
+        "ambiguous"
+    ] is False
+
+    assert reconciliation[
+        "exact_fingerprint_match"
+    ] is False
+
+    assert set(
+        reconciliation["queries"]
+    ) == {
+        "withdrawal_id_query",
+        "bounded_record_lookup",
+    }
+
+    assert reconciliation[
+        "queries"
+    ][
+        "withdrawal_id_query"
+    ]["exhausted"] is True
+
+    assert reconciliation[
+        "queries"
+    ][
+        "bounded_record_lookup"
+    ]["exhausted"] is True
 
     assert len(reads.exact_calls) == 1
     assert len(reads.bounded_calls) == 1
@@ -4879,7 +4965,7 @@ def test_withdrawal_reconciliation_pending_record_persists_redacted_evidence(
 
     assert result.diagnostics[
         "bybit_get_count"
-    ] == 2
+    ] == 1
     assert result.diagnostics[
         "bybit_post_count"
     ] == 0
@@ -4963,7 +5049,7 @@ def test_withdrawal_reconciliation_exact_success_confirms_without_post(
 
     assert result.diagnostics[
         "bybit_get_count"
-    ] == 2
+    ] == 1
     assert result.diagnostics[
         "bybit_post_count"
     ] == 0
@@ -4984,7 +5070,7 @@ def test_withdrawal_reconciliation_exact_success_confirms_without_post(
     )
     assert reconciliation[
         "selected_source"
-    ] == "exact_request_id_query"
+    ] == "withdrawal_id_query"
 
     assert flow.withdrawal_id == (
         "withdrawal-123"
@@ -5145,6 +5231,9 @@ def test_withdrawal_reconciliation_duplicate_request_id_requires_review(
 
     flow = advanced.flow
 
+    flow.withdrawal_id = None
+    flow.withdrawal_tx_hash = None
+
     first = make_withdrawal_record(
         request_id=flow.withdrawal_request_id,
         withdrawal_id="withdrawal-123",
@@ -5160,7 +5249,7 @@ def test_withdrawal_reconciliation_duplicate_request_id_requires_review(
     install_withdrawal_reconciliation_reads(
         monkeypatch,
         env,
-        exact_record=first,
+        exact_record=None,
         bounded_records=[
             first,
             second,
@@ -5177,12 +5266,11 @@ def test_withdrawal_reconciliation_duplicate_request_id_requires_review(
     assert result.diagnostics[
         "transition"
     ] == (
-        "reconcile_withdrawal_"
-        "duplicate_request_id"
+        "reconcile_withdrawal_ambiguous"
     )
 
     assert (
-        "multiple bounded bybit withdrawal records"
+        "multiple bybit withdrawal records"
         in str(result.error).lower()
     )
 
@@ -6252,8 +6340,8 @@ def test_settlement_wallet_receipt_then_db_only_completion_is_idempotent(
         (
             "withdrawal_reconciliation",
             (
-                "withdrawal was not confirmed by "
-                "exact requestid query"
+                "withdrawal reconciliation "
+                "unique-match evidence is invalid"
             ),
         ),
         (
@@ -6302,9 +6390,9 @@ def test_cash_delivery_completion_detects_tampered_external_evidence(
     ):
         flow.withdrawal_intent_json[
             "reconciliation"
-        ]["selected_source"] = (
-            "bounded_record_lookup"
-        )
+        ][
+            "exact_fingerprint_match"
+        ] = False
 
     elif tamper_case == (
         "receipt_balance_delta"

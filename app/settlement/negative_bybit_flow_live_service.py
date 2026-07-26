@@ -12,12 +12,12 @@ from sqlalchemy.orm import Session
 
 from app.bybit.asset_flows import (
     BybitAssetFlowError,
+    BybitWithdrawalPaginationResult,
     create_master_withdrawal,
     create_universal_transfer,
-    list_master_withdrawals,
+    list_master_withdrawals_paginated,
     query_account_coin_balance,
     query_coin_info,
-    query_master_withdrawal,
     query_universal_transfer,
 )
 from app.bybit.client import (
@@ -4408,6 +4408,682 @@ def _validate_exact_withdrawal_ack(
         )
 
 
+def _withdrawal_record_fingerprint(
+    record,
+) -> str:
+    payload = {
+        "request_id": (
+            str(record.request_id).strip()
+            if record.request_id
+            else None
+        ),
+        "withdrawal_id": (
+            str(record.withdrawal_id).strip()
+            if record.withdrawal_id
+            else None
+        ),
+        "coin": str(
+            record.coin or ""
+        ).strip().upper(),
+        "chain": str(
+            record.chain or ""
+        ).strip().upper(),
+        "address": str(
+            record.address or ""
+        ).strip().lower(),
+        "amount_usdt": _decimal_text(
+            Decimal(record.amount_usdt)
+        ),
+        "fee_usdt": (
+            _decimal_text(
+                Decimal(record.fee_usdt)
+            )
+            if record.fee_usdt
+            is not None
+            else None
+        ),
+        "fee_type": int(
+            record.fee_type
+        ),
+        "withdrawal_status": str(
+            record.status or ""
+        ).strip(),
+        "tx_hash": (
+            str(record.tx_hash)
+            .strip()
+            .lower()
+            if record.tx_hash
+            else None
+        ),
+        "created_time_ms": (
+            int(record.created_time_ms)
+            if record.created_time_ms
+            is not None
+            else None
+        ),
+    }
+
+    return _payload_fingerprint(
+        payload
+    )
+
+
+def _withdrawal_pagination_evidence(
+    result: BybitWithdrawalPaginationResult,
+) -> dict[str, Any]:
+    return {
+        "exhausted": bool(
+            result.exhausted
+        ),
+        "stop_reason": str(
+            result.stop_reason
+        ),
+        "page_count": len(
+            result.pages
+        ),
+        "returned_record_count": len(
+            result.records
+        ),
+        "pages": [
+            {
+                "page_number": int(
+                    page.page_number
+                ),
+                "request_cursor": (
+                    page.request_cursor
+                ),
+                "next_cursor": (
+                    page.next_cursor
+                ),
+                "record_count": int(
+                    page.record_count
+                ),
+                "page_fingerprint": (
+                    page.page_fingerprint
+                ),
+            }
+            for page in result.pages
+        ],
+    }
+
+
+def _withdrawal_record_intent_match(
+    *,
+    record,
+    snapshot: dict[str, Any],
+    lookup_start_ms: int,
+    lookup_end_ms: int,
+) -> tuple[bool, str | None]:
+    record_coin = str(
+        record.coin or ""
+    ).strip().upper()
+
+    record_chain = str(
+        record.chain or ""
+    ).strip().upper()
+
+    record_address = str(
+        record.address or ""
+    ).strip().lower()
+
+    record_amount = Decimal(
+        record.amount_usdt
+    )
+
+    core_candidate = (
+        record_coin
+        == snapshot["coin"]
+        and record_chain
+        == snapshot["chain"]
+        and record_address
+        == snapshot["address"].lower()
+        and _same_decimal(
+            record_amount,
+            snapshot["amount_usdt"],
+        )
+    )
+
+    if not core_candidate:
+        return False, None
+
+    if (
+        int(record.fee_type)
+        != int(snapshot["fee_type"])
+    ):
+        return (
+            False,
+            "Withdrawal record feeType mismatch",
+        )
+
+    if record.fee_usdt is None:
+        return (
+            False,
+            "Withdrawal record fixed fee is missing",
+        )
+
+    if not _same_decimal(
+        Decimal(record.fee_usdt),
+        snapshot["fee_usdt"],
+    ):
+        return (
+            False,
+            "Withdrawal record fixed fee mismatch",
+        )
+
+    if record.created_time_ms is None:
+        return (
+            False,
+            "Withdrawal record createdTime is "
+            "missing",
+        )
+
+    created_time_ms = int(
+        record.created_time_ms
+    )
+
+    if not (
+        int(lookup_start_ms)
+        <= created_time_ms
+        <= int(lookup_end_ms)
+    ):
+        return (
+            False,
+            "Withdrawal record createdTime is "
+            "outside lookup window",
+        )
+
+    record_request_id = str(
+        record.request_id or ""
+    ).strip()
+
+    if (
+        record_request_id
+        and record_request_id
+        != snapshot["request_id"]
+    ):
+        return (
+            False,
+            "Withdrawal record requestId mismatch",
+        )
+
+    return True, None
+
+
+def _withdrawal_record_core_mismatch(
+    *,
+    record,
+    snapshot: dict[str, Any],
+) -> str | None:
+    if (
+        str(record.coin or "")
+        .strip()
+        .upper()
+        != snapshot["coin"]
+    ):
+        return (
+            "Withdrawal record coin mismatch"
+        )
+
+    if (
+        str(record.chain or "")
+        .strip()
+        .upper()
+        != snapshot["chain"]
+    ):
+        return (
+            "Withdrawal record chain mismatch"
+        )
+
+    if (
+        str(record.address or "")
+        .strip()
+        .lower()
+        != snapshot["address"].lower()
+    ):
+        return (
+            "Withdrawal record address mismatch"
+        )
+
+    if not _same_decimal(
+        Decimal(record.amount_usdt),
+        snapshot["amount_usdt"],
+    ):
+        return (
+            "Withdrawal record amount mismatch"
+        )
+
+    return None
+
+
+def _deduplicate_withdrawal_records(
+    records,
+) -> list[Any]:
+    unique: dict[str, Any] = {}
+
+    for record in records:
+        fingerprint = (
+            _withdrawal_record_fingerprint(
+                record
+            )
+        )
+
+        if fingerprint not in unique:
+            unique[fingerprint] = record
+
+    return list(unique.values())
+
+
+class _BybitReadCounter:
+    def __init__(
+        self,
+        client: BybitV5Client,
+    ) -> None:
+        self.client = client
+        self.get_count = 0
+
+    def get(
+        self,
+        path: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        self.get_count += 1
+
+        return self.client.get(
+            path,
+            params,
+        )
+
+
+def _withdrawal_source_records(
+    *,
+    source: str,
+    records: list[Any],
+    withdrawal_id: str | None,
+    tx_hash: str | None,
+) -> list[Any]:
+    if source == "withdrawal_id_query":
+        expected_id = str(
+            withdrawal_id or ""
+        ).strip()
+
+        return [
+            record
+            for record in records
+            if str(
+                record.withdrawal_id or ""
+            ).strip()
+            == expected_id
+        ]
+
+    if source == "tx_hash_query":
+        expected_hash = _normalized_hex(
+            tx_hash
+        )
+
+        return [
+            record
+            for record in records
+            if _normalized_hex(
+                record.tx_hash
+            )
+            == expected_hash
+        ]
+
+    return records
+
+
+def _withdrawal_recovery_lookup(
+    *,
+    bybit_client: BybitV5Client,
+    snapshot: dict[str, Any],
+    saved_withdrawal_id: str | None,
+    saved_tx_hash: str | None,
+    lookup_start_ms: int,
+    lookup_end_ms: int,
+    max_pages: int,
+) -> dict[str, Any]:
+    counter = _BybitReadCounter(
+        bybit_client
+    )
+
+    query_evidence: dict[
+        str,
+        Any,
+    ] = {}
+
+    query_specs: list[
+        tuple[
+            str,
+            str | None,
+            str | None,
+        ]
+    ] = []
+
+    clean_withdrawal_id = str(
+        saved_withdrawal_id or ""
+    ).strip() or None
+
+    clean_tx_hash = str(
+        saved_tx_hash or ""
+    ).strip() or None
+
+    if clean_withdrawal_id is not None:
+        query_specs.append(
+            (
+                "withdrawal_id_query",
+                clean_withdrawal_id,
+                None,
+            )
+        )
+
+    if clean_tx_hash is not None:
+        query_specs.append(
+            (
+                "tx_hash_query",
+                None,
+                clean_tx_hash,
+            )
+        )
+
+    query_specs.append(
+        (
+            "bounded_record_lookup",
+            None,
+            None,
+        )
+    )
+
+    for (
+        source,
+        withdrawal_id_filter,
+        tx_hash_filter,
+    ) in query_specs:
+        try:
+            result = (
+                list_master_withdrawals_paginated(
+                    counter,
+                    coin=snapshot["coin"],
+                    start_time_ms=(
+                        lookup_start_ms
+                    ),
+                    end_time_ms=(
+                        lookup_end_ms
+                    ),
+                    limit=(
+                        WITHDRAWAL_RECORD_LOOKUP_LIMIT
+                    ),
+                    max_pages=max_pages,
+                    withdrawal_id=(
+                        withdrawal_id_filter
+                    ),
+                    tx_hash=tx_hash_filter,
+                )
+            )
+
+        except BybitApiError as exc:
+            query_evidence[source] = {
+                "state": "query_error",
+                "error": (
+                    _bounded_external_error(exc)
+                ),
+            }
+
+            return {
+                "state": "query_error",
+                "selected_record": None,
+                "selected_source": source,
+                "unique_match": False,
+                "ambiguous": False,
+                "exact_fingerprint_match": False,
+                "error": (
+                    _bounded_external_error(exc)
+                ),
+                "queries": query_evidence,
+                "bybit_get_count": (
+                    counter.get_count
+                ),
+            }
+
+        except BybitAssetFlowError as exc:
+            query_evidence[source] = {
+                "state": "lookup_incomplete",
+                "error": (
+                    _bounded_external_error(exc)
+                ),
+            }
+
+            return {
+                "state": "lookup_incomplete",
+                "selected_record": None,
+                "selected_source": source,
+                "unique_match": False,
+                "ambiguous": False,
+                "exact_fingerprint_match": False,
+                "error": (
+                    _bounded_external_error(exc)
+                ),
+                "queries": query_evidence,
+                "bybit_get_count": (
+                    counter.get_count
+                ),
+            }
+
+        source_evidence = (
+            _withdrawal_pagination_evidence(
+                result
+            )
+        )
+
+        query_evidence[source] = (
+            source_evidence
+        )
+
+        if not result.exhausted:
+            return {
+                "state": "lookup_incomplete",
+                "selected_record": None,
+                "selected_source": None,
+                "unique_match": False,
+                "ambiguous": False,
+                "exact_fingerprint_match": False,
+                "error": (
+                    "Withdrawal lookup reached "
+                    "max_pages before exhausting "
+                    f"{source}"
+                ),
+                "queries": query_evidence,
+                "bybit_get_count": (
+                    counter.get_count
+                ),
+            }
+
+        source_records = (
+            _withdrawal_source_records(
+                source=source,
+                records=(
+                    _deduplicate_withdrawal_records(
+                        result.records
+                    )
+                ),
+                withdrawal_id=(
+                    clean_withdrawal_id
+                ),
+                tx_hash=clean_tx_hash,
+            )
+        )
+
+        exact_matches: list[Any] = []
+        mismatch_evidence: list[
+            dict[str, Any]
+        ] = []
+
+        for record in source_records:
+            matched, mismatch = (
+                _withdrawal_record_intent_match(
+                    record=record,
+                    snapshot=snapshot,
+                    lookup_start_ms=(
+                        lookup_start_ms
+                    ),
+                    lookup_end_ms=(
+                        lookup_end_ms
+                    ),
+                )
+            )
+
+            if matched:
+                exact_matches.append(
+                    record
+                )
+                continue
+
+            if (
+                mismatch is not None
+                or source
+                in {
+                    "withdrawal_id_query",
+                    "tx_hash_query",
+                }
+            ):
+                resolved_mismatch = (
+                    mismatch
+                )
+
+                if (
+                    resolved_mismatch is None
+                    and source
+                    in {
+                        "withdrawal_id_query",
+                        "tx_hash_query",
+                    }
+                ):
+                    resolved_mismatch = (
+                        _withdrawal_record_core_mismatch(
+                            record=record,
+                            snapshot=snapshot,
+                        )
+                    )
+
+                mismatch_evidence.append(
+                    {
+                        "record_fingerprint": (
+                            _withdrawal_record_fingerprint(
+                                record
+                            )
+                        ),
+                        "error": (
+                            resolved_mismatch
+                            or (
+                                "Withdrawal record "
+                                "immutable fingerprint "
+                                "mismatch"
+                            )
+                        ),
+                    }
+                )
+
+        exact_matches = (
+            _deduplicate_withdrawal_records(
+                exact_matches
+            )
+        )
+
+        source_evidence[
+            "source_record_count"
+        ] = len(source_records)
+
+        source_evidence[
+            "exact_match_count"
+        ] = len(exact_matches)
+
+        source_evidence[
+            "mismatch_count"
+        ] = len(mismatch_evidence)
+
+        source_evidence[
+            "mismatches"
+        ] = mismatch_evidence
+
+        if mismatch_evidence:
+            return {
+                "state": "record_mismatch",
+                "selected_record": None,
+                "selected_source": source,
+                "unique_match": False,
+                "ambiguous": False,
+                "exact_fingerprint_match": False,
+                "error": mismatch_evidence[
+                    0
+                ]["error"],
+                "queries": query_evidence,
+                "bybit_get_count": (
+                    counter.get_count
+                ),
+            }
+
+        if len(exact_matches) > 1:
+            return {
+                "state": "ambiguous",
+                "selected_record": None,
+                "selected_source": source,
+                "unique_match": False,
+                "ambiguous": True,
+                "exact_fingerprint_match": False,
+                "error": (
+                    "Multiple Bybit withdrawal "
+                    "records match immutable intent"
+                ),
+                "matching_record_fingerprints": [
+                    _withdrawal_record_fingerprint(
+                        record
+                    )
+                    for record in exact_matches
+                ],
+                "queries": query_evidence,
+                "bybit_get_count": (
+                    counter.get_count
+                ),
+            }
+
+        if len(exact_matches) == 1:
+            selected_record = (
+                exact_matches[0]
+            )
+
+            return {
+                "state": "unique_match",
+                "selected_record": (
+                    selected_record
+                ),
+                "selected_source": source,
+                "unique_match": True,
+                "ambiguous": False,
+                "exact_fingerprint_match": True,
+                "record_fingerprint": (
+                    _withdrawal_record_fingerprint(
+                        selected_record
+                    )
+                ),
+                "queries": query_evidence,
+                "bybit_get_count": (
+                    counter.get_count
+                ),
+            }
+
+    return {
+        "state": "record_not_found",
+        "selected_record": None,
+        "selected_source": None,
+        "unique_match": False,
+        "ambiguous": False,
+        "exact_fingerprint_match": False,
+        "queries": query_evidence,
+        "bybit_get_count": (
+            counter.get_count
+        ),
+    }
+
+
 def _validate_fresh_withdrawal_fee(
     *,
     snapshot: dict[str, Any],
@@ -5540,9 +6216,13 @@ def _withdrawal_record_evidence(
     )
 
     return {
-        "request_id": str(
-            record.request_id or ""
-        ).strip(),
+        "request_id": (
+            str(
+                record.request_id
+            ).strip()
+            if record.request_id
+            else None
+        ),
         "withdrawal_id": (
             str(record.withdrawal_id).strip()
             if record.withdrawal_id
@@ -5560,6 +6240,16 @@ def _withdrawal_record_evidence(
         "amount_usdt": _decimal_text(
             Decimal(record.amount_usdt)
         ),
+        "fee_usdt": (
+            _decimal_text(
+                Decimal(
+                    record.fee_usdt
+                )
+            )
+            if record.fee_usdt
+            is not None
+            else None
+        ),
         "fee_type": int(record.fee_type),
         "status": str(
             record.status or ""
@@ -5568,6 +6258,19 @@ def _withdrawal_record_evidence(
             str(record.tx_hash).strip()
             if record.tx_hash
             else None
+        ),
+        "created_time_ms": (
+            int(
+                record.created_time_ms
+            )
+            if record.created_time_ms
+            is not None
+            else None
+        ),
+        "record_fingerprint": (
+            _withdrawal_record_fingerprint(
+                record
+            )
         ),
         "raw_sha256": hashlib.sha256(
             canonical_raw.encode("utf-8")
@@ -6012,6 +6715,29 @@ def _reconcile_withdrawal_once(
             "must be positive"
         )
 
+    max_pages = int(
+        settings
+        .NEGATIVE_NET_BYBIT_WITHDRAWAL_LOOKUP_MAX_PAGES
+    )
+
+    if max_pages <= 0:
+        raise NegativeBybitFlowError(
+            "NEGATIVE_NET_BYBIT_WITHDRAWAL_"
+            "LOOKUP_MAX_PAGES must be positive"
+        )
+
+    max_pending_sec = int(
+        settings
+        .NEGATIVE_NET_BYBIT_WITHDRAWAL_RECONCILIATION_MAX_PENDING_SEC
+    )
+
+    if max_pending_sec <= 0:
+        raise NegativeBybitFlowError(
+            "NEGATIVE_NET_BYBIT_WITHDRAWAL_"
+            "RECONCILIATION_MAX_PENDING_SEC must "
+            "be positive"
+        )
+
     lookup_start = (
         submitted_at
         - timedelta(hours=lookback_hours)
@@ -6020,130 +6746,249 @@ def _reconcile_withdrawal_once(
     lookup_start_ms = int(
         lookup_start.timestamp() * 1000
     )
+
     lookup_end_ms = int(
         resolved_now.timestamp() * 1000
+    )
+
+    pending_age_sec = int(
+        (
+            resolved_now
+            - submitted_at
+        ).total_seconds()
     )
 
     settlement_batch_id = int(
         settlement_batch.id
     )
-    expected_flow_id = int(flow.id)
+
+    expected_flow_id = int(
+        flow.id
+    )
+
+    saved_withdrawal_id = str(
+        flow.withdrawal_id or ""
+    ).strip() or None
+
+    saved_tx_hash = str(
+        flow.withdrawal_tx_hash or ""
+    ).strip() or None
 
     # Release all FOR UPDATE locks before
     # read-only Bybit requests.
     db.commit()
 
-    bybit_get_count = 0
+    recovery = _withdrawal_recovery_lookup(
+        bybit_client=bybit_client,
+        snapshot=snapshot,
+        saved_withdrawal_id=(
+            saved_withdrawal_id
+        ),
+        saved_tx_hash=saved_tx_hash,
+        lookup_start_ms=lookup_start_ms,
+        lookup_end_ms=lookup_end_ms,
+        max_pages=max_pages,
+    )
 
-    try:
-        bybit_get_count += 1
+    bybit_get_count = int(
+        recovery.get(
+            "bybit_get_count"
+        )
+        or 0
+    )
 
-        exact_record = query_master_withdrawal(
-            bybit_client,
-            request_id=snapshot[
-                "request_id"
-            ],
+    (
+        settlement_batch,
+        _,
+        flow,
+    ) = _locked_withdrawal_context(
+        db,
+        settlement_batch_id=(
+            settlement_batch_id
+        ),
+    )
+
+    if int(flow.id) != expected_flow_id:
+        raise NegativeBybitFlowError(
+            "Negative Bybit flow identity changed "
+            "during withdrawal reconciliation"
         )
 
-        bybit_get_count += 1
-
-        bounded_records = (
-            list_master_withdrawals(
-                bybit_client,
-                coin=snapshot["coin"],
-                start_time_ms=lookup_start_ms,
-                end_time_ms=lookup_end_ms,
-                limit=(
-                    WITHDRAWAL_RECORD_LOOKUP_LIMIT
-                ),
-            )
-        )
-
-    except (
-        BybitApiError,
-        BybitAssetFlowError,
-    ) as exc:
-        (
-            settlement_batch,
-            _,
-            flow,
-        ) = _locked_withdrawal_context(
-            db,
-            settlement_batch_id=(
-                settlement_batch_id
+    concurrent_result = (
+        _concurrent_withdrawal_reconciliation_result(
+            settlement_batch=(
+                settlement_batch
+            ),
+            flow=flow,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
             ),
         )
+    )
 
-        concurrent_result = (
-            _concurrent_withdrawal_reconciliation_result(
+    if concurrent_result is not None:
+        db.commit()
+        return concurrent_result
+
+    current_intent = deepcopy(
+        flow.withdrawal_intent_json
+    )
+
+    if not isinstance(
+        current_intent,
+        dict,
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal intent disappeared during "
+            "reconciliation"
+        )
+
+    _validate_withdrawal_snapshot_unchanged(
+        flow=flow,
+        intent=current_intent,
+        snapshot=snapshot,
+        allowed_states={
+            "submitting",
+            "reconciling",
+        },
+    )
+
+    if (
+        _confirmed_master_balance_barrier(
+            flow
+        )
+        != barrier_snapshot
+    ):
+        raise NegativeBybitFlowError(
+            "Master balance barrier changed during "
+            "withdrawal reconciliation"
+        )
+
+    recovery_state = str(
+        recovery.get("state") or ""
+    ).strip()
+
+    selected_source = (
+        str(
+            recovery.get(
+                "selected_source"
+            )
+            or ""
+        ).strip()
+        or None
+    )
+
+    evidence: dict[str, Any] = {
+        "schema": (
+            WITHDRAWAL_RECONCILIATION_SCHEMA
+        ),
+        "state": "checking",
+        "checked_at": (
+            resolved_now.isoformat()
+        ),
+        "request_id": snapshot[
+            "request_id"
+        ],
+        "lookup": {
+            "start_time_ms": (
+                lookup_start_ms
+            ),
+            "end_time_ms": (
+                lookup_end_ms
+            ),
+            "limit": (
+                WITHDRAWAL_RECORD_LOOKUP_LIMIT
+            ),
+            "max_pages": max_pages,
+        },
+        "recovery_state": (
+            recovery_state
+        ),
+        "selected_source": (
+            selected_source
+        ),
+        "unique_match": bool(
+            recovery.get(
+                "unique_match"
+            )
+        ),
+        "ambiguous": bool(
+            recovery.get("ambiguous")
+        ),
+        "exact_fingerprint_match": bool(
+            recovery.get(
+                "exact_fingerprint_match"
+            )
+        ),
+        "record_fingerprint": (
+            recovery.get(
+                "record_fingerprint"
+            )
+        ),
+        "matching_record_fingerprints": (
+            deepcopy(
+                recovery.get(
+                    "matching_record_fingerprints"
+                )
+                or []
+            )
+        ),
+        "queries": deepcopy(
+            recovery.get("queries")
+            or {}
+        ),
+        "pending_age_sec": (
+            pending_age_sec
+        ),
+        "max_pending_sec": (
+            max_pending_sec
+        ),
+        "bybit_get_count": (
+            bybit_get_count
+        ),
+        "no_automatic_resend": True,
+    }
+
+    if recovery_state == "query_error":
+        evidence["state"] = (
+            "query_pending"
+        )
+
+        evidence["query_error"] = str(
+            recovery.get("error")
+            or "Bybit withdrawal query failed"
+        )[:500]
+
+        if pending_age_sec >= max_pending_sec:
+            return _fail_withdrawal_reconciliation(
+                db,
                 settlement_batch=(
                     settlement_batch
                 ),
                 flow=flow,
+                current_intent=(
+                    current_intent
+                ),
+                evidence=evidence,
+                error=(
+                    "Withdrawal reconciliation "
+                    "exceeded maximum pending time "
+                    "after Bybit query errors"
+                ),
+                transition=(
+                    "reconcile_withdrawal_"
+                    "query_timeout"
+                ),
+                resolved_now=resolved_now,
                 status_before=status_before,
                 settlement_status_before=(
                     settlement_status_before
                 ),
+                bybit_get_count=(
+                    bybit_get_count
+                ),
             )
-        )
-
-        if concurrent_result is not None:
-            db.commit()
-            return concurrent_result
-
-        current_intent = deepcopy(
-            flow.withdrawal_intent_json
-        )
-
-        if not isinstance(
-            current_intent,
-            dict,
-        ):
-            raise NegativeBybitFlowError(
-                "Withdrawal intent disappeared "
-                "during query"
-            )
-
-        _validate_withdrawal_snapshot_unchanged(
-            flow=flow,
-            intent=current_intent,
-            snapshot=snapshot,
-            allowed_states={
-                "submitting",
-                "reconciling",
-            },
-        )
-
-        evidence = {
-            "schema": (
-                WITHDRAWAL_RECONCILIATION_SCHEMA
-            ),
-            "state": "query_pending",
-            "checked_at": (
-                resolved_now.isoformat()
-            ),
-            "request_id": snapshot[
-                "request_id"
-            ],
-            "query_error": (
-                _bounded_external_error(exc)
-            ),
-            "bybit_get_count": (
-                bybit_get_count
-            ),
-            "lookup": {
-                "start_time_ms": (
-                    lookup_start_ms
-                ),
-                "end_time_ms": (
-                    lookup_end_ms
-                ),
-                "limit": (
-                    WITHDRAWAL_RECORD_LOOKUP_LIMIT
-                ),
-            },
-            "no_automatic_resend": True,
-        }
 
         return (
             _persist_withdrawal_reconciliation_pending(
@@ -6171,143 +7016,132 @@ def _reconcile_withdrawal_once(
             )
         )
 
-    (
-        settlement_batch,
-        _,
-        flow,
-    ) = _locked_withdrawal_context(
-        db,
-        settlement_batch_id=(
-            settlement_batch_id
-        ),
-    )
-
-    if int(flow.id) != expected_flow_id:
-        raise NegativeBybitFlowError(
-            "Negative Bybit flow identity changed "
-            "during withdrawal reconciliation"
+    if recovery_state == "lookup_incomplete":
+        evidence["state"] = (
+            "lookup_incomplete"
         )
 
-    concurrent_result = (
-        _concurrent_withdrawal_reconciliation_result(
-            settlement_batch=settlement_batch,
-            flow=flow,
-            status_before=status_before,
-            settlement_status_before=(
-                settlement_status_before
-            ),
-        )
-    )
-
-    if concurrent_result is not None:
-        db.commit()
-        return concurrent_result
-
-    current_intent = deepcopy(
-        flow.withdrawal_intent_json
-    )
-
-    if not isinstance(current_intent, dict):
-        raise NegativeBybitFlowError(
-            "Withdrawal intent disappeared during "
-            "reconciliation"
-        )
-
-    _validate_withdrawal_snapshot_unchanged(
-        flow=flow,
-        intent=current_intent,
-        snapshot=snapshot,
-        allowed_states={
-            "submitting",
-            "reconciling",
-        },
-    )
-
-    if (
-        _confirmed_master_balance_barrier(flow)
-        != barrier_snapshot
-    ):
-        raise NegativeBybitFlowError(
-            "Master balance barrier changed during "
-            "withdrawal reconciliation"
-        )
-
-    matching_records = [
-        record
-        for record in bounded_records
-        if str(
-            record.request_id or ""
-        ).strip()
-        == snapshot["request_id"]
-    ]
-
-    evidence = {
-        "schema": (
-            WITHDRAWAL_RECONCILIATION_SCHEMA
-        ),
-        "state": "checking",
-        "checked_at": resolved_now.isoformat(),
-        "request_id": snapshot["request_id"],
-        "lookup": {
-            "start_time_ms": lookup_start_ms,
-            "end_time_ms": lookup_end_ms,
-            "limit": (
-                WITHDRAWAL_RECORD_LOOKUP_LIMIT
-            ),
-            "returned_count": len(
-                bounded_records
-            ),
-            "matching_request_id_count": len(
-                matching_records
-            ),
-            "limit_reached": (
-                len(bounded_records)
-                >= WITHDRAWAL_RECORD_LOOKUP_LIMIT
-            ),
-        },
-        "exact_query_found": (
-            exact_record is not None
-        ),
-        "bybit_get_count": bybit_get_count,
-        "no_automatic_resend": True,
-    }
-
-    if len(matching_records) > 1:
         return _fail_withdrawal_reconciliation(
             db,
             settlement_batch=settlement_batch,
             flow=flow,
             current_intent=current_intent,
             evidence=evidence,
-            error=(
-                "Multiple bounded Bybit withdrawal "
-                "records have the same requestId"
+            error=str(
+                recovery.get("error")
+                or (
+                    "Withdrawal lookup did not "
+                    "exhaust all pages"
+                )
             ),
             transition=(
                 "reconcile_withdrawal_"
-                "duplicate_request_id"
+                "lookup_incomplete"
             ),
             resolved_now=resolved_now,
             status_before=status_before,
             settlement_status_before=(
                 settlement_status_before
             ),
-            bybit_get_count=bybit_get_count,
+            bybit_get_count=(
+                bybit_get_count
+            ),
         )
 
-    selected_record = exact_record
-    selected_source = "exact_request_id_query"
+    if recovery_state == "ambiguous":
+        evidence["state"] = "ambiguous"
 
-    if (
-        selected_record is None
-        and len(matching_records) == 1
-    ):
-        selected_record = matching_records[0]
-        selected_source = "bounded_record_lookup"
+        return _fail_withdrawal_reconciliation(
+            db,
+            settlement_batch=settlement_batch,
+            flow=flow,
+            current_intent=current_intent,
+            evidence=evidence,
+            error=str(
+                recovery.get("error")
+                or (
+                    "Multiple Bybit withdrawal "
+                    "records match immutable intent"
+                )
+            ),
+            transition=(
+                "reconcile_withdrawal_ambiguous"
+            ),
+            resolved_now=resolved_now,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            bybit_get_count=(
+                bybit_get_count
+            ),
+        )
 
-    if selected_record is None:
-        evidence["state"] = "record_not_found"
-        evidence["selected_source"] = None
+    if recovery_state == "record_mismatch":
+        evidence["state"] = (
+            "record_mismatch"
+        )
+
+        return _fail_withdrawal_reconciliation(
+            db,
+            settlement_batch=settlement_batch,
+            flow=flow,
+            current_intent=current_intent,
+            evidence=evidence,
+            error=str(
+                recovery.get("error")
+                or (
+                    "Bybit withdrawal record "
+                    "immutable fingerprint mismatch"
+                )
+            ),
+            transition=(
+                "reconcile_withdrawal_mismatch"
+            ),
+            resolved_now=resolved_now,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            bybit_get_count=(
+                bybit_get_count
+            ),
+        )
+
+    if recovery_state == "record_not_found":
+        evidence["state"] = (
+            "record_not_found"
+        )
+
+        if pending_age_sec >= max_pending_sec:
+            return _fail_withdrawal_reconciliation(
+                db,
+                settlement_batch=(
+                    settlement_batch
+                ),
+                flow=flow,
+                current_intent=(
+                    current_intent
+                ),
+                evidence=evidence,
+                error=(
+                    "Bybit withdrawal record was "
+                    "not found before reconciliation "
+                    "timeout"
+                ),
+                transition=(
+                    "reconcile_withdrawal_"
+                    "record_not_found_timeout"
+                ),
+                resolved_now=resolved_now,
+                status_before=status_before,
+                settlement_status_before=(
+                    settlement_status_before
+                ),
+                bybit_get_count=(
+                    bybit_get_count
+                ),
+            )
 
         return (
             _persist_withdrawal_reconciliation_pending(
@@ -6335,30 +7169,9 @@ def _reconcile_withdrawal_once(
             )
         )
 
-    try:
-        _validate_exact_withdrawal_ack(
-            record=selected_record,
-            snapshot=snapshot,
-        )
-
-        if (
-            exact_record is not None
-            and len(matching_records) == 1
-        ):
-            _validate_same_withdrawal_identity(
-                left=exact_record,
-                right=matching_records[0],
-                snapshot=snapshot,
-            )
-
-    except NegativeBybitFlowError as exc:
-        evidence["selected_source"] = (
-            selected_source
-        )
-        evidence["record"] = (
-            _withdrawal_record_evidence(
-                selected_record
-            )
+    if recovery_state != "unique_match":
+        evidence["state"] = (
+            "unsupported_recovery_state"
         )
 
         return _fail_withdrawal_reconciliation(
@@ -6367,7 +7180,158 @@ def _reconcile_withdrawal_once(
             flow=flow,
             current_intent=current_intent,
             evidence=evidence,
-            error=str(exc),
+            error=(
+                "Unsupported withdrawal recovery "
+                f"state: {recovery_state or 'empty'}"
+            ),
+            transition=(
+                "reconcile_withdrawal_"
+                "unsupported_recovery_state"
+            ),
+            resolved_now=resolved_now,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            bybit_get_count=(
+                bybit_get_count
+            ),
+        )
+
+    if selected_source not in {
+        "withdrawal_id_query",
+        "tx_hash_query",
+        "bounded_record_lookup",
+        "exact_request_id_query",
+    }:
+        evidence["state"] = (
+            "invalid_selected_source"
+        )
+
+        return _fail_withdrawal_reconciliation(
+            db,
+            settlement_batch=settlement_batch,
+            flow=flow,
+            current_intent=current_intent,
+            evidence=evidence,
+            error=(
+                "Withdrawal reconciliation selected "
+                "source is invalid"
+            ),
+            transition=(
+                "reconcile_withdrawal_"
+                "invalid_selected_source"
+            ),
+            resolved_now=resolved_now,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            bybit_get_count=(
+                bybit_get_count
+            ),
+        )
+
+    if (
+        not evidence["unique_match"]
+        or evidence["ambiguous"]
+        or not evidence[
+            "exact_fingerprint_match"
+        ]
+    ):
+        evidence["state"] = (
+            "invalid_unique_match_evidence"
+        )
+
+        return _fail_withdrawal_reconciliation(
+            db,
+            settlement_batch=settlement_batch,
+            flow=flow,
+            current_intent=current_intent,
+            evidence=evidence,
+            error=(
+                "Withdrawal recovery unique match "
+                "evidence is invalid"
+            ),
+            transition=(
+                "reconcile_withdrawal_"
+                "invalid_unique_match"
+            ),
+            resolved_now=resolved_now,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            bybit_get_count=(
+                bybit_get_count
+            ),
+        )
+
+    selected_record = recovery.get(
+        "selected_record"
+    )
+
+    if selected_record is None:
+        evidence["state"] = (
+            "selected_record_missing"
+        )
+
+        return _fail_withdrawal_reconciliation(
+            db,
+            settlement_batch=settlement_batch,
+            flow=flow,
+            current_intent=current_intent,
+            evidence=evidence,
+            error=(
+                "Withdrawal recovery selected record "
+                "is missing"
+            ),
+            transition=(
+                "reconcile_withdrawal_"
+                "selected_record_missing"
+            ),
+            resolved_now=resolved_now,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            bybit_get_count=(
+                bybit_get_count
+            ),
+        )
+
+    matched, mismatch_error = (
+        _withdrawal_record_intent_match(
+            record=selected_record,
+            snapshot=snapshot,
+            lookup_start_ms=(
+                lookup_start_ms
+            ),
+            lookup_end_ms=(
+                lookup_end_ms
+            ),
+        )
+    )
+
+    if not matched:
+        evidence["state"] = (
+            "record_mismatch"
+        )
+
+        return _fail_withdrawal_reconciliation(
+            db,
+            settlement_batch=settlement_batch,
+            flow=flow,
+            current_intent=current_intent,
+            evidence=evidence,
+            error=(
+                mismatch_error
+                or (
+                    "Selected Bybit withdrawal "
+                    "record does not match immutable "
+                    "intent"
+                )
+            ),
             transition=(
                 "reconcile_withdrawal_mismatch"
             ),
@@ -6376,16 +7340,11 @@ def _reconcile_withdrawal_once(
             settlement_status_before=(
                 settlement_status_before
             ),
-            bybit_get_count=bybit_get_count,
+            bybit_get_count=(
+                bybit_get_count
+            ),
             record=selected_record,
         )
-
-    _apply_withdrawal_record(
-        flow=flow,
-        record=selected_record,
-        snapshot=snapshot,
-        observed_at=resolved_now,
-    )
 
     record_evidence = (
         _withdrawal_record_evidence(
@@ -6393,10 +7352,22 @@ def _reconcile_withdrawal_once(
         )
     )
 
-    evidence["selected_source"] = (
-        selected_source
+    evidence["record_fingerprint"] = (
+        _withdrawal_record_fingerprint(
+            selected_record
+        )
     )
-    evidence["record"] = record_evidence
+
+    evidence["record"] = (
+        record_evidence
+    )
+
+    _apply_withdrawal_record(
+        flow=flow,
+        record=selected_record,
+        snapshot=snapshot,
+        observed_at=resolved_now,
+    )
 
     flow.withdrawal_record_json = (
         _json_dict(record_evidence)
@@ -6406,7 +7377,9 @@ def _reconcile_withdrawal_once(
         selected_record.status or ""
     ).strip()
 
-    if _is_withdrawal_failed_like(status):
+    if _is_withdrawal_failed_like(
+        status
+    ):
         return _fail_withdrawal_reconciliation(
             db,
             settlement_batch=settlement_batch,
@@ -6425,18 +7398,25 @@ def _reconcile_withdrawal_once(
             settlement_status_before=(
                 settlement_status_before
             ),
-            bybit_get_count=bybit_get_count,
+            bybit_get_count=(
+                bybit_get_count
+            ),
             record=selected_record,
         )
 
     if (
-        _is_withdrawal_pending_like(status)
+        _is_withdrawal_pending_like(
+            status
+        )
         or (
-            _is_withdrawal_success_like(status)
+            _is_withdrawal_success_like(
+                status
+            )
             and not selected_record.tx_hash
         )
     ):
         evidence["state"] = "pending"
+
         evidence["pending_reason"] = (
             "success_like_missing_tx_hash"
             if _is_withdrawal_success_like(
@@ -6493,7 +7473,9 @@ def _reconcile_withdrawal_once(
             settlement_status_before=(
                 settlement_status_before
             ),
-            bybit_get_count=bybit_get_count,
+            bybit_get_count=(
+                bybit_get_count
+            ),
             record=selected_record,
         )
 
@@ -6517,7 +7499,9 @@ def _reconcile_withdrawal_once(
             settlement_status_before=(
                 settlement_status_before
             ),
-            bybit_get_count=bybit_get_count,
+            bybit_get_count=(
+                bybit_get_count
+            ),
             record=selected_record,
         )
 
@@ -6530,38 +7514,52 @@ def _reconcile_withdrawal_once(
 
     evidence["state"] = "confirmed"
     evidence["tx_hash"] = tx_hash
+    evidence["withdrawal_id"] = str(
+        selected_record.withdrawal_id
+    ).strip()
     evidence["next_transition"] = (
         "reconcile_settlement_wallet_receipt"
     )
 
     current_intent["state"] = "confirmed"
-    current_intent["reconciliation"] = evidence
+    current_intent["reconciliation"] = (
+        evidence
+    )
 
     flow.withdrawal_intent_json = (
         current_intent
     )
+
     flow.withdrawal_id = str(
         selected_record.withdrawal_id
     ).strip()
+
     flow.withdrawal_status = status
     flow.withdrawal_tx_hash = tx_hash
+
     flow.withdrawal_confirmed_at = (
         resolved_now
     )
+
     flow.withdrawal_reconciliation_json = (
         _json_dict(evidence)
     )
+
     flow.status = (
         BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILED
     )
+
     flow.error = None
     flow.updated_at = resolved_now
 
     settlement_batch.status = (
         BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING
     )
+
     settlement_batch.error = None
-    settlement_batch.updated_at = resolved_now
+    settlement_batch.updated_at = (
+        resolved_now
+    )
 
     db.add(flow)
     db.add(settlement_batch)
@@ -6581,8 +7579,15 @@ def _reconcile_withdrawal_once(
         diagnostics={
             "did_bybit_post": False,
             "bybit_post_count": 0,
-            "bybit_get_count": bybit_get_count,
+            "bybit_get_count": (
+                bybit_get_count
+            ),
             "no_automatic_resend": True,
+            "selected_source": (
+                selected_source
+            ),
+            "unique_match": True,
+            "exact_fingerprint_match": True,
             "withdrawal_id": (
                 flow.withdrawal_id
             ),
@@ -8452,15 +9457,183 @@ def _cash_delivery_snapshot(
             "confirmed"
         )
 
-    if (
+    selected_source = str(
         withdrawal_reconciliation.get(
             "selected_source"
         )
-        != "exact_request_id_query"
+        or ""
+    ).strip()
+
+    allowed_selected_sources = {
+        "withdrawal_id_query",
+        "tx_hash_query",
+        "bounded_record_lookup",
+    }
+
+    if (
+        selected_source
+        not in allowed_selected_sources
     ):
         raise NegativeBybitFlowError(
-            "Withdrawal was not confirmed by exact "
-            "requestId query"
+            "Withdrawal reconciliation selected "
+            "source is invalid"
+        )
+
+    if (
+        withdrawal_reconciliation.get(
+            "unique_match"
+        )
+        is not True
+        or withdrawal_reconciliation.get(
+            "ambiguous"
+        )
+        is not False
+        or withdrawal_reconciliation.get(
+            "exact_fingerprint_match"
+        )
+        is not True
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal reconciliation unique-match "
+            "evidence is invalid"
+        )
+
+    if (
+        withdrawal_reconciliation.get(
+            "no_automatic_resend"
+        )
+        is not True
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal reconciliation no-resend "
+            "marker is missing"
+        )
+
+    if (
+        str(
+            withdrawal_reconciliation.get(
+                "request_id"
+            )
+            or ""
+        ).strip()
+        != withdrawal_snapshot[
+            "request_id"
+        ]
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal reconciliation request_id "
+            "mismatch"
+        )
+
+    record_fingerprint = _required_text(
+        withdrawal_reconciliation.get(
+            "record_fingerprint"
+        ),
+        field_name=(
+            "withdrawal_reconciliation."
+            "record_fingerprint"
+        ),
+    ).lower()
+
+    if (
+        len(record_fingerprint) != 64
+        or any(
+            character
+            not in "0123456789abcdef"
+            for character
+            in record_fingerprint
+        )
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal reconciliation record "
+            "fingerprint is invalid"
+        )
+
+    queries = (
+        withdrawal_reconciliation.get(
+            "queries"
+        )
+    )
+
+    if not isinstance(queries, dict):
+        raise NegativeBybitFlowError(
+            "Withdrawal reconciliation query "
+            "evidence is missing"
+        )
+
+    selected_query = queries.get(
+        selected_source
+    )
+
+    if not isinstance(
+        selected_query,
+        dict,
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal reconciliation selected "
+            "query evidence is missing"
+        )
+
+    if (
+        selected_query.get("exhausted")
+        is not True
+        or selected_query.get(
+            "stop_reason"
+        )
+        != "end_of_pages"
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal reconciliation selected "
+            "query was not exhausted"
+        )
+
+    durable_withdrawal_reconciliation = (
+        flow.withdrawal_reconciliation_json
+    )
+
+    if not isinstance(
+        durable_withdrawal_reconciliation,
+        dict,
+    ):
+        raise NegativeBybitFlowError(
+            "Durable withdrawal reconciliation "
+            "evidence is missing"
+        )
+
+    if (
+        durable_withdrawal_reconciliation
+        != withdrawal_reconciliation
+    ):
+        raise NegativeBybitFlowError(
+            "Durable withdrawal reconciliation "
+            "evidence mismatch"
+        )
+
+    withdrawal_record_evidence = (
+        flow.withdrawal_record_json
+    )
+
+    if not isinstance(
+        withdrawal_record_evidence,
+        dict,
+    ):
+        raise NegativeBybitFlowError(
+            "Durable withdrawal record evidence "
+            "is missing"
+        )
+
+    if (
+        str(
+            withdrawal_record_evidence.get(
+                "record_fingerprint"
+            )
+            or ""
+        ).strip().lower()
+        != record_fingerprint
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal reconciliation record "
+            "fingerprint mismatch"
         )
 
     if not _is_withdrawal_success_like(

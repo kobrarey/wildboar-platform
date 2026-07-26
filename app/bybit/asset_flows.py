@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal, ROUND_DOWN, ROUND_UP
 from typing import Any, Literal
+import hashlib
+import json
 import logging
 import uuid
 
@@ -42,7 +44,7 @@ class BybitAccountCoinBalance:
 
 @dataclass(frozen=True)
 class BybitWithdrawalResult:
-    request_id: str
+    request_id: str | None
     withdrawal_id: str | None
     coin: str
     chain: str
@@ -52,6 +54,46 @@ class BybitWithdrawalResult:
     status: str | None
     tx_hash: str | None
     raw: dict[str, Any]
+    fee_usdt: Decimal | None = None
+    created_time_ms: int | None = None
+
+
+@dataclass(frozen=True)
+class BybitWithdrawalPage:
+    records: tuple[
+        BybitWithdrawalResult,
+        ...,
+    ]
+    request_cursor: str | None
+    next_cursor: str | None
+    page_fingerprint: str
+    raw_record_count: int
+
+
+@dataclass(frozen=True)
+class BybitWithdrawalPageEvidence:
+    page_number: int
+    request_cursor: str | None
+    next_cursor: str | None
+    record_count: int
+    page_fingerprint: str
+
+
+@dataclass(frozen=True)
+class BybitWithdrawalPaginationResult:
+    records: tuple[
+        BybitWithdrawalResult,
+        ...,
+    ]
+    pages: tuple[
+        BybitWithdrawalPageEvidence,
+        ...,
+    ]
+    exhausted: bool
+    stop_reason: Literal[
+        "end_of_pages",
+        "max_pages_reached",
+    ]
 
 
 @dataclass(frozen=True)
@@ -286,6 +328,86 @@ def _request_id_from(row: dict[str, Any]) -> str | None:
     return None
 
 
+def _withdrawal_fee_from(
+    row: dict[str, Any],
+) -> Decimal | None:
+    for key in (
+        "withdrawFee",
+        "fee",
+        "withdraw_fee",
+        "fee_usdt",
+    ):
+        value = row.get(key)
+
+        if (
+            value is not None
+            and str(value).strip() != ""
+        ):
+            return _dec(value)
+
+    return None
+
+
+def _withdrawal_created_time_ms_from(
+    row: dict[str, Any],
+) -> int | None:
+    for key in (
+        "createdTime",
+        "createTime",
+        "created_time",
+        "created_at_ms",
+    ):
+        value = row.get(key)
+
+        if (
+            value is None
+            or str(value).strip() == ""
+        ):
+            continue
+
+        try:
+            parsed = int(
+                str(value).strip()
+            )
+        except (
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise BybitAssetFlowError(
+                "Withdrawal createdTime is invalid"
+            ) from exc
+
+        if parsed <= 0:
+            raise BybitAssetFlowError(
+                "Withdrawal createdTime must be "
+                "positive"
+            )
+
+        return parsed
+
+    return None
+
+
+def _next_page_cursor(
+    payload: dict[str, Any],
+) -> str | None:
+    result = payload.get("result")
+
+    if not isinstance(result, dict):
+        return None
+
+    value = result.get(
+        "nextPageCursor"
+    )
+
+    if value is None:
+        return None
+
+    clean = str(value).strip()
+
+    return clean or None
+
+
 def _find_coin_chain_info_row(
     rows: list[dict[str, Any]],
     *,
@@ -412,10 +534,18 @@ def _withdrawal_result_from_row(
     *,
     fallback_request_id: str | None = None,
 ) -> BybitWithdrawalResult:
-    request_id = (
+    explicit_request_id = (
         _request_id_from(row)
-        or str(fallback_request_id or "").strip()
-        or str(_withdrawal_id_from(row) or "").strip()
+    )
+
+    fallback = str(
+        fallback_request_id or ""
+    ).strip()
+
+    request_id = (
+        explicit_request_id
+        or fallback
+        or None
     )
 
     return BybitWithdrawalResult(
@@ -429,6 +559,14 @@ def _withdrawal_result_from_row(
         status=_status_from(row),
         tx_hash=_tx_hash_from(row),
         raw=row,
+        fee_usdt=(
+            _withdrawal_fee_from(row)
+        ),
+        created_time_ms=(
+            _withdrawal_created_time_ms_from(
+                row
+            )
+        ),
     )
 
 
@@ -645,6 +783,14 @@ def create_master_withdrawal(
         status=_status_from(row),
         tx_hash=_tx_hash_from(row),
         raw=raw,
+        fee_usdt=(
+            _withdrawal_fee_from(row)
+        ),
+        created_time_ms=(
+            _withdrawal_created_time_ms_from(
+                row
+            )
+        ),
     )
 
 
@@ -673,6 +819,297 @@ def query_master_withdrawal(
     return _withdrawal_result_from_row(row, fallback_request_id=clean_request_id)
 
 
+def _withdrawal_page_fingerprint(
+    *,
+    request_cursor: str | None,
+    next_cursor: str | None,
+    records: tuple[
+        BybitWithdrawalResult,
+        ...,
+    ],
+) -> str:
+    payload = {
+        "request_cursor": request_cursor,
+        "next_cursor": next_cursor,
+        "records": [
+            {
+                "request_id": (
+                    record.request_id
+                ),
+                "withdrawal_id": (
+                    record.withdrawal_id
+                ),
+                "coin": record.coin,
+                "chain": record.chain,
+                "address": record.address,
+                "amount_usdt": format(
+                    record.amount_usdt,
+                    "f",
+                ),
+                "fee_usdt": (
+                    format(
+                        record.fee_usdt,
+                        "f",
+                    )
+                    if record.fee_usdt
+                    is not None
+                    else None
+                ),
+                "fee_type": (
+                    record.fee_type
+                ),
+                "status": record.status,
+                "tx_hash": record.tx_hash,
+                "created_time_ms": (
+                    record.created_time_ms
+                ),
+            }
+            for record in records
+        ],
+    }
+
+    canonical = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    )
+
+    return hashlib.sha256(
+        canonical.encode("utf-8")
+    ).hexdigest()
+
+
+def list_master_withdrawals_page(
+    client: BybitV5Client,
+    *,
+    coin: str | None = None,
+    start_time_ms: int | None = None,
+    end_time_ms: int | None = None,
+    limit: int = 50,
+    cursor: str | None = None,
+    withdrawal_id: str | None = None,
+    tx_hash: str | None = None,
+) -> BybitWithdrawalPage:
+    clean_limit = int(limit)
+
+    if (
+        clean_limit <= 0
+        or clean_limit > 50
+    ):
+        raise BybitAssetFlowError(
+            "Withdrawal lookup limit must be "
+            "between 1 and 50"
+        )
+
+    request_cursor = str(
+        cursor or ""
+    ).strip() or None
+
+    clean_params: dict[str, Any] = {
+        "limit": clean_limit,
+    }
+
+    if coin:
+        clean_params["coin"] = str(
+            coin
+        ).strip().upper()
+
+    if start_time_ms is not None:
+        clean_params["startTime"] = int(
+            start_time_ms
+        )
+
+    if end_time_ms is not None:
+        clean_params["endTime"] = int(
+            end_time_ms
+        )
+
+    if request_cursor is not None:
+        clean_params["cursor"] = (
+            request_cursor
+        )
+
+    if withdrawal_id:
+        clean_params["withdrawID"] = str(
+            withdrawal_id
+        ).strip()
+
+    if tx_hash:
+        clean_params["txID"] = str(
+            tx_hash
+        ).strip()
+
+    raw = client.get(
+        "/v5/asset/withdraw/query-record",
+        clean_params,
+    )
+
+    rows = _result_list(raw)
+
+    records = tuple(
+        _withdrawal_result_from_row(
+            row
+        )
+        for row in rows
+        if (
+            _withdrawal_id_from(row)
+            or _request_id_from(row)
+            or _tx_hash_from(row)
+        )
+    )
+
+    next_cursor = _next_page_cursor(
+        raw
+    )
+
+    return BybitWithdrawalPage(
+        records=records,
+        request_cursor=request_cursor,
+        next_cursor=next_cursor,
+        page_fingerprint=(
+            _withdrawal_page_fingerprint(
+                request_cursor=(
+                    request_cursor
+                ),
+                next_cursor=next_cursor,
+                records=records,
+            )
+        ),
+        raw_record_count=len(rows),
+    )
+
+
+def list_master_withdrawals_paginated(
+    client: BybitV5Client,
+    *,
+    coin: str | None = None,
+    start_time_ms: int | None = None,
+    end_time_ms: int | None = None,
+    limit: int = 50,
+    max_pages: int = 10,
+    withdrawal_id: str | None = None,
+    tx_hash: str | None = None,
+) -> BybitWithdrawalPaginationResult:
+    clean_max_pages = int(
+        max_pages
+    )
+
+    if clean_max_pages <= 0:
+        raise BybitAssetFlowError(
+            "Withdrawal lookup max_pages must "
+            "be positive"
+        )
+
+    records: list[
+        BybitWithdrawalResult
+    ] = []
+
+    pages: list[
+        BybitWithdrawalPageEvidence
+    ] = []
+
+    seen_cursors: set[str] = set()
+    cursor: str | None = None
+
+    for page_number in range(
+        1,
+        clean_max_pages + 1,
+    ):
+        if (
+            cursor is not None
+            and cursor in seen_cursors
+        ):
+            raise BybitAssetFlowError(
+                "Withdrawal pagination repeated "
+                "request cursor"
+            )
+
+        if cursor is not None:
+            seen_cursors.add(cursor)
+
+        page = (
+            list_master_withdrawals_page(
+                client,
+                coin=coin,
+                start_time_ms=(
+                    start_time_ms
+                ),
+                end_time_ms=end_time_ms,
+                limit=limit,
+                cursor=cursor,
+                withdrawal_id=(
+                    withdrawal_id
+                ),
+                tx_hash=tx_hash,
+            )
+        )
+
+        records.extend(
+            page.records
+        )
+
+        pages.append(
+            BybitWithdrawalPageEvidence(
+                page_number=page_number,
+                request_cursor=(
+                    page.request_cursor
+                ),
+                next_cursor=(
+                    page.next_cursor
+                ),
+                record_count=len(
+                    page.records
+                ),
+                page_fingerprint=(
+                    page.page_fingerprint
+                ),
+            )
+        )
+
+        next_cursor = (
+            page.next_cursor
+        )
+
+        if next_cursor is None:
+            return (
+                BybitWithdrawalPaginationResult(
+                    records=tuple(
+                        records
+                    ),
+                    pages=tuple(pages),
+                    exhausted=True,
+                    stop_reason=(
+                        "end_of_pages"
+                    ),
+                )
+            )
+
+        if (
+            next_cursor == cursor
+            or next_cursor
+            in seen_cursors
+        ):
+            raise BybitAssetFlowError(
+                "Withdrawal pagination repeated "
+                "nextPageCursor"
+            )
+
+        cursor = next_cursor
+
+    return (
+        BybitWithdrawalPaginationResult(
+            records=tuple(records),
+            pages=tuple(pages),
+            exhausted=False,
+            stop_reason=(
+                "max_pages_reached"
+            ),
+        )
+    )
+
+
 def list_master_withdrawals(
     client: BybitV5Client,
     *,
@@ -680,28 +1117,18 @@ def list_master_withdrawals(
     start_time_ms: int | None = None,
     end_time_ms: int | None = None,
     limit: int = 50,
+    cursor: str | None = None,
 ) -> list[BybitWithdrawalResult]:
-    clean_params: dict[str, Any] = {
-        "limit": int(limit),
-    }
+    page = list_master_withdrawals_page(
+        client,
+        coin=coin,
+        start_time_ms=start_time_ms,
+        end_time_ms=end_time_ms,
+        limit=limit,
+        cursor=cursor,
+    )
 
-    if coin:
-        clean_params["coin"] = str(coin).strip().upper()
-
-    if start_time_ms is not None:
-        clean_params["startTime"] = int(start_time_ms)
-
-    if end_time_ms is not None:
-        clean_params["endTime"] = int(end_time_ms)
-
-    raw = client.get("/v5/asset/withdraw/query-record", clean_params)
-    rows = _result_list(raw)
-
-    return [
-        _withdrawal_result_from_row(row)
-        for row in rows
-        if _withdrawal_id_from(row) or _request_id_from(row)
-    ]
+    return list(page.records)
 
 
 def cancel_master_withdrawal(
