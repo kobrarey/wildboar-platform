@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 import hashlib
 import json
@@ -14,8 +14,10 @@ from app.bybit.asset_flows import (
     BybitAssetFlowError,
     create_master_withdrawal,
     create_universal_transfer,
+    list_master_withdrawals,
     query_account_coin_balance,
     query_coin_info,
+    query_master_withdrawal,
     query_universal_transfer,
 )
 from app.bybit.client import (
@@ -36,6 +38,9 @@ from app.settlement.negative_bybit_flow import (
     _get_fund,
     _is_bybit_pending,
     _is_bybit_success,
+    _is_withdrawal_failed_like,
+    _is_withdrawal_pending_like,
+    _is_withdrawal_success_like,
     _lock_existing_flow,
     _lock_sale_batch_for_settlement,
     _lock_settlement_batch,
@@ -70,6 +75,7 @@ from app.settlement.statuses import (
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_SUBMITTING,
     BYBIT_FLOW_STATUS_WITHDRAWAL_INTENT_PREPARED,
+    BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILED,
     BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILING,
     BYBIT_FLOW_STATUS_WITHDRAWAL_SUBMITTING,
 )
@@ -92,6 +98,12 @@ MASTER_TRANSFERABLE_BALANCE_SCHEMA = (
 WITHDRAWAL_INTENT_SCHEMA = (
     "negative_withdrawal_intent_v2"
 )
+
+WITHDRAWAL_RECONCILIATION_SCHEMA = (
+    "negative_withdrawal_reconciliation_v1"
+)
+
+WITHDRAWAL_RECORD_LOOKUP_LIMIT = 50
 
 ERC20_BALANCE_OF_ABI = [
     {
@@ -5487,6 +5499,1088 @@ def _submit_withdrawal_once(
     return result
 
 
+def _withdrawal_record_evidence(
+    record,
+) -> dict[str, Any]:
+    raw = (
+        record.raw
+        if isinstance(record.raw, dict)
+        else {
+            "value": str(record.raw),
+        }
+    )
+
+    canonical_raw = json.dumps(
+        raw,
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        default=str,
+        allow_nan=False,
+    )
+
+    return {
+        "request_id": str(
+            record.request_id or ""
+        ).strip(),
+        "withdrawal_id": (
+            str(record.withdrawal_id).strip()
+            if record.withdrawal_id
+            else None
+        ),
+        "coin": str(
+            record.coin or ""
+        ).strip().upper(),
+        "chain": str(
+            record.chain or ""
+        ).strip().upper(),
+        "address": str(
+            record.address or ""
+        ).strip(),
+        "amount_usdt": _decimal_text(
+            Decimal(record.amount_usdt)
+        ),
+        "fee_type": int(record.fee_type),
+        "status": str(
+            record.status or ""
+        ).strip(),
+        "tx_hash": (
+            str(record.tx_hash).strip()
+            if record.tx_hash
+            else None
+        ),
+        "raw_sha256": hashlib.sha256(
+            canonical_raw.encode("utf-8")
+        ).hexdigest(),
+        "raw_keys": sorted(
+            str(key)
+            for key in raw.keys()
+        )[:50],
+        "raw_omitted": True,
+    }
+
+
+def _validate_same_withdrawal_identity(
+    *,
+    left,
+    right,
+    snapshot: dict[str, Any],
+) -> None:
+    _validate_exact_withdrawal_ack(
+        record=left,
+        snapshot=snapshot,
+    )
+
+    _validate_exact_withdrawal_ack(
+        record=right,
+        snapshot=snapshot,
+    )
+
+    left_id = str(
+        left.withdrawal_id or ""
+    ).strip()
+
+    right_id = str(
+        right.withdrawal_id or ""
+    ).strip()
+
+    if (
+        left_id
+        and right_id
+        and left_id != right_id
+    ):
+        raise NegativeBybitFlowError(
+            "Exact and bounded withdrawal records "
+            "have different withdrawal IDs"
+        )
+
+
+def _apply_withdrawal_record(
+    *,
+    flow: FundNegativeBybitFlow,
+    record,
+    snapshot: dict[str, Any],
+    observed_at: datetime,
+) -> None:
+    flow.withdrawal_id = (
+        record.withdrawal_id
+        or flow.withdrawal_id
+    )
+
+    flow.withdrawal_status = str(
+        record.status or ""
+    ).strip()
+
+    flow.withdrawal_amount_usdt = (
+        snapshot["amount_usdt"]
+    )
+    flow.withdrawal_fee_usdt = (
+        snapshot["fee_usdt"]
+    )
+    flow.withdrawal_coin = snapshot["coin"]
+    flow.withdrawal_chain = snapshot["chain"]
+    flow.withdrawal_address = (
+        snapshot["address"]
+    )
+
+    if record.tx_hash:
+        flow.withdrawal_tx_hash = str(
+            record.tx_hash
+        ).strip()
+
+    if flow.withdrawal_created_at is None:
+        flow.withdrawal_created_at = observed_at
+
+
+def _concurrent_withdrawal_reconciliation_result(
+    *,
+    settlement_batch,
+    flow: FundNegativeBybitFlow,
+    status_before: str | None,
+    settlement_status_before: str | None,
+) -> NegativeBybitFlowResult | None:
+    intent = flow.withdrawal_intent_json
+
+    if not isinstance(intent, dict):
+        return None
+
+    state = str(
+        intent.get("state") or ""
+    ).strip()
+
+    if state == "confirmed":
+        _validate_withdrawal_intent(
+            flow=flow,
+            intent=intent,
+            allowed_states={"confirmed"},
+        )
+
+        if str(flow.status) != (
+            BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILED
+        ):
+            raise NegativeBybitFlowError(
+                "Confirmed withdrawal intent has "
+                "incompatible flow status"
+            )
+
+        return _step_result(
+            ok=True,
+            transition=(
+                "withdrawal_reconciliation_"
+                "concurrent_confirmed"
+            ),
+            settlement_batch=settlement_batch,
+            flow=flow,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            idempotent=True,
+            diagnostics={
+                "did_bybit_post": False,
+                "bybit_post_count": 0,
+                "bybit_get_count": 0,
+                "no_automatic_resend": True,
+                "next_transition": (
+                    "reconcile_settlement_wallet_"
+                    "receipt"
+                ),
+            },
+        )
+
+    if state == "failed_requires_review":
+        if str(flow.status) != (
+            BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+        ):
+            raise NegativeBybitFlowError(
+                "Failed withdrawal intent has "
+                "incompatible flow status"
+            )
+
+        return _step_result(
+            ok=False,
+            transition=(
+                "failed_requires_review_"
+                "already_recorded"
+            ),
+            settlement_batch=settlement_batch,
+            flow=flow,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            idempotent=True,
+            error=flow.error,
+            diagnostics={
+                "did_bybit_post": False,
+                "bybit_post_count": 0,
+                "bybit_get_count": 0,
+                "no_automatic_resend": True,
+                "reserve_release_allowed": False,
+                "pricing_unlock_allowed": False,
+            },
+        )
+
+    return None
+
+
+def _persist_withdrawal_reconciliation_pending(
+    db: Session,
+    *,
+    settlement_batch,
+    flow: FundNegativeBybitFlow,
+    current_intent: dict[str, Any],
+    evidence: dict[str, Any],
+    transition: str,
+    resolved_now: datetime,
+    status_before: str | None,
+    settlement_status_before: str | None,
+    bybit_get_count: int,
+    record=None,
+) -> NegativeBybitFlowResult:
+    current_intent["state"] = "reconciling"
+    current_intent["reconciliation"] = evidence
+
+    flow.withdrawal_intent_json = (
+        current_intent
+    )
+
+    if record is not None:
+        _apply_withdrawal_record(
+            flow=flow,
+            record=record,
+            snapshot=(
+                _withdrawal_intent_snapshot(
+                    flow=flow,
+                    intent=current_intent,
+                    allowed_states={
+                        "reconciling"
+                    },
+                )
+            ),
+            observed_at=resolved_now,
+        )
+
+        flow.withdrawal_record_json = (
+            _json_dict(
+                _withdrawal_record_evidence(
+                    record
+                )
+            )
+        )
+
+    flow.withdrawal_reconciliation_json = (
+        _json_dict(evidence)
+    )
+
+    flow.status = (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILING
+    )
+    flow.error = None
+    flow.updated_at = resolved_now
+
+    settlement_batch.status = (
+        BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING
+    )
+    settlement_batch.error = None
+    settlement_batch.updated_at = resolved_now
+
+    db.add(flow)
+    db.add(settlement_batch)
+    db.flush()
+
+    result = _step_result(
+        ok=False,
+        transition=transition,
+        settlement_batch=settlement_batch,
+        flow=flow,
+        status_before=status_before,
+        settlement_status_before=(
+            settlement_status_before
+        ),
+        diagnostics={
+            "pending": (
+                "withdrawal_reconciliation"
+            ),
+            "did_bybit_post": False,
+            "bybit_post_count": 0,
+            "bybit_get_count": bybit_get_count,
+            "no_automatic_resend": True,
+            "reserve_release_allowed": False,
+            "pricing_unlock_allowed": False,
+            "next_transition": (
+                "reconcile_withdrawal"
+            ),
+        },
+    )
+
+    db.commit()
+
+    return result
+
+
+def _fail_withdrawal_reconciliation(
+    db: Session,
+    *,
+    settlement_batch,
+    flow: FundNegativeBybitFlow,
+    current_intent: dict[str, Any],
+    evidence: dict[str, Any],
+    error: str,
+    transition: str,
+    resolved_now: datetime,
+    status_before: str | None,
+    settlement_status_before: str | None,
+    bybit_get_count: int,
+    record=None,
+) -> NegativeBybitFlowResult:
+    prior_reconciliation = (
+        deepcopy(flow.reconciliation_json)
+        if isinstance(
+            flow.reconciliation_json,
+            dict,
+        )
+        else None
+    )
+
+    failed_evidence = deepcopy(evidence)
+    failed_evidence["state"] = (
+        "failed_requires_review"
+    )
+    failed_evidence["error"] = str(error)[:500]
+
+    current_intent["state"] = (
+        "failed_requires_review"
+    )
+    current_intent["reconciliation"] = (
+        failed_evidence
+    )
+
+    flow.withdrawal_intent_json = (
+        current_intent
+    )
+
+    if record is not None:
+        _apply_withdrawal_record(
+            flow=flow,
+            record=record,
+            snapshot=(
+                _withdrawal_intent_snapshot(
+                    flow=flow,
+                    intent=current_intent,
+                    allowed_states={
+                        "failed_requires_review"
+                    },
+                )
+            ),
+            observed_at=resolved_now,
+        )
+
+        flow.withdrawal_record_json = (
+            _json_dict(
+                _withdrawal_record_evidence(
+                    record
+                )
+            )
+        )
+
+    flow.withdrawal_reconciliation_json = (
+        _json_dict(failed_evidence)
+    )
+
+    result = _set_failed(
+        flow=flow,
+        settlement_batch=settlement_batch,
+        fund=None,
+        status_before=status_before,
+        settlement_status_before=(
+            settlement_status_before
+        ),
+        error=error,
+        now=resolved_now,
+        diagnostics={
+            "transition": transition,
+            "did_bybit_post": False,
+            "bybit_post_count": 0,
+            "bybit_get_count": bybit_get_count,
+            "no_automatic_resend": True,
+            "reserve_release_allowed": False,
+            "pricing_unlock_allowed": False,
+        },
+    )
+
+    _merge_failure_reconciliation(
+        flow=flow,
+        prior_reconciliation=(
+            prior_reconciliation
+        ),
+    )
+
+    db.add(flow)
+    db.add(settlement_batch)
+    db.flush()
+    db.commit()
+
+    return result
+
+
+def _reconcile_withdrawal_once(
+    db: Session,
+    *,
+    settlement_batch,
+    flow: FundNegativeBybitFlow,
+    bybit_client: BybitV5Client,
+    resolved_now: datetime,
+    status_before: str | None,
+    settlement_status_before: str | None,
+) -> NegativeBybitFlowResult:
+    intent = deepcopy(
+        flow.withdrawal_intent_json
+    )
+
+    if not isinstance(intent, dict):
+        raise NegativeBybitFlowError(
+            "Withdrawal intent missing during "
+            "reconciliation"
+        )
+
+    if str(flow.status) not in {
+        BYBIT_FLOW_STATUS_WITHDRAWAL_SUBMITTING,
+        BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILING,
+    }:
+        raise NegativeBybitFlowError(
+            "Withdrawal reconciliation has "
+            "incompatible flow status"
+        )
+
+    snapshot = _withdrawal_intent_snapshot(
+        flow=flow,
+        intent=intent,
+        allowed_states={
+            "submitting",
+            "reconciling",
+        },
+    )
+
+    barrier_snapshot = (
+        _confirmed_master_balance_barrier(
+            flow
+        )
+    )
+
+    submitted_at = _aware_utc_datetime(
+        flow.withdrawal_submitted_at,
+        field_name=(
+            "flow.withdrawal_submitted_at"
+        ),
+    )
+
+    if resolved_now < submitted_at:
+        raise NegativeBybitFlowError(
+            "Withdrawal reconciliation time is "
+            "before submit time"
+        )
+
+    lookback_hours = int(
+        settings
+        .NEGATIVE_NET_BYBIT_RECORD_LOOKBACK_HOURS
+    )
+
+    if lookback_hours <= 0:
+        raise NegativeBybitFlowError(
+            "NEGATIVE_NET_BYBIT_RECORD_LOOKBACK_HOURS "
+            "must be positive"
+        )
+
+    lookup_start = (
+        submitted_at
+        - timedelta(hours=lookback_hours)
+    )
+
+    lookup_start_ms = int(
+        lookup_start.timestamp() * 1000
+    )
+    lookup_end_ms = int(
+        resolved_now.timestamp() * 1000
+    )
+
+    settlement_batch_id = int(
+        settlement_batch.id
+    )
+    expected_flow_id = int(flow.id)
+
+    # Release all FOR UPDATE locks before
+    # read-only Bybit requests.
+    db.commit()
+
+    bybit_get_count = 0
+
+    try:
+        bybit_get_count += 1
+
+        exact_record = query_master_withdrawal(
+            bybit_client,
+            request_id=snapshot[
+                "request_id"
+            ],
+        )
+
+        bybit_get_count += 1
+
+        bounded_records = (
+            list_master_withdrawals(
+                bybit_client,
+                coin=snapshot["coin"],
+                start_time_ms=lookup_start_ms,
+                end_time_ms=lookup_end_ms,
+                limit=(
+                    WITHDRAWAL_RECORD_LOOKUP_LIMIT
+                ),
+            )
+        )
+
+    except (
+        BybitApiError,
+        BybitAssetFlowError,
+    ) as exc:
+        (
+            settlement_batch,
+            _,
+            flow,
+        ) = _locked_withdrawal_context(
+            db,
+            settlement_batch_id=(
+                settlement_batch_id
+            ),
+        )
+
+        concurrent_result = (
+            _concurrent_withdrawal_reconciliation_result(
+                settlement_batch=(
+                    settlement_batch
+                ),
+                flow=flow,
+                status_before=status_before,
+                settlement_status_before=(
+                    settlement_status_before
+                ),
+            )
+        )
+
+        if concurrent_result is not None:
+            db.commit()
+            return concurrent_result
+
+        current_intent = deepcopy(
+            flow.withdrawal_intent_json
+        )
+
+        if not isinstance(
+            current_intent,
+            dict,
+        ):
+            raise NegativeBybitFlowError(
+                "Withdrawal intent disappeared "
+                "during query"
+            )
+
+        _validate_withdrawal_snapshot_unchanged(
+            flow=flow,
+            intent=current_intent,
+            snapshot=snapshot,
+            allowed_states={
+                "submitting",
+                "reconciling",
+            },
+        )
+
+        evidence = {
+            "schema": (
+                WITHDRAWAL_RECONCILIATION_SCHEMA
+            ),
+            "state": "query_pending",
+            "checked_at": (
+                resolved_now.isoformat()
+            ),
+            "request_id": snapshot[
+                "request_id"
+            ],
+            "query_error": (
+                _bounded_external_error(exc)
+            ),
+            "bybit_get_count": (
+                bybit_get_count
+            ),
+            "lookup": {
+                "start_time_ms": (
+                    lookup_start_ms
+                ),
+                "end_time_ms": (
+                    lookup_end_ms
+                ),
+                "limit": (
+                    WITHDRAWAL_RECORD_LOOKUP_LIMIT
+                ),
+            },
+            "no_automatic_resend": True,
+        }
+
+        return (
+            _persist_withdrawal_reconciliation_pending(
+                db,
+                settlement_batch=(
+                    settlement_batch
+                ),
+                flow=flow,
+                current_intent=(
+                    current_intent
+                ),
+                evidence=evidence,
+                transition=(
+                    "reconcile_withdrawal_"
+                    "query_pending"
+                ),
+                resolved_now=resolved_now,
+                status_before=status_before,
+                settlement_status_before=(
+                    settlement_status_before
+                ),
+                bybit_get_count=(
+                    bybit_get_count
+                ),
+            )
+        )
+
+    (
+        settlement_batch,
+        _,
+        flow,
+    ) = _locked_withdrawal_context(
+        db,
+        settlement_batch_id=(
+            settlement_batch_id
+        ),
+    )
+
+    if int(flow.id) != expected_flow_id:
+        raise NegativeBybitFlowError(
+            "Negative Bybit flow identity changed "
+            "during withdrawal reconciliation"
+        )
+
+    concurrent_result = (
+        _concurrent_withdrawal_reconciliation_result(
+            settlement_batch=settlement_batch,
+            flow=flow,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+        )
+    )
+
+    if concurrent_result is not None:
+        db.commit()
+        return concurrent_result
+
+    current_intent = deepcopy(
+        flow.withdrawal_intent_json
+    )
+
+    if not isinstance(current_intent, dict):
+        raise NegativeBybitFlowError(
+            "Withdrawal intent disappeared during "
+            "reconciliation"
+        )
+
+    _validate_withdrawal_snapshot_unchanged(
+        flow=flow,
+        intent=current_intent,
+        snapshot=snapshot,
+        allowed_states={
+            "submitting",
+            "reconciling",
+        },
+    )
+
+    if (
+        _confirmed_master_balance_barrier(flow)
+        != barrier_snapshot
+    ):
+        raise NegativeBybitFlowError(
+            "Master balance barrier changed during "
+            "withdrawal reconciliation"
+        )
+
+    matching_records = [
+        record
+        for record in bounded_records
+        if str(
+            record.request_id or ""
+        ).strip()
+        == snapshot["request_id"]
+    ]
+
+    evidence = {
+        "schema": (
+            WITHDRAWAL_RECONCILIATION_SCHEMA
+        ),
+        "state": "checking",
+        "checked_at": resolved_now.isoformat(),
+        "request_id": snapshot["request_id"],
+        "lookup": {
+            "start_time_ms": lookup_start_ms,
+            "end_time_ms": lookup_end_ms,
+            "limit": (
+                WITHDRAWAL_RECORD_LOOKUP_LIMIT
+            ),
+            "returned_count": len(
+                bounded_records
+            ),
+            "matching_request_id_count": len(
+                matching_records
+            ),
+            "limit_reached": (
+                len(bounded_records)
+                >= WITHDRAWAL_RECORD_LOOKUP_LIMIT
+            ),
+        },
+        "exact_query_found": (
+            exact_record is not None
+        ),
+        "bybit_get_count": bybit_get_count,
+        "no_automatic_resend": True,
+    }
+
+    if len(matching_records) > 1:
+        return _fail_withdrawal_reconciliation(
+            db,
+            settlement_batch=settlement_batch,
+            flow=flow,
+            current_intent=current_intent,
+            evidence=evidence,
+            error=(
+                "Multiple bounded Bybit withdrawal "
+                "records have the same requestId"
+            ),
+            transition=(
+                "reconcile_withdrawal_"
+                "duplicate_request_id"
+            ),
+            resolved_now=resolved_now,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            bybit_get_count=bybit_get_count,
+        )
+
+    selected_record = exact_record
+    selected_source = "exact_request_id_query"
+
+    if (
+        selected_record is None
+        and len(matching_records) == 1
+    ):
+        selected_record = matching_records[0]
+        selected_source = "bounded_record_lookup"
+
+    if selected_record is None:
+        evidence["state"] = "record_not_found"
+        evidence["selected_source"] = None
+
+        return (
+            _persist_withdrawal_reconciliation_pending(
+                db,
+                settlement_batch=(
+                    settlement_batch
+                ),
+                flow=flow,
+                current_intent=(
+                    current_intent
+                ),
+                evidence=evidence,
+                transition=(
+                    "reconcile_withdrawal_"
+                    "record_not_found"
+                ),
+                resolved_now=resolved_now,
+                status_before=status_before,
+                settlement_status_before=(
+                    settlement_status_before
+                ),
+                bybit_get_count=(
+                    bybit_get_count
+                ),
+            )
+        )
+
+    try:
+        _validate_exact_withdrawal_ack(
+            record=selected_record,
+            snapshot=snapshot,
+        )
+
+        if (
+            exact_record is not None
+            and len(matching_records) == 1
+        ):
+            _validate_same_withdrawal_identity(
+                left=exact_record,
+                right=matching_records[0],
+                snapshot=snapshot,
+            )
+
+    except NegativeBybitFlowError as exc:
+        evidence["selected_source"] = (
+            selected_source
+        )
+        evidence["record"] = (
+            _withdrawal_record_evidence(
+                selected_record
+            )
+        )
+
+        return _fail_withdrawal_reconciliation(
+            db,
+            settlement_batch=settlement_batch,
+            flow=flow,
+            current_intent=current_intent,
+            evidence=evidence,
+            error=str(exc),
+            transition=(
+                "reconcile_withdrawal_mismatch"
+            ),
+            resolved_now=resolved_now,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            bybit_get_count=bybit_get_count,
+            record=selected_record,
+        )
+
+    _apply_withdrawal_record(
+        flow=flow,
+        record=selected_record,
+        snapshot=snapshot,
+        observed_at=resolved_now,
+    )
+
+    record_evidence = (
+        _withdrawal_record_evidence(
+            selected_record
+        )
+    )
+
+    evidence["selected_source"] = (
+        selected_source
+    )
+    evidence["record"] = record_evidence
+
+    flow.withdrawal_record_json = (
+        _json_dict(record_evidence)
+    )
+
+    status = str(
+        selected_record.status or ""
+    ).strip()
+
+    if _is_withdrawal_failed_like(status):
+        return _fail_withdrawal_reconciliation(
+            db,
+            settlement_batch=settlement_batch,
+            flow=flow,
+            current_intent=current_intent,
+            evidence=evidence,
+            error=(
+                "Bybit withdrawal has failed "
+                f"status: {status}"
+            ),
+            transition=(
+                "reconcile_withdrawal_failed_status"
+            ),
+            resolved_now=resolved_now,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            bybit_get_count=bybit_get_count,
+            record=selected_record,
+        )
+
+    if (
+        _is_withdrawal_pending_like(status)
+        or (
+            _is_withdrawal_success_like(status)
+            and not selected_record.tx_hash
+        )
+    ):
+        evidence["state"] = "pending"
+        evidence["pending_reason"] = (
+            "success_like_missing_tx_hash"
+            if _is_withdrawal_success_like(
+                status
+            )
+            else "bybit_status_pending"
+        )
+
+        return (
+            _persist_withdrawal_reconciliation_pending(
+                db,
+                settlement_batch=(
+                    settlement_batch
+                ),
+                flow=flow,
+                current_intent=(
+                    current_intent
+                ),
+                evidence=evidence,
+                transition=(
+                    "reconcile_withdrawal_pending"
+                ),
+                resolved_now=resolved_now,
+                status_before=status_before,
+                settlement_status_before=(
+                    settlement_status_before
+                ),
+                bybit_get_count=(
+                    bybit_get_count
+                ),
+                record=selected_record,
+            )
+        )
+
+    if not _is_withdrawal_success_like(
+        status
+    ):
+        return _fail_withdrawal_reconciliation(
+            db,
+            settlement_batch=settlement_batch,
+            flow=flow,
+            current_intent=current_intent,
+            evidence=evidence,
+            error=(
+                "Bybit withdrawal has unsupported "
+                f"status: {status or 'empty'}"
+            ),
+            transition=(
+                "reconcile_withdrawal_"
+                "unsupported_status"
+            ),
+            resolved_now=resolved_now,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            bybit_get_count=bybit_get_count,
+            record=selected_record,
+        )
+
+    if not selected_record.withdrawal_id:
+        return _fail_withdrawal_reconciliation(
+            db,
+            settlement_batch=settlement_batch,
+            flow=flow,
+            current_intent=current_intent,
+            evidence=evidence,
+            error=(
+                "Successful Bybit withdrawal record "
+                "is missing withdrawal_id"
+            ),
+            transition=(
+                "reconcile_withdrawal_"
+                "missing_withdrawal_id"
+            ),
+            resolved_now=resolved_now,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            bybit_get_count=bybit_get_count,
+            record=selected_record,
+        )
+
+    tx_hash = _required_text(
+        selected_record.tx_hash,
+        field_name=(
+            "withdrawal_record.tx_hash"
+        ),
+    )
+
+    evidence["state"] = "confirmed"
+    evidence["tx_hash"] = tx_hash
+    evidence["next_transition"] = (
+        "reconcile_settlement_wallet_receipt"
+    )
+
+    current_intent["state"] = "confirmed"
+    current_intent["reconciliation"] = evidence
+
+    flow.withdrawal_intent_json = (
+        current_intent
+    )
+    flow.withdrawal_id = str(
+        selected_record.withdrawal_id
+    ).strip()
+    flow.withdrawal_status = status
+    flow.withdrawal_tx_hash = tx_hash
+    flow.withdrawal_confirmed_at = (
+        resolved_now
+    )
+    flow.withdrawal_reconciliation_json = (
+        _json_dict(evidence)
+    )
+    flow.status = (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILED
+    )
+    flow.error = None
+    flow.updated_at = resolved_now
+
+    settlement_batch.status = (
+        BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING
+    )
+    settlement_batch.error = None
+    settlement_batch.updated_at = resolved_now
+
+    db.add(flow)
+    db.add(settlement_batch)
+    db.flush()
+
+    result = _step_result(
+        ok=True,
+        transition=(
+            "reconcile_withdrawal_confirmed"
+        ),
+        settlement_batch=settlement_batch,
+        flow=flow,
+        status_before=status_before,
+        settlement_status_before=(
+            settlement_status_before
+        ),
+        diagnostics={
+            "did_bybit_post": False,
+            "bybit_post_count": 0,
+            "bybit_get_count": bybit_get_count,
+            "no_automatic_resend": True,
+            "withdrawal_id": (
+                flow.withdrawal_id
+            ),
+            "tx_hash": tx_hash,
+            "reserve_release_allowed": False,
+            "pricing_unlock_allowed": False,
+            "next_transition": (
+                "reconcile_settlement_wallet_"
+                "receipt"
+            ),
+        },
+    )
+
+    db.commit()
+
+    return result
+
+
 def resume_negative_bybit_flow_once(
     db: Session,
     *,
@@ -5760,58 +6854,74 @@ def resume_negative_bybit_flow_once(
                         "submitting",
                         "reconciling",
                     }:
+                        return (
+                            _reconcile_withdrawal_once(
+                                db,
+                                settlement_batch=(
+                                    settlement_batch
+                                ),
+                                flow=flow,
+                                bybit_client=(
+                                    bybit_client
+                                ),
+                                resolved_now=(
+                                    resolved_now
+                                ),
+                                status_before=(
+                                    status_before
+                                ),
+                                settlement_status_before=(
+                                    settlement_status_before
+                                ),
+                            )
+                        )
+
+                    if withdrawal_state == "confirmed":
                         _validate_withdrawal_intent(
                             flow=flow,
                             intent=withdrawal_intent,
                             allowed_states={
-                                "submitting",
-                                "reconciling",
+                                "confirmed"
                             },
                         )
 
-                        expected_status = (
-                            BYBIT_FLOW_STATUS_WITHDRAWAL_SUBMITTING
-                            if withdrawal_state
-                            == "submitting"
-                            else BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILING
-                        )
-
                         if str(flow.status) != (
-                            expected_status
+                            BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILED
                         ):
                             raise NegativeBybitFlowError(
-                                "Withdrawal intent and "
-                                "flow status mismatch: "
-                                f"intent={withdrawal_state}, "
-                                f"flow={flow.status}"
+                                "Confirmed withdrawal "
+                                "intent has incompatible "
+                                "flow status"
                             )
 
                         result = _step_result(
-                            ok=False,
+                            ok=True,
                             transition=(
-                                "withdrawal_"
-                                "reconciliation_pending"
+                                "withdrawal_already_"
+                                "reconciled"
                             ),
                             settlement_batch=(
                                 settlement_batch
                             ),
                             flow=flow,
-                            status_before=status_before,
+                            status_before=(
+                                status_before
+                            ),
                             settlement_status_before=(
                                 settlement_status_before
                             ),
                             idempotent=True,
                             diagnostics={
-                                "pending": (
-                                    "withdrawal_"
-                                    "reconciliation"
-                                ),
                                 "did_bybit_post": False,
                                 "bybit_post_count": 0,
                                 "bybit_get_count": 0,
                                 "no_automatic_resend": True,
+                                "reserve_release_allowed": False,
+                                "pricing_unlock_allowed": False,
                                 "next_transition": (
-                                    "reconcile_withdrawal"
+                                    "reconcile_"
+                                    "settlement_wallet_"
+                                    "receipt"
                                 ),
                             },
                         )

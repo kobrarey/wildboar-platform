@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
@@ -36,6 +36,7 @@ from app.settlement.statuses import (
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_SUBMITTING,
     BYBIT_FLOW_STATUS_WITHDRAWAL_INTENT_PREPARED,
+    BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILED,
     BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILING,
     BYBIT_FLOW_STATUS_WITHDRAWAL_SUBMITTING,
 )
@@ -805,6 +806,232 @@ def install_withdrawal_submit_fakes(
 
     return SimpleNamespace(
         guard_calls=guard_calls,
+    )
+
+
+def make_withdrawal_record(
+    *,
+    request_id: str,
+    status: str,
+    withdrawal_id: str | None = (
+        "withdrawal-123"
+    ),
+    coin: str = "USDT",
+    chain: str = "BSC",
+    address: str = (
+        "0x1111111111111111111111111111111111111111"
+    ),
+    amount_usdt: Decimal = Decimal("100"),
+    fee_type: int = 0,
+    tx_hash: str | None = None,
+) -> BybitWithdrawalResult:
+    return BybitWithdrawalResult(
+        request_id=request_id,
+        withdrawal_id=withdrawal_id,
+        coin=coin,
+        chain=chain,
+        address=address,
+        amount_usdt=amount_usdt,
+        fee_type=fee_type,
+        status=status,
+        tx_hash=tx_hash,
+        raw={
+            "requestId": request_id,
+            "withdrawalId": withdrawal_id,
+            "coin": coin,
+            "chain": chain,
+            "address": address,
+            "amount": format(
+                amount_usdt,
+                "f",
+            ),
+            "feeType": fee_type,
+            "status": status,
+            "txID": tx_hash,
+        },
+    )
+
+
+def install_withdrawal_reconciliation_reads(
+    monkeypatch: pytest.MonkeyPatch,
+    env: SimpleNamespace,
+    *,
+    exact_record: (
+        BybitWithdrawalResult | None
+    ) = None,
+    bounded_records: (
+        list[BybitWithdrawalResult] | None
+    ) = None,
+    exact_error: BaseException | None = None,
+    bounded_error: BaseException | None = None,
+) -> SimpleNamespace:
+    exact_calls: list[str] = []
+    bounded_calls: list[dict[str, Any]] = []
+
+    resolved_bounded_records = list(
+        bounded_records or []
+    )
+
+    def query_exact(
+        bybit_client,
+        *,
+        request_id,
+    ):
+        assert env.db.lock_active is False
+
+        flow = env.state["flow"]
+
+        assert request_id == (
+            flow.withdrawal_request_id
+        )
+
+        exact_calls.append(request_id)
+
+        env.db.events.append(
+            "query_master_withdrawal"
+        )
+
+        bybit_client.get_calls.append(
+            {
+                "path": (
+                    "/v5/asset/withdraw/"
+                    "query-record"
+                ),
+                "params": {
+                    "requestId": request_id,
+                },
+            }
+        )
+
+        if exact_error is not None:
+            raise exact_error
+
+        return exact_record
+
+    def query_bounded(
+        bybit_client,
+        *,
+        coin,
+        start_time_ms,
+        end_time_ms,
+        limit,
+    ):
+        assert env.db.lock_active is False
+
+        flow = env.state["flow"]
+
+        assert coin == "USDT"
+        assert limit == (
+            service
+            .WITHDRAWAL_RECORD_LOOKUP_LIMIT
+        )
+
+        lookback_hours = int(
+            service.settings
+            .NEGATIVE_NET_BYBIT_RECORD_LOOKBACK_HOURS
+        )
+
+        expected_start_ms = int(
+            (
+                flow.withdrawal_submitted_at
+                - timedelta(
+                    hours=lookback_hours
+                )
+            ).timestamp()
+            * 1000
+        )
+
+        assert start_time_ms == (
+            expected_start_ms
+        )
+        assert end_time_ms == int(
+            NOW.timestamp() * 1000
+        )
+
+        call = {
+            "coin": coin,
+            "start_time_ms": start_time_ms,
+            "end_time_ms": end_time_ms,
+            "limit": limit,
+        }
+
+        bounded_calls.append(
+            deepcopy(call)
+        )
+
+        env.db.events.append(
+            "list_master_withdrawals"
+        )
+
+        bybit_client.get_calls.append(
+            {
+                "path": (
+                    "/v5/asset/withdraw/"
+                    "query-record"
+                ),
+                "params": deepcopy(call),
+            }
+        )
+
+        if bounded_error is not None:
+            raise bounded_error
+
+        return list(
+            resolved_bounded_records
+        )
+
+    monkeypatch.setattr(
+        service,
+        "query_master_withdrawal",
+        query_exact,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "list_master_withdrawals",
+        query_bounded,
+    )
+
+    return SimpleNamespace(
+        exact_calls=exact_calls,
+        bounded_calls=bounded_calls,
+    )
+
+
+def advance_to_withdrawal_reconciling(
+    env: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> SimpleNamespace:
+    prepared = (
+        advance_to_withdrawal_intent_prepared(
+            env,
+            monkeypatch,
+        )
+    )
+
+    install_withdrawal_submit_fakes(
+        monkeypatch,
+        env,
+    )
+
+    result = resume_once(env)
+
+    assert result.ok is True
+    assert result.diagnostics[
+        "transition"
+    ] == "submit_withdrawal"
+
+    assert prepared.flow.status == (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILING
+    )
+
+    assert prepared.flow.withdrawal_intent_json[
+        "state"
+    ] == "reconciling"
+
+    return SimpleNamespace(
+        flow=prepared.flow,
+        reads=prepared.reads,
     )
 
 
@@ -3449,6 +3676,13 @@ def test_withdrawal_submit_revalidates_fee_claims_and_posts_once(
         NOW.timestamp() * 1000
     )
 
+    install_withdrawal_reconciliation_reads(
+        monkeypatch,
+        env,
+        exact_record=None,
+        bounded_records=[],
+    )
+
     get_count_before_rerun = len(
         env.client.get_calls
     )
@@ -3459,14 +3693,16 @@ def test_withdrawal_submit_revalidates_fee_claims_and_posts_once(
     rerun = resume_once(env)
 
     assert rerun.ok is False
-    assert rerun.idempotent is True
     assert rerun.diagnostics[
         "transition"
-    ] == "withdrawal_reconciliation_pending"
+    ] == (
+        "reconcile_withdrawal_"
+        "record_not_found"
+    )
 
     assert rerun.diagnostics[
         "bybit_get_count"
-    ] == 0
+    ] == 2
     assert rerun.diagnostics[
         "bybit_post_count"
     ] == 0
@@ -3476,7 +3712,7 @@ def test_withdrawal_submit_revalidates_fee_claims_and_posts_once(
 
     assert len(
         env.client.get_calls
-    ) == get_count_before_rerun
+    ) == get_count_before_rerun + 2
 
     assert len(
         env.client.post_calls
@@ -3774,6 +4010,13 @@ def test_withdrawal_process_crash_after_claim_never_resends(
         env.client.post_calls
     ) == post_count_before + 1
 
+    install_withdrawal_reconciliation_reads(
+        monkeypatch,
+        env,
+        exact_record=None,
+        bounded_records=[],
+    )
+
     get_count_before_rerun = len(
         env.client.get_calls
     )
@@ -3784,14 +4027,16 @@ def test_withdrawal_process_crash_after_claim_never_resends(
     rerun = resume_once(env)
 
     assert rerun.ok is False
-    assert rerun.idempotent is True
     assert rerun.diagnostics[
         "transition"
-    ] == "withdrawal_reconciliation_pending"
+    ] == (
+        "reconcile_withdrawal_"
+        "record_not_found"
+    )
 
     assert rerun.diagnostics[
         "bybit_get_count"
-    ] == 0
+    ] == 2
     assert rerun.diagnostics[
         "bybit_post_count"
     ] == 0
@@ -3799,9 +4044,17 @@ def test_withdrawal_process_crash_after_claim_never_resends(
         "no_automatic_resend"
     ] is True
 
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILING
+    )
+    assert flow.withdrawal_intent_json[
+        "state"
+    ] == "reconciling"
+
     assert len(
         env.client.get_calls
-    ) == get_count_before_rerun
+    ) == get_count_before_rerun + 2
+
     assert len(
         env.client.post_calls
     ) == post_count_before_rerun
@@ -3878,6 +4131,13 @@ def test_withdrawal_post_unknown_moves_to_reconciliation_without_resend(
         "no_automatic_resend"
     ] is True
 
+    install_withdrawal_reconciliation_reads(
+        monkeypatch,
+        env,
+        exact_record=None,
+        bounded_records=[],
+    )
+
     get_count_before_rerun = len(
         env.client.get_calls
     )
@@ -3888,14 +4148,27 @@ def test_withdrawal_post_unknown_moves_to_reconciliation_without_resend(
     rerun = resume_once(env)
 
     assert rerun.ok is False
-    assert rerun.idempotent is True
     assert rerun.diagnostics[
         "transition"
-    ] == "withdrawal_reconciliation_pending"
+    ] == (
+        "reconcile_withdrawal_"
+        "record_not_found"
+    )
+
+    assert rerun.diagnostics[
+        "bybit_get_count"
+    ] == 2
+    assert rerun.diagnostics[
+        "bybit_post_count"
+    ] == 0
+    assert rerun.diagnostics[
+        "no_automatic_resend"
+    ] is True
 
     assert len(
         env.client.get_calls
-    ) == get_count_before_rerun
+    ) == get_count_before_rerun + 2
+
     assert len(
         env.client.post_calls
     ) == post_count_before_rerun
@@ -4027,3 +4300,595 @@ def test_withdrawal_ack_mismatch_records_post_evidence_and_stops(
     assert len(
         env.client.post_calls
     ) == post_count_before_rerun
+
+
+def test_withdrawal_reconciliation_query_error_stays_pending_without_post(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    advanced = (
+        advance_to_withdrawal_reconciling(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    install_withdrawal_reconciliation_reads(
+        monkeypatch,
+        env,
+        exact_error=BybitApiError(
+            "simulated withdrawal query failure"
+        ),
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    reconciliation = (
+        flow.withdrawal_intent_json[
+            "reconciliation"
+        ]
+    )
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_withdrawal_query_pending"
+    )
+
+    assert result.diagnostics[
+        "bybit_get_count"
+    ] == 1
+    assert result.diagnostics[
+        "bybit_post_count"
+    ] == 0
+    assert result.diagnostics[
+        "no_automatic_resend"
+    ] is True
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILING
+    )
+    assert flow.withdrawal_intent_json[
+        "state"
+    ] == "reconciling"
+
+    assert reconciliation["state"] == (
+        "query_pending"
+    )
+    assert (
+        "simulated withdrawal query failure"
+        in reconciliation["query_error"]
+    )
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_withdrawal_reconciliation_record_not_found_remains_retryable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    advanced = (
+        advance_to_withdrawal_reconciling(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    reads = (
+        install_withdrawal_reconciliation_reads(
+            monkeypatch,
+            env,
+            exact_record=None,
+            bounded_records=[],
+        )
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    reconciliation = (
+        flow.withdrawal_reconciliation_json
+    )
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_withdrawal_"
+        "record_not_found"
+    )
+
+    assert result.diagnostics[
+        "bybit_get_count"
+    ] == 2
+    assert result.diagnostics[
+        "bybit_post_count"
+    ] == 0
+
+    assert reconciliation["state"] == (
+        "record_not_found"
+    )
+    assert reconciliation[
+        "exact_query_found"
+    ] is False
+    assert reconciliation["lookup"][
+        "matching_request_id_count"
+    ] == 0
+
+    assert len(reads.exact_calls) == 1
+    assert len(reads.bounded_calls) == 1
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILING
+    )
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_withdrawal_reconciliation_pending_record_persists_redacted_evidence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    advanced = (
+        advance_to_withdrawal_reconciling(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    record = make_withdrawal_record(
+        request_id=flow.withdrawal_request_id,
+        status="PROCESSING",
+        tx_hash=None,
+    )
+
+    install_withdrawal_reconciliation_reads(
+        monkeypatch,
+        env,
+        exact_record=record,
+        bounded_records=[record],
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    reconciliation = (
+        flow.withdrawal_reconciliation_json
+    )
+    record_evidence = (
+        flow.withdrawal_record_json
+    )
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == "reconcile_withdrawal_pending"
+
+    assert result.diagnostics[
+        "bybit_get_count"
+    ] == 2
+    assert result.diagnostics[
+        "bybit_post_count"
+    ] == 0
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILING
+    )
+    assert flow.withdrawal_status == (
+        "PROCESSING"
+    )
+    assert flow.withdrawal_id == (
+        "withdrawal-123"
+    )
+    assert flow.withdrawal_tx_hash is None
+
+    assert reconciliation["state"] == (
+        "pending"
+    )
+    assert reconciliation[
+        "pending_reason"
+    ] == "bybit_status_pending"
+
+    assert record_evidence[
+        "raw_omitted"
+    ] is True
+    assert "raw_sha256" in record_evidence
+    assert len(
+        record_evidence["raw_sha256"]
+    ) == 64
+    assert "raw" not in record_evidence
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_withdrawal_reconciliation_exact_success_confirms_without_post(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    advanced = (
+        advance_to_withdrawal_reconciling(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    record = make_withdrawal_record(
+        request_id=flow.withdrawal_request_id,
+        status="SUCCESS",
+        tx_hash="0xabc123",
+    )
+
+    install_withdrawal_reconciliation_reads(
+        monkeypatch,
+        env,
+        exact_record=record,
+        bounded_records=[record],
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    intent = flow.withdrawal_intent_json
+    reconciliation = (
+        flow.withdrawal_reconciliation_json
+    )
+
+    assert result.ok is True
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_withdrawal_confirmed"
+    )
+
+    assert result.diagnostics[
+        "bybit_get_count"
+    ] == 2
+    assert result.diagnostics[
+        "bybit_post_count"
+    ] == 0
+    assert result.diagnostics[
+        "no_automatic_resend"
+    ] is True
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILED
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING
+    )
+
+    assert intent["state"] == "confirmed"
+    assert reconciliation["state"] == (
+        "confirmed"
+    )
+    assert reconciliation[
+        "selected_source"
+    ] == "exact_request_id_query"
+
+    assert flow.withdrawal_id == (
+        "withdrawal-123"
+    )
+    assert flow.withdrawal_status == "SUCCESS"
+    assert flow.withdrawal_tx_hash == (
+        "0xabc123"
+    )
+    assert flow.withdrawal_confirmed_at == NOW
+
+    assert flow.withdrawal_record_json[
+        "raw_omitted"
+    ] is True
+    assert "raw" not in (
+        flow.withdrawal_record_json
+    )
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+    get_count_before_rerun = len(
+        env.client.get_calls
+    )
+    post_count_before_rerun = len(
+        env.client.post_calls
+    )
+
+    rerun = resume_once(env)
+
+    assert rerun.ok is True
+    assert rerun.idempotent is True
+    assert rerun.diagnostics[
+        "transition"
+    ] == "withdrawal_already_reconciled"
+
+    assert rerun.diagnostics[
+        "bybit_get_count"
+    ] == 0
+    assert rerun.diagnostics[
+        "bybit_post_count"
+    ] == 0
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before_rerun
+    assert len(
+        env.client.post_calls
+    ) == post_count_before_rerun
+
+
+def test_withdrawal_reconciliation_mismatch_requires_review_without_post(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    advanced = (
+        advance_to_withdrawal_reconciling(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    record = make_withdrawal_record(
+        request_id=flow.withdrawal_request_id,
+        status="SUCCESS",
+        amount_usdt=Decimal("99"),
+        tx_hash="0xmismatch",
+    )
+
+    install_withdrawal_reconciliation_reads(
+        monkeypatch,
+        env,
+        exact_record=record,
+        bounded_records=[record],
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == "reconcile_withdrawal_mismatch"
+
+    assert (
+        "amount mismatch"
+        in str(result.error).lower()
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert flow.withdrawal_intent_json[
+        "state"
+    ] == "failed_requires_review"
+
+    barrier = flow.reconciliation_json[
+        "master_transferable_balance_barrier"
+    ]
+
+    assert barrier["state"] == "confirmed"
+    assert barrier[
+        "withdrawal_allowed"
+    ] is True
+
+    assert result.diagnostics[
+        "bybit_post_count"
+    ] == 0
+    assert result.diagnostics[
+        "reserve_release_allowed"
+    ] is False
+    assert result.diagnostics[
+        "pricing_unlock_allowed"
+    ] is False
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_withdrawal_reconciliation_duplicate_request_id_requires_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    advanced = (
+        advance_to_withdrawal_reconciling(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    first = make_withdrawal_record(
+        request_id=flow.withdrawal_request_id,
+        withdrawal_id="withdrawal-123",
+        status="PROCESSING",
+    )
+
+    second = make_withdrawal_record(
+        request_id=flow.withdrawal_request_id,
+        withdrawal_id="withdrawal-456",
+        status="PROCESSING",
+    )
+
+    install_withdrawal_reconciliation_reads(
+        monkeypatch,
+        env,
+        exact_record=first,
+        bounded_records=[
+            first,
+            second,
+        ],
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_withdrawal_"
+        "duplicate_request_id"
+    )
+
+    assert (
+        "multiple bounded bybit withdrawal records"
+        in str(result.error).lower()
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert flow.withdrawal_intent_json[
+        "state"
+    ] == "failed_requires_review"
+
+    assert result.diagnostics[
+        "bybit_post_count"
+    ] == 0
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+@pytest.mark.parametrize(
+    (
+        "status",
+        "expected_transition",
+        "expected_error",
+    ),
+    [
+        (
+            "FAILED",
+            (
+                "reconcile_withdrawal_"
+                "failed_status"
+            ),
+            "failed status",
+        ),
+        (
+            "MYSTERY",
+            (
+                "reconcile_withdrawal_"
+                "unsupported_status"
+            ),
+            "unsupported status",
+        ),
+    ],
+)
+def test_withdrawal_reconciliation_terminal_status_requires_review(
+    monkeypatch: pytest.MonkeyPatch,
+    status: str,
+    expected_transition: str,
+    expected_error: str,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    advanced = (
+        advance_to_withdrawal_reconciling(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    record = make_withdrawal_record(
+        request_id=flow.withdrawal_request_id,
+        status=status,
+        tx_hash=None,
+    )
+
+    install_withdrawal_reconciliation_reads(
+        monkeypatch,
+        env,
+        exact_record=record,
+        bounded_records=[record],
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == expected_transition
+
+    assert expected_error in str(
+        result.error
+    ).lower()
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert flow.withdrawal_intent_json[
+        "state"
+    ] == "failed_requires_review"
+
+    assert result.diagnostics[
+        "bybit_post_count"
+    ] == 0
+    assert result.diagnostics[
+        "no_automatic_resend"
+    ] is True
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
