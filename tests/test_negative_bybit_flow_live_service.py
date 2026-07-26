@@ -13,6 +13,7 @@ from app.bybit.asset_flows import (
     BybitAccountCoinBalance,
     BybitCoinChainInfo,
     BybitUniversalTransferResult,
+    BybitWithdrawalResult,
 )
 from app.bybit.client import BybitApiError
 from app.operation_guard.service import (
@@ -25,6 +26,8 @@ from app.settlement.statuses import (
     BATCH_STATUS_FAILED_REQUIRES_REVIEW,
     BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING,
     BATCH_STATUS_NEGATIVE_NET_SALE_EXECUTED,
+    BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_PENDING,
+    BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING,
     BYBIT_FLOW_STATUS_CREATED,
     BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW,
     BYBIT_FLOW_STATUS_MASTER_BALANCE_CONFIRMED,
@@ -33,6 +36,8 @@ from app.settlement.statuses import (
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_SUBMITTING,
     BYBIT_FLOW_STATUS_WITHDRAWAL_INTENT_PREPARED,
+    BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILING,
+    BYBIT_FLOW_STATUS_WITHDRAWAL_SUBMITTING,
 )
 
 
@@ -635,6 +640,171 @@ def install_withdrawal_prepare_reads(
         coin_info=resolved_coin_info,
         baseline=baseline,
         wallet_calls=wallet_calls,
+    )
+
+
+def advance_to_withdrawal_intent_prepared(
+    env: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> SimpleNamespace:
+    flow = advance_to_master_balance_confirmed(
+        env,
+        monkeypatch,
+    )
+
+    reads = install_withdrawal_prepare_reads(
+        monkeypatch,
+        env,
+    )
+
+    result = resume_once(env)
+
+    assert result.ok is True
+    assert result.diagnostics[
+        "transition"
+    ] == "prepare_withdrawal_intent"
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_INTENT_PREPARED
+    )
+
+    assert isinstance(
+        flow.withdrawal_intent_json,
+        dict,
+    )
+
+    return SimpleNamespace(
+        flow=flow,
+        reads=reads,
+    )
+
+
+def install_withdrawal_submit_fakes(
+    monkeypatch: pytest.MonkeyPatch,
+    env: SimpleNamespace,
+    *,
+    guard_error: BaseException | None = None,
+    post_error: BaseException | None = None,
+    acknowledgement_amount: Decimal = (
+        Decimal("100")
+    ),
+) -> SimpleNamespace:
+    guard_calls: list[dict[str, Any]] = []
+
+    def require_guard(
+        db_arg,
+        **kwargs,
+    ):
+        assert db_arg is env.db
+        assert env.db.lock_active is False
+        assert env.db.events[-1] == "commit"
+
+        flow = env.state["flow"]
+        intent = flow.withdrawal_intent_json
+
+        assert flow.status == (
+            BYBIT_FLOW_STATUS_WITHDRAWAL_SUBMITTING
+        )
+        assert intent["state"] == "submitting"
+
+        claim = intent["submit_claim"]
+
+        assert isinstance(claim, dict)
+        assert claim[
+            "submit_attempt_number"
+        ] == 1
+        assert claim[
+            "no_automatic_resend"
+        ] is True
+
+        guard_calls.append(
+            deepcopy(kwargs)
+        )
+
+        env.db.events.append(
+            "withdrawal_operation_guard"
+        )
+
+        if guard_error is not None:
+            raise guard_error
+
+        return SimpleNamespace(
+            allowed=True,
+            event_id=929,
+        )
+
+    def create_withdrawal(
+        bybit_client,
+        **kwargs,
+    ):
+        assert env.db.lock_active is False
+        assert env.db.events[-1] == "commit"
+
+        env.db.events.append(
+            "withdrawal_post"
+        )
+
+        bybit_client.post_calls.append(
+            deepcopy(kwargs)
+        )
+
+        if post_error is not None:
+            raise post_error
+
+        return BybitWithdrawalResult(
+            request_id=kwargs[
+                "request_id"
+            ],
+            withdrawal_id="withdrawal-123",
+            coin=kwargs["coin"],
+            chain=kwargs["chain"],
+            address=kwargs["address"],
+            amount_usdt=(
+                acknowledgement_amount
+            ),
+            fee_type=kwargs["fee_type"],
+            status="PENDING",
+            tx_hash=None,
+            raw={
+                "retCode": 0,
+                "result": {
+                    "requestId": kwargs[
+                        "request_id"
+                    ],
+                    "withdrawalId": (
+                        "withdrawal-123"
+                    ),
+                    "coin": kwargs["coin"],
+                    "chain": kwargs["chain"],
+                    "address": kwargs[
+                        "address"
+                    ],
+                    "amount": format(
+                        acknowledgement_amount,
+                        "f",
+                    ),
+                    "feeType": kwargs[
+                        "fee_type"
+                    ],
+                    "status": "PENDING",
+                },
+            },
+        )
+
+    monkeypatch.setattr(
+        service,
+        "require_bybit_master_withdrawal_guard",
+        require_guard,
+    )
+
+    monkeypatch.setattr(
+        service,
+        "create_master_withdrawal",
+        create_withdrawal,
+    )
+
+    return SimpleNamespace(
+        guard_calls=guard_calls,
     )
 
 
@@ -2991,64 +3161,6 @@ def test_prepare_withdrawal_intent_persists_fee_and_baseline_without_post(
         "next_transition"
     ] == "submit_withdrawal"
 
-    def unexpected_external_read(
-        *args,
-        **kwargs,
-    ):
-        raise AssertionError(
-            "Prepared withdrawal intent rerun "
-            "must not perform external reads"
-        )
-
-    monkeypatch.setattr(
-        service,
-        "_get_active_settlement_wallet",
-        unexpected_external_read,
-    )
-    monkeypatch.setattr(
-        service,
-        "query_coin_info",
-        unexpected_external_read,
-    )
-    monkeypatch.setattr(
-        service,
-        "_query_settlement_wallet_usdt_baseline",
-        unexpected_external_read,
-    )
-
-    get_count_before_rerun = len(
-        env.client.get_calls
-    )
-    post_count_before_rerun = len(
-        env.client.post_calls
-    )
-
-    rerun = resume_once(env)
-
-    assert rerun.ok is True
-    assert rerun.idempotent is True
-    assert rerun.diagnostics[
-        "transition"
-    ] == "withdrawal_intent_already_prepared"
-
-    assert rerun.diagnostics[
-        "bybit_get_count"
-    ] == 0
-    assert rerun.diagnostics[
-        "bsc_rpc_read_count"
-    ] == 0
-    assert rerun.diagnostics[
-        "bybit_post_count"
-    ] == 0
-
-    assert len(
-        env.client.get_calls
-    ) == get_count_before_rerun
-
-    assert len(
-        env.client.post_calls
-    ) == post_count_before_rerun
-
 
 def test_withdrawal_fee_mismatch_fails_closed_and_preserves_barrier(
     monkeypatch: pytest.MonkeyPatch,
@@ -3183,3 +3295,735 @@ def test_withdrawal_intent_payload_tamper_requires_review_without_external_call(
     assert len(
         env.client.post_calls
     ) == post_count_before
+
+
+def test_withdrawal_submit_revalidates_fee_claims_and_posts_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    prepared = (
+        advance_to_withdrawal_intent_prepared(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = prepared.flow
+
+    submit_fakes = (
+        install_withdrawal_submit_fakes(
+            monkeypatch,
+            env,
+        )
+    )
+
+    get_count_before = len(
+        env.client.get_calls
+    )
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    intent = flow.withdrawal_intent_json
+    claim = intent["submit_claim"]
+    acknowledgement = intent[
+        "acknowledgement"
+    ]
+
+    assert result.ok is True
+    assert result.diagnostics[
+        "transition"
+    ] == "submit_withdrawal"
+
+    assert result.diagnostics[
+        "did_bybit_post"
+    ] is True
+    assert result.diagnostics[
+        "bybit_post_count"
+    ] == 1
+    assert result.diagnostics[
+        "bybit_get_count"
+    ] == 1
+    assert result.diagnostics[
+        "no_automatic_resend"
+    ] is True
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILING
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING
+    )
+
+    assert intent["state"] == "reconciling"
+    assert isinstance(claim, dict)
+    assert claim[
+        "submit_attempt_number"
+    ] == 1
+    assert claim[
+        "timestamp_ms"
+    ] == int(
+        NOW.timestamp() * 1000
+    )
+    assert claim[
+        "no_automatic_resend"
+    ] is True
+
+    fee_revalidation = claim[
+        "fee_revalidation"
+    ]
+
+    assert fee_revalidation["schema"] == (
+        "negative_withdrawal_fee_"
+        "revalidation_v1"
+    )
+    assert fee_revalidation[
+        "matches_prepared_snapshot"
+    ] is True
+    assert fee_revalidation[
+        "withdraw_fee_usdt"
+    ] == "1"
+    assert fee_revalidation[
+        "min_accuracy"
+    ] == 6
+
+    assert acknowledgement[
+        "outcome"
+    ] == "accepted"
+    assert acknowledgement[
+        "bybit_post_performed"
+    ] is True
+    assert acknowledgement[
+        "no_automatic_resend"
+    ] is True
+    assert acknowledgement[
+        "guard_event_id"
+    ] == 929
+
+    assert flow.withdrawal_id == (
+        "withdrawal-123"
+    )
+    assert flow.withdrawal_status == "PENDING"
+    assert flow.withdrawal_amount_usdt == (
+        Decimal("100")
+    )
+    assert flow.withdrawal_fee_usdt == (
+        Decimal("1")
+    )
+    assert flow.withdrawal_created_at == NOW
+
+    assert len(
+        submit_fakes.guard_calls
+    ) == 1
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before + 1
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before + 1
+
+    post_call = env.client.post_calls[-1]
+
+    assert post_call[
+        "request_id"
+    ] == flow.withdrawal_request_id
+    assert post_call["coin"] == "USDT"
+    assert post_call["chain"] == "BSC"
+    assert post_call["amount_str"] == "100"
+    assert post_call[
+        "amount_usdt"
+    ] == Decimal("100")
+    assert post_call["fee_type"] == 0
+    assert post_call[
+        "account_type"
+    ] == "FUND"
+    assert post_call["force_chain"] == 1
+    assert post_call[
+        "timestamp_ms"
+    ] == int(
+        NOW.timestamp() * 1000
+    )
+
+    get_count_before_rerun = len(
+        env.client.get_calls
+    )
+    post_count_before_rerun = len(
+        env.client.post_calls
+    )
+
+    rerun = resume_once(env)
+
+    assert rerun.ok is False
+    assert rerun.idempotent is True
+    assert rerun.diagnostics[
+        "transition"
+    ] == "withdrawal_reconciliation_pending"
+
+    assert rerun.diagnostics[
+        "bybit_get_count"
+    ] == 0
+    assert rerun.diagnostics[
+        "bybit_post_count"
+    ] == 0
+    assert rerun.diagnostics[
+        "no_automatic_resend"
+    ] is True
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before_rerun
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before_rerun
+
+
+def test_withdrawal_fee_change_before_claim_fails_without_post(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    prepared = (
+        advance_to_withdrawal_intent_prepared(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = prepared.flow
+
+    def changed_fee_query(
+        bybit_client,
+        *,
+        coin,
+        chain,
+    ):
+        assert env.db.lock_active is False
+        assert coin == "USDT"
+        assert chain == "BSC"
+
+        bybit_client.get_calls.append(
+            {
+                "path": (
+                    "/v5/asset/coin/query-info"
+                ),
+                "params": {
+                    "coin": coin,
+                    "chain": chain,
+                },
+            }
+        )
+
+        return make_coin_info(
+            withdraw_fee=Decimal("2"),
+        )
+
+    def unexpected_guard(
+        *args,
+        **kwargs,
+    ):
+        raise AssertionError(
+            "Guard must not run after fee mismatch"
+        )
+
+    def unexpected_post(
+        *args,
+        **kwargs,
+    ):
+        raise AssertionError(
+            "Withdrawal POST must not run after "
+            "fee mismatch"
+        )
+
+    monkeypatch.setattr(
+        service,
+        "query_coin_info",
+        changed_fee_query,
+    )
+    monkeypatch.setattr(
+        service,
+        "require_bybit_master_withdrawal_guard",
+        unexpected_guard,
+    )
+    monkeypatch.setattr(
+        service,
+        "create_master_withdrawal",
+        unexpected_post,
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == "failed_requires_review"
+
+    assert (
+        "withdrawal fee changed before submit"
+        in str(result.error).lower()
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert flow.withdrawal_intent_json[
+        "state"
+    ] == "prepared"
+    assert flow.withdrawal_intent_json[
+        "submit_claim"
+    ] is None
+    assert flow.withdrawal_submitted_at is None
+    assert flow.withdrawal_created_at is None
+    assert flow.withdrawal_id is None
+
+    barrier = flow.reconciliation_json[
+        "master_transferable_balance_barrier"
+    ]
+
+    assert barrier["state"] == "confirmed"
+    assert barrier[
+        "withdrawal_allowed"
+    ] is True
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_withdrawal_guard_blocked_after_claim_never_posts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    prepared = (
+        advance_to_withdrawal_intent_prepared(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = prepared.flow
+
+    submit_fakes = (
+        install_withdrawal_submit_fakes(
+            monkeypatch,
+            env,
+            guard_error=(
+                OperationGuardBlockedError(
+                    "simulated withdrawal block"
+                )
+            ),
+        )
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    intent = flow.withdrawal_intent_json
+    acknowledgement = intent[
+        "acknowledgement"
+    ]
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == "submit_withdrawal_guard_blocked"
+
+    assert result.diagnostics[
+        "did_bybit_post"
+    ] is False
+    assert result.diagnostics[
+        "bybit_post_count"
+    ] == 0
+    assert result.diagnostics[
+        "no_automatic_resend"
+    ] is True
+
+    assert len(
+        submit_fakes.guard_calls
+    ) == 1
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert intent["state"] == (
+        "failed_requires_review"
+    )
+    assert isinstance(
+        intent["submit_claim"],
+        dict,
+    )
+
+    assert acknowledgement[
+        "outcome"
+    ] == "guard_blocked"
+    assert acknowledgement[
+        "bybit_post_performed"
+    ] is False
+    assert acknowledgement[
+        "no_automatic_resend"
+    ] is True
+
+    assert flow.withdrawal_status == (
+        "GUARD_BLOCKED"
+    )
+    assert flow.withdrawal_created_at is None
+    assert flow.withdrawal_id is None
+
+    get_count_before_rerun = len(
+        env.client.get_calls
+    )
+    post_count_before_rerun = len(
+        env.client.post_calls
+    )
+
+    rerun = resume_once(env)
+
+    assert rerun.ok is False
+    assert rerun.idempotent is True
+    assert rerun.diagnostics[
+        "transition"
+    ] == (
+        "failed_requires_review_"
+        "already_recorded"
+    )
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before_rerun
+    assert len(
+        env.client.post_calls
+    ) == post_count_before_rerun
+
+
+def test_withdrawal_process_crash_after_claim_never_resends(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    prepared = (
+        advance_to_withdrawal_intent_prepared(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = prepared.flow
+
+    install_withdrawal_submit_fakes(
+        monkeypatch,
+        env,
+        post_error=RuntimeError(
+            "simulated process crash"
+        ),
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match="simulated process crash",
+    ):
+        resume_once(env)
+
+    intent = flow.withdrawal_intent_json
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_SUBMITTING
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_PENDING
+    )
+
+    assert intent["state"] == "submitting"
+    assert isinstance(
+        intent["submit_claim"],
+        dict,
+    )
+    assert intent["acknowledgement"] is None
+    assert flow.withdrawal_submitted_at == NOW
+    assert flow.withdrawal_created_at is None
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before + 1
+
+    get_count_before_rerun = len(
+        env.client.get_calls
+    )
+    post_count_before_rerun = len(
+        env.client.post_calls
+    )
+
+    rerun = resume_once(env)
+
+    assert rerun.ok is False
+    assert rerun.idempotent is True
+    assert rerun.diagnostics[
+        "transition"
+    ] == "withdrawal_reconciliation_pending"
+
+    assert rerun.diagnostics[
+        "bybit_get_count"
+    ] == 0
+    assert rerun.diagnostics[
+        "bybit_post_count"
+    ] == 0
+    assert rerun.diagnostics[
+        "no_automatic_resend"
+    ] is True
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before_rerun
+    assert len(
+        env.client.post_calls
+    ) == post_count_before_rerun
+
+
+def test_withdrawal_post_unknown_moves_to_reconciliation_without_resend(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    prepared = (
+        advance_to_withdrawal_intent_prepared(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = prepared.flow
+
+    install_withdrawal_submit_fakes(
+        monkeypatch,
+        env,
+        post_error=BybitApiError(
+            "simulated withdrawal timeout"
+        ),
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    intent = flow.withdrawal_intent_json
+    acknowledgement = intent[
+        "acknowledgement"
+    ]
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == "submit_withdrawal_unknown"
+
+    assert result.diagnostics[
+        "did_bybit_post"
+    ] is True
+    assert result.diagnostics[
+        "bybit_post_count"
+    ] == 1
+    assert result.diagnostics[
+        "no_automatic_resend"
+    ] is True
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before + 1
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILING
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING
+    )
+    assert flow.withdrawal_status == "UNKNOWN"
+
+    assert intent["state"] == "reconciling"
+    assert acknowledgement[
+        "outcome"
+    ] == "unknown"
+    assert acknowledgement[
+        "bybit_post_performed"
+    ] is True
+    assert acknowledgement[
+        "no_automatic_resend"
+    ] is True
+
+    get_count_before_rerun = len(
+        env.client.get_calls
+    )
+    post_count_before_rerun = len(
+        env.client.post_calls
+    )
+
+    rerun = resume_once(env)
+
+    assert rerun.ok is False
+    assert rerun.idempotent is True
+    assert rerun.diagnostics[
+        "transition"
+    ] == "withdrawal_reconciliation_pending"
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before_rerun
+    assert len(
+        env.client.post_calls
+    ) == post_count_before_rerun
+
+
+def test_withdrawal_ack_mismatch_records_post_evidence_and_stops(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    prepared = (
+        advance_to_withdrawal_intent_prepared(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = prepared.flow
+
+    install_withdrawal_submit_fakes(
+        monkeypatch,
+        env,
+        acknowledgement_amount=Decimal("99"),
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    intent = flow.withdrawal_intent_json
+    acknowledgement = intent[
+        "acknowledgement"
+    ]
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == "submit_withdrawal_ack_mismatch"
+
+    assert result.diagnostics[
+        "did_bybit_post"
+    ] is True
+    assert result.diagnostics[
+        "bybit_post_count"
+    ] == 1
+    assert result.diagnostics[
+        "no_automatic_resend"
+    ] is True
+    assert result.diagnostics[
+        "acknowledgement_mismatch"
+    ] is True
+    assert result.diagnostics[
+        "reserve_release_allowed"
+    ] is False
+    assert result.diagnostics[
+        "pricing_unlock_allowed"
+    ] is False
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before + 1
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert intent["state"] == (
+        "failed_requires_review"
+    )
+
+    assert acknowledgement[
+        "outcome"
+    ] == "mismatch"
+    assert acknowledgement[
+        "bybit_post_performed"
+    ] is True
+    assert acknowledgement[
+        "no_automatic_resend"
+    ] is True
+
+    assert acknowledgement[
+        "expected"
+    ]["amount_usdt"] == "100"
+    assert acknowledgement[
+        "observed"
+    ]["amount_usdt"] == "99"
+
+    assert flow.withdrawal_id == (
+        "withdrawal-123"
+    )
+    assert flow.withdrawal_status == "PENDING"
+    assert flow.withdrawal_created_at == NOW
+
+    barrier = flow.reconciliation_json[
+        "master_transferable_balance_barrier"
+    ]
+
+    assert barrier["state"] == "confirmed"
+    assert barrier[
+        "withdrawal_allowed"
+    ] is True
+
+    get_count_before_rerun = len(
+        env.client.get_calls
+    )
+    post_count_before_rerun = len(
+        env.client.post_calls
+    )
+
+    rerun = resume_once(env)
+
+    assert rerun.ok is False
+    assert rerun.idempotent is True
+    assert rerun.diagnostics[
+        "transition"
+    ] == (
+        "failed_requires_review_"
+        "already_recorded"
+    )
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before_rerun
+    assert len(
+        env.client.post_calls
+    ) == post_count_before_rerun

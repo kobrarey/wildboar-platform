@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.bybit.asset_flows import (
     BybitAssetFlowError,
+    create_master_withdrawal,
     create_universal_transfer,
     query_account_coin_balance,
     query_coin_info,
@@ -24,6 +25,7 @@ from app.bybit.client import (
 from app.config import settings
 from app.models import FundNegativeBybitFlow
 from app.operation_guard.hooks import (
+    require_bybit_master_withdrawal_guard,
     require_bybit_universal_transfer_guard,
 )
 from app.operation_guard.service import (
@@ -55,7 +57,10 @@ from app.settlement.negative_bybit_flow_types import (
 )
 from app.settlement.gas_service import get_web3
 from app.settlement.statuses import (
+    BATCH_STATUS_FAILED_REQUIRES_REVIEW,
     BATCH_STATUS_NEGATIVE_NET_MASTER_FLOW_PROCESSING,
+    BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_PENDING,
+    BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING,
     BYBIT_FLOW_STATUS_CREATED,
     BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW,
     BYBIT_FLOW_STATUS_MASTER_BALANCE_CONFIRMED,
@@ -65,6 +70,8 @@ from app.settlement.statuses import (
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_SUBMITTING,
     BYBIT_FLOW_STATUS_WITHDRAWAL_INTENT_PREPARED,
+    BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILING,
+    BYBIT_FLOW_STATUS_WITHDRAWAL_SUBMITTING,
 )
 
 
@@ -3723,6 +3730,1763 @@ def _prepare_withdrawal_intent_once(
     return result
 
 
+def _aware_utc_datetime(
+    value: Any,
+    *,
+    field_name: str,
+) -> datetime:
+    text = _required_text(
+        value,
+        field_name=field_name,
+    )
+
+    try:
+        parsed = datetime.fromisoformat(text)
+    except ValueError as exc:
+        raise NegativeBybitFlowError(
+            f"{field_name} must be ISO datetime"
+        ) from exc
+
+    if (
+        parsed.tzinfo is None
+        or parsed.utcoffset() is None
+    ):
+        raise NegativeBybitFlowError(
+            f"{field_name} must be timezone-aware"
+        )
+
+    return parsed.astimezone(timezone.utc)
+
+
+def _withdrawal_intent_snapshot(
+    *,
+    flow: FundNegativeBybitFlow,
+    intent: dict[str, Any],
+    allowed_states: set[str],
+) -> dict[str, Any]:
+    _validate_withdrawal_intent(
+        flow=flow,
+        intent=intent,
+        allowed_states=allowed_states,
+    )
+
+    payload = intent.get(
+        "payload_template"
+    )
+    fee_snapshot = intent.get(
+        "fee_snapshot"
+    )
+    balance_baseline = intent.get(
+        "settlement_wallet_balance_baseline"
+    )
+
+    if not isinstance(payload, dict):
+        raise NegativeBybitFlowError(
+            "Withdrawal payload template missing"
+        )
+
+    if not isinstance(fee_snapshot, dict):
+        raise NegativeBybitFlowError(
+            "Withdrawal fee snapshot missing"
+        )
+
+    if not isinstance(
+        balance_baseline,
+        dict,
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet balance baseline "
+            "missing"
+        )
+
+    request_id = _required_text(
+        intent.get("request_id"),
+        field_name=(
+            "withdrawal_intent.request_id"
+        ),
+    )
+
+    coin = _required_text(
+        intent.get("coin"),
+        field_name="withdrawal_intent.coin",
+    ).upper()
+
+    chain = _required_text(
+        intent.get("chain"),
+        field_name="withdrawal_intent.chain",
+    ).upper()
+
+    address = _required_text(
+        intent.get("address"),
+        field_name="withdrawal_intent.address",
+    )
+
+    amount_text = _required_text(
+        intent.get("amount"),
+        field_name="withdrawal_intent.amount",
+    )
+
+    amount_usdt = Decimal(amount_text)
+
+    if amount_usdt <= Decimal("0"):
+        raise NegativeBybitFlowError(
+            "Withdrawal intent amount must be "
+            "positive"
+        )
+
+    fee_usdt = Decimal(
+        _required_text(
+            intent.get("fee_usdt"),
+            field_name=(
+                "withdrawal_intent.fee_usdt"
+            ),
+        )
+    )
+
+    if fee_usdt <= Decimal("0"):
+        raise NegativeBybitFlowError(
+            "Withdrawal intent fee must be positive"
+        )
+
+    fee_type = int(
+        intent.get("fee_type")
+    )
+    force_chain = int(
+        intent.get("force_chain")
+    )
+    amount_precision = int(
+        intent.get("amount_precision")
+    )
+
+    account_type = _required_text(
+        intent.get("account_type"),
+        field_name=(
+            "withdrawal_intent.account_type"
+        ),
+    ).upper()
+
+    if coin != "USDT":
+        raise NegativeBybitFlowError(
+            "Withdrawal intent coin must be USDT"
+        )
+
+    if chain != "BSC":
+        raise NegativeBybitFlowError(
+            "Withdrawal intent chain must be BSC"
+        )
+
+    if fee_type != 0:
+        raise NegativeBybitFlowError(
+            "Withdrawal intent feeType must be 0"
+        )
+
+    if force_chain != 1:
+        raise NegativeBybitFlowError(
+            "Withdrawal intent forceChain must be 1"
+        )
+
+    if account_type != "FUND":
+        raise NegativeBybitFlowError(
+            "Withdrawal intent accountType must "
+            "be FUND"
+        )
+
+    if amount_precision < 0:
+        raise NegativeBybitFlowError(
+            "Withdrawal intent precision is invalid"
+        )
+
+    if (
+        str(payload.get("requestId") or "")
+        != request_id
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal requestId mismatch"
+        )
+
+    if (
+        str(payload.get("coin") or "")
+        .strip()
+        .upper()
+        != coin
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal payload coin mismatch"
+        )
+
+    if (
+        str(payload.get("chain") or "")
+        .strip()
+        .upper()
+        != chain
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal payload chain mismatch"
+        )
+
+    if (
+        str(payload.get("address") or "").strip()
+        != address
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal payload address mismatch"
+        )
+
+    if (
+        str(payload.get("amount") or "").strip()
+        != amount_text
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal payload amount mismatch"
+        )
+
+    if int(payload.get("feeType")) != fee_type:
+        raise NegativeBybitFlowError(
+            "Withdrawal payload feeType mismatch"
+        )
+
+    if (
+        int(payload.get("forceChain"))
+        != force_chain
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal payload forceChain mismatch"
+        )
+
+    if (
+        str(payload.get("accountType") or "")
+        .strip()
+        .upper()
+        != account_type
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal payload accountType mismatch"
+        )
+
+    if (
+        fee_snapshot.get("schema")
+        != "negative_withdrawal_fee_snapshot_v1"
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal fee snapshot schema mismatch"
+        )
+
+    if (
+        fee_snapshot.get("policy_version")
+        != settings
+        .NEGATIVE_NET_WITHDRAWAL_POLICY_VERSION
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal fee snapshot policy mismatch"
+        )
+
+    if (
+        str(fee_snapshot.get("coin") or "")
+        .strip()
+        .upper()
+        != coin
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal fee snapshot coin mismatch"
+        )
+
+    if (
+        str(fee_snapshot.get("chain") or "")
+        .strip()
+        .upper()
+        != chain
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal fee snapshot chain mismatch"
+        )
+
+    snapshot_fee = Decimal(
+        _required_text(
+            fee_snapshot.get(
+                "withdraw_fee_usdt"
+            ),
+            field_name=(
+                "fee_snapshot.withdraw_fee_usdt"
+            ),
+        )
+    )
+
+    if not _same_decimal(
+        snapshot_fee,
+        fee_usdt,
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal fee snapshot amount mismatch"
+        )
+
+    snapshot_precision = int(
+        fee_snapshot.get("min_accuracy")
+    )
+
+    if snapshot_precision != amount_precision:
+        raise NegativeBybitFlowError(
+            "Withdrawal fee snapshot precision "
+            "mismatch"
+        )
+
+    if (
+        str(
+            fee_snapshot.get("chain_withdraw")
+            or ""
+        ).strip()
+        != "1"
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal fee snapshot does not allow "
+            "BSC withdrawal"
+        )
+
+    percentage_fee_text = (
+        fee_snapshot.get(
+            "withdraw_percentage_fee"
+        )
+    )
+
+    if (
+        percentage_fee_text is not None
+        and Decimal(
+            str(percentage_fee_text)
+        ) != Decimal("0")
+    ):
+        raise NegativeBybitFlowError(
+            "Percentage withdrawal fee is not "
+            "supported"
+        )
+
+    max_age_sec = int(
+        fee_snapshot.get("max_age_sec")
+    )
+
+    configured_max_age_sec = int(
+        settings
+        .NEGATIVE_NET_WITHDRAWAL_FEE_MAX_AGE_SEC
+    )
+
+    if configured_max_age_sec <= 0:
+        raise NegativeBybitFlowError(
+            "Withdrawal fee max age is invalid"
+        )
+
+    if max_age_sec != configured_max_age_sec:
+        raise NegativeBybitFlowError(
+            "Withdrawal fee max age mismatch"
+        )
+
+    fee_queried_at = _aware_utc_datetime(
+        fee_snapshot.get("queried_at"),
+        field_name=(
+            "fee_snapshot.queried_at"
+        ),
+    )
+
+    prepared_at = _aware_utc_datetime(
+        intent.get("prepared_at"),
+        field_name=(
+            "withdrawal_intent.prepared_at"
+        ),
+    )
+
+    baseline_address = _required_text(
+        balance_baseline.get("address"),
+        field_name=(
+            "balance_baseline.address"
+        ),
+    )
+
+    if (
+        baseline_address.lower()
+        != address.lower()
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet baseline address "
+            "mismatch"
+        )
+
+    baseline_contract = _required_text(
+        balance_baseline.get("contract"),
+        field_name=(
+            "balance_baseline.contract"
+        ),
+    )
+
+    if (
+        baseline_contract.lower()
+        != str(
+            settings.BSC_USDT_CONTRACT
+        ).strip().lower()
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet baseline contract "
+            "mismatch"
+        )
+
+    baseline_decimals = int(
+        balance_baseline.get("decimals")
+    )
+
+    if baseline_decimals != int(
+        settings.BSC_USDT_DECIMALS
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet baseline decimals "
+            "mismatch"
+        )
+
+    baseline_block_number = int(
+        balance_baseline.get("block_number")
+    )
+
+    if baseline_block_number < 0:
+        raise NegativeBybitFlowError(
+            "Settlement wallet baseline block is "
+            "invalid"
+        )
+
+    baseline_raw_balance = int(
+        _required_text(
+            balance_baseline.get(
+                "raw_balance"
+            ),
+            field_name=(
+                "balance_baseline.raw_balance"
+            ),
+        )
+    )
+
+    if baseline_raw_balance < 0:
+        raise NegativeBybitFlowError(
+            "Settlement wallet baseline raw balance "
+            "is invalid"
+        )
+
+    baseline_balance_usdt = Decimal(
+        _required_text(
+            balance_baseline.get(
+                "balance_usdt"
+            ),
+            field_name=(
+                "balance_baseline.balance_usdt"
+            ),
+        )
+    )
+
+    if flow.settlement_wallet_id is None:
+        raise NegativeBybitFlowError(
+            "Settlement wallet ID is missing"
+        )
+
+    if (
+        flow
+        .settlement_wallet_balance_before_usdt
+        is None
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet baseline amount is "
+            "missing"
+        )
+
+    if not _same_decimal(
+        baseline_balance_usdt,
+        flow
+        .settlement_wallet_balance_before_usdt,
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet baseline amount "
+            "mismatch"
+        )
+
+    return {
+        "settlement_batch_id": int(
+            flow.settlement_batch_id
+        ),
+        "fund_id": int(flow.fund_id),
+        "flow_id": int(flow.id),
+        "settlement_wallet_id": int(
+            flow.settlement_wallet_id
+        ),
+        "request_id": request_id,
+        "coin": coin,
+        "chain": chain,
+        "address": address,
+        "amount_text": amount_text,
+        "amount_usdt": amount_usdt,
+        "fee_usdt": fee_usdt,
+        "fee_type": fee_type,
+        "force_chain": force_chain,
+        "account_type": account_type,
+        "amount_precision": (
+            amount_precision
+        ),
+        "payload": deepcopy(payload),
+        "payload_fingerprint": (
+            _required_text(
+                intent.get(
+                    "payload_fingerprint"
+                ),
+                field_name=(
+                    "withdrawal_intent."
+                    "payload_fingerprint"
+                ),
+            )
+        ),
+        "fee_snapshot": deepcopy(
+            fee_snapshot
+        ),
+        "balance_baseline": deepcopy(
+            balance_baseline
+        ),
+        "fee_queried_at": fee_queried_at,
+        "prepared_at": prepared_at,
+        "max_age_sec": max_age_sec,
+    }
+
+
+def _validate_withdrawal_snapshot_unchanged(
+    *,
+    flow: FundNegativeBybitFlow,
+    intent: dict[str, Any],
+    snapshot: dict[str, Any],
+    allowed_states: set[str],
+) -> None:
+    current_snapshot = (
+        _withdrawal_intent_snapshot(
+            flow=flow,
+            intent=intent,
+            allowed_states=allowed_states,
+        )
+    )
+
+    if current_snapshot != snapshot:
+        raise NegativeBybitFlowError(
+            "Withdrawal immutable intent changed "
+            "during submit"
+        )
+
+
+def _withdrawal_claim_matches(
+    *,
+    intent: dict[str, Any],
+    claim_token: str,
+) -> bool:
+    claim = intent.get("submit_claim")
+
+    return (
+        isinstance(claim, dict)
+        and str(
+            claim.get("claim_token") or ""
+        ) == claim_token
+    )
+
+
+def _withdrawal_ack_snapshot(
+    record,
+) -> dict[str, Any]:
+    return {
+        "request_id": str(
+            record.request_id or ""
+        ).strip(),
+        "withdrawal_id": (
+            str(record.withdrawal_id).strip()
+            if record.withdrawal_id
+            else None
+        ),
+        "coin": str(
+            record.coin or ""
+        ).strip().upper(),
+        "chain": str(
+            record.chain or ""
+        ).strip().upper(),
+        "address": str(
+            record.address or ""
+        ).strip(),
+        "amount_usdt": _decimal_text(
+            Decimal(record.amount_usdt)
+        ),
+        "fee_type": int(record.fee_type),
+        "status": record.status,
+        "tx_hash": (
+            str(record.tx_hash).strip()
+            if record.tx_hash
+            else None
+        ),
+    }
+
+
+def _validate_exact_withdrawal_ack(
+    *,
+    record,
+    snapshot: dict[str, Any],
+) -> None:
+    if (
+        str(record.request_id or "").strip()
+        != snapshot["request_id"]
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal acknowledgement requestId "
+            "mismatch"
+        )
+
+    if (
+        str(record.coin or "").strip().upper()
+        != snapshot["coin"]
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal acknowledgement coin "
+            "mismatch"
+        )
+
+    if (
+        str(record.chain or "").strip().upper()
+        != snapshot["chain"]
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal acknowledgement chain "
+            "mismatch"
+        )
+
+    if (
+        str(record.address or "").strip().lower()
+        != snapshot["address"].lower()
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal acknowledgement address "
+            "mismatch"
+        )
+
+    if not _same_decimal(
+        record.amount_usdt,
+        snapshot["amount_usdt"],
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal acknowledgement amount "
+            "mismatch"
+        )
+
+    if int(record.fee_type) != int(
+        snapshot["fee_type"]
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal acknowledgement feeType "
+            "mismatch"
+        )
+
+
+def _validate_fresh_withdrawal_fee(
+    *,
+    snapshot: dict[str, Any],
+    coin_info,
+    checked_at: datetime,
+) -> dict[str, Any]:
+    if (
+        str(coin_info.coin or "")
+        .strip()
+        .upper()
+        != snapshot["coin"]
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal fee revalidation coin "
+            "mismatch"
+        )
+
+    if (
+        str(coin_info.chain or "")
+        .strip()
+        .upper()
+        != snapshot["chain"]
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal fee revalidation chain "
+            "mismatch"
+        )
+
+    if (
+        str(
+            coin_info.chain_withdraw or ""
+        ).strip()
+        != "1"
+    ):
+        raise NegativeBybitFlowError(
+            "BSC withdrawal became unavailable"
+        )
+
+    percentage_fee = (
+        coin_info.withdraw_percentage_fee
+    )
+
+    if (
+        percentage_fee is not None
+        and Decimal(percentage_fee)
+        != Decimal("0")
+    ):
+        raise NegativeBybitFlowError(
+            "Percentage withdrawal fee appeared "
+            "during revalidation"
+        )
+
+    observed_fee = Decimal(
+        coin_info.withdraw_fee
+    )
+
+    if not _same_decimal(
+        observed_fee,
+        snapshot["fee_usdt"],
+    ):
+        raise NegativeBybitFlowError(
+            "Bybit withdrawal fee changed before "
+            "submit"
+        )
+
+    observed_precision = int(
+        coin_info.min_accuracy
+    )
+
+    if (
+        observed_precision
+        != snapshot["amount_precision"]
+    ):
+        raise NegativeBybitFlowError(
+            "Bybit withdrawal precision changed "
+            "before submit"
+        )
+
+    observed_min = Decimal(
+        coin_info.withdraw_min
+    )
+
+    if snapshot["amount_usdt"] < observed_min:
+        raise NegativeBybitFlowError(
+            "Withdrawal amount became lower than "
+            "withdrawMin"
+        )
+
+    observed_max = (
+        Decimal(coin_info.withdraw_max)
+        if coin_info.withdraw_max is not None
+        else None
+    )
+
+    if (
+        observed_max is not None
+        and observed_max > Decimal("0")
+        and snapshot["amount_usdt"]
+        > observed_max
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal amount became higher than "
+            "withdrawMax"
+        )
+
+    max_age_sec = int(
+        settings
+        .NEGATIVE_NET_WITHDRAWAL_FEE_MAX_AGE_SEC
+    )
+
+    checked_at_ms = int(
+        checked_at.timestamp() * 1000
+    )
+
+    return {
+        "schema": (
+            "negative_withdrawal_fee_"
+            "revalidation_v1"
+        ),
+        "checked_at": (
+            checked_at.isoformat()
+        ),
+        "checked_at_ms": checked_at_ms,
+        "valid_for_sec": max_age_sec,
+        "valid_until_ms": (
+            checked_at_ms
+            + max_age_sec * 1000
+        ),
+        "coin": snapshot["coin"],
+        "chain": snapshot["chain"],
+        "withdraw_fee_usdt": (
+            _decimal_text(observed_fee)
+        ),
+        "withdraw_min_usdt": (
+            _decimal_text(observed_min)
+        ),
+        "withdraw_max_usdt": (
+            _decimal_text(observed_max)
+            if observed_max is not None
+            else None
+        ),
+        "withdraw_percentage_fee": (
+            _decimal_text(
+                Decimal(percentage_fee)
+            )
+            if percentage_fee is not None
+            else None
+        ),
+        "min_accuracy": (
+            observed_precision
+        ),
+        "chain_withdraw": (
+            coin_info.chain_withdraw
+        ),
+        "matches_prepared_snapshot": True,
+    }
+
+
+def _locked_withdrawal_context(
+    db: Session,
+    *,
+    settlement_batch_id: int,
+):
+    settlement_batch = _lock_settlement_batch(
+        db,
+        settlement_batch_id=int(
+            settlement_batch_id
+        ),
+    )
+
+    sale_batch = (
+        _lock_sale_batch_for_settlement(
+            db,
+            settlement_batch_id=int(
+                settlement_batch_id
+            ),
+        )
+    )
+
+    flow = _lock_existing_flow(
+        db,
+        settlement_batch_id=int(
+            settlement_batch_id
+        ),
+    )
+
+    if flow is None:
+        raise NegativeBybitFlowError(
+            "Negative Bybit flow disappeared "
+            "during withdrawal submit"
+        )
+
+    _validate_sale_batch_input(
+        settlement_batch=settlement_batch,
+        sale_batch=sale_batch,
+    )
+
+    amounts = _validate_target_fields(
+        settlement_batch=settlement_batch,
+        sale_batch=sale_batch,
+    )
+
+    _validate_existing_flow(
+        flow=flow,
+        settlement_batch=settlement_batch,
+        sale_batch=sale_batch,
+        amounts=amounts,
+    )
+
+    return (
+        settlement_batch,
+        sale_batch,
+        flow,
+    )
+
+
+def _merge_failure_reconciliation(
+    *,
+    flow: FundNegativeBybitFlow,
+    prior_reconciliation: (
+        dict[str, Any] | None
+    ),
+) -> None:
+    if prior_reconciliation is None:
+        return
+
+    failure_reconciliation = (
+        deepcopy(flow.reconciliation_json)
+        if isinstance(
+            flow.reconciliation_json,
+            dict,
+        )
+        else {}
+    )
+
+    merged = deepcopy(
+        prior_reconciliation
+    )
+    merged.update(
+        failure_reconciliation
+    )
+
+    flow.reconciliation_json = _json_dict(
+        merged
+    )
+
+
+def _mark_withdrawal_guard_blocked(
+    db: Session,
+    *,
+    settlement_batch_id: int,
+    snapshot: dict[str, Any],
+    claim_token: str,
+    error: BaseException,
+    now: datetime,
+) -> NegativeBybitFlowResult:
+    settlement_batch, _, flow = (
+        _locked_withdrawal_context(
+            db,
+            settlement_batch_id=(
+                settlement_batch_id
+            ),
+        )
+    )
+
+    current_intent = deepcopy(
+        flow.withdrawal_intent_json
+    )
+
+    if not isinstance(current_intent, dict):
+        raise NegativeBybitFlowError(
+            "Withdrawal intent missing after "
+            "Operation Guard"
+        )
+
+    _validate_withdrawal_snapshot_unchanged(
+        flow=flow,
+        intent=current_intent,
+        snapshot=snapshot,
+        allowed_states={"submitting"},
+    )
+
+    if not _withdrawal_claim_matches(
+        intent=current_intent,
+        claim_token=claim_token,
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal submit claim ownership "
+            "mismatch"
+        )
+
+    prior_reconciliation = (
+        deepcopy(flow.reconciliation_json)
+        if isinstance(
+            flow.reconciliation_json,
+            dict,
+        )
+        else None
+    )
+
+    current_intent["state"] = (
+        "failed_requires_review"
+    )
+    current_intent["acknowledgement"] = {
+        "outcome": "guard_blocked",
+        "claim_token": claim_token,
+        "acknowledged_at": now.isoformat(),
+        "error": _bounded_external_error(
+            error
+        ),
+        "bybit_post_performed": False,
+        "no_automatic_resend": True,
+    }
+
+    flow.withdrawal_intent_json = (
+        current_intent
+    )
+    flow.withdrawal_status = (
+        "GUARD_BLOCKED"
+    )
+
+    result = _set_failed(
+        flow=flow,
+        settlement_batch=settlement_batch,
+        fund=None,
+        status_before=(
+            BYBIT_FLOW_STATUS_WITHDRAWAL_SUBMITTING
+        ),
+        settlement_status_before=str(
+            settlement_batch.status
+        ),
+        error=(
+            "Operation Guard blocked Bybit "
+            f"master withdrawal: {error}"
+        ),
+        now=now,
+        diagnostics={
+            "transition": (
+                "submit_withdrawal_guard_blocked"
+            ),
+            "did_bybit_post": False,
+            "bybit_post_count": 0,
+            "no_automatic_resend": True,
+            "payload_fingerprint": snapshot[
+                "payload_fingerprint"
+            ],
+            "reserve_release_allowed": False,
+            "pricing_unlock_allowed": False,
+        },
+    )
+
+    _merge_failure_reconciliation(
+        flow=flow,
+        prior_reconciliation=(
+            prior_reconciliation
+        ),
+    )
+
+    db.add(flow)
+    db.add(settlement_batch)
+    db.flush()
+    db.commit()
+
+    return result
+
+
+def _mark_withdrawal_submit_unknown(
+    db: Session,
+    *,
+    settlement_batch_id: int,
+    snapshot: dict[str, Any],
+    claim_token: str,
+    error: BaseException,
+    now: datetime,
+) -> NegativeBybitFlowResult:
+    settlement_batch, _, flow = (
+        _locked_withdrawal_context(
+            db,
+            settlement_batch_id=(
+                settlement_batch_id
+            ),
+        )
+    )
+
+    current_intent = deepcopy(
+        flow.withdrawal_intent_json
+    )
+
+    if not isinstance(current_intent, dict):
+        raise NegativeBybitFlowError(
+            "Withdrawal intent missing after "
+            "POST attempt"
+        )
+
+    _validate_withdrawal_snapshot_unchanged(
+        flow=flow,
+        intent=current_intent,
+        snapshot=snapshot,
+        allowed_states={"submitting"},
+    )
+
+    if not _withdrawal_claim_matches(
+        intent=current_intent,
+        claim_token=claim_token,
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal submit claim ownership "
+            "mismatch"
+        )
+
+    current_intent["state"] = "reconciling"
+    current_intent["acknowledgement"] = {
+        "outcome": "unknown",
+        "claim_token": claim_token,
+        "acknowledged_at": now.isoformat(),
+        "error": _bounded_external_error(
+            error
+        ),
+        "bybit_post_performed": True,
+        "no_automatic_resend": True,
+    }
+
+    flow.withdrawal_intent_json = (
+        current_intent
+    )
+    flow.withdrawal_status = "UNKNOWN"
+    flow.status = (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILING
+    )
+    flow.error = None
+    flow.updated_at = now
+
+    settlement_batch.status = (
+        BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING
+    )
+    settlement_batch.error = None
+    settlement_batch.updated_at = now
+
+    db.add(flow)
+    db.add(settlement_batch)
+    db.flush()
+
+    result = _step_result(
+        ok=False,
+        transition=(
+            "submit_withdrawal_unknown"
+        ),
+        settlement_batch=settlement_batch,
+        flow=flow,
+        status_before=(
+            BYBIT_FLOW_STATUS_WITHDRAWAL_SUBMITTING
+        ),
+        settlement_status_before=str(
+            settlement_batch.status
+        ),
+        diagnostics={
+            "pending": (
+                "withdrawal_reconciliation"
+            ),
+            "did_bybit_post": True,
+            "bybit_post_count": 1,
+            "no_automatic_resend": True,
+            "payload_fingerprint": snapshot[
+                "payload_fingerprint"
+            ],
+            "next_transition": (
+                "reconcile_withdrawal"
+            ),
+        },
+    )
+
+    db.commit()
+
+    return result
+
+
+def _mark_withdrawal_ack_mismatch(
+    db: Session,
+    *,
+    settlement_batch,
+    flow: FundNegativeBybitFlow,
+    current_intent: dict[str, Any],
+    snapshot: dict[str, Any],
+    claim_token: str,
+    guard_event_id: int | None,
+    created_withdrawal,
+    error: BaseException,
+    now: datetime,
+) -> NegativeBybitFlowResult:
+    prior_reconciliation = (
+        deepcopy(flow.reconciliation_json)
+        if isinstance(
+            flow.reconciliation_json,
+            dict,
+        )
+        else None
+    )
+
+    current_intent["state"] = (
+        "failed_requires_review"
+    )
+    current_intent["acknowledgement"] = {
+        "outcome": "mismatch",
+        "claim_token": claim_token,
+        "guard_event_id": guard_event_id,
+        "acknowledged_at": now.isoformat(),
+        "expected": {
+            "request_id": snapshot[
+                "request_id"
+            ],
+            "coin": snapshot["coin"],
+            "chain": snapshot["chain"],
+            "address": snapshot["address"],
+            "amount_usdt": _decimal_text(
+                snapshot["amount_usdt"]
+            ),
+            "fee_type": snapshot["fee_type"],
+        },
+        "observed": (
+            _withdrawal_ack_snapshot(
+                created_withdrawal
+            )
+        ),
+        "response": _json_dict(
+            created_withdrawal.raw
+        ),
+        "error": _bounded_external_error(
+            error
+        ),
+        "bybit_post_performed": True,
+        "no_automatic_resend": True,
+    }
+
+    flow.withdrawal_intent_json = (
+        current_intent
+    )
+    flow.withdrawal_id = (
+        created_withdrawal.withdrawal_id
+    )
+    flow.withdrawal_status = (
+        created_withdrawal.status
+    )
+    flow.withdrawal_tx_hash = (
+        created_withdrawal.tx_hash
+    )
+    flow.withdrawal_created_at = now
+
+    result = _set_failed(
+        flow=flow,
+        settlement_batch=settlement_batch,
+        fund=None,
+        status_before=(
+            BYBIT_FLOW_STATUS_WITHDRAWAL_SUBMITTING
+        ),
+        settlement_status_before=str(
+            settlement_batch.status
+        ),
+        error=(
+            "Withdrawal acknowledgement mismatch "
+            f"after POST: {error}"
+        ),
+        now=now,
+        diagnostics={
+            "transition": (
+                "submit_withdrawal_ack_mismatch"
+            ),
+            "did_bybit_post": True,
+            "bybit_post_count": 1,
+            "no_automatic_resend": True,
+            "payload_fingerprint": snapshot[
+                "payload_fingerprint"
+            ],
+            "guard_event_id": guard_event_id,
+            "acknowledgement_mismatch": True,
+            "reserve_release_allowed": False,
+            "pricing_unlock_allowed": False,
+        },
+    )
+
+    _merge_failure_reconciliation(
+        flow=flow,
+        prior_reconciliation=(
+            prior_reconciliation
+        ),
+    )
+
+    db.add(flow)
+    db.add(settlement_batch)
+    db.flush()
+    db.commit()
+
+    return result
+
+
+def _submit_withdrawal_once(
+    db: Session,
+    *,
+    settlement_batch,
+    flow: FundNegativeBybitFlow,
+    bybit_client: BybitV5Client,
+    resolved_now: datetime,
+    status_before: str | None,
+    settlement_status_before: str | None,
+) -> NegativeBybitFlowResult:
+    intent = deepcopy(
+        flow.withdrawal_intent_json
+    )
+
+    if not isinstance(intent, dict):
+        raise NegativeBybitFlowError(
+            "Withdrawal intent is missing"
+        )
+
+    if str(flow.status) != (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_INTENT_PREPARED
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal submit requires prepared "
+            "intent status"
+        )
+
+    _require_single_post_client(
+        bybit_client
+    )
+
+    snapshot = _withdrawal_intent_snapshot(
+        flow=flow,
+        intent=intent,
+        allowed_states={"prepared"},
+    )
+
+    barrier_snapshot = (
+        _confirmed_master_balance_barrier(
+            flow
+        )
+    )
+
+    wallet = _get_active_settlement_wallet(
+        db,
+        fund_id=int(flow.fund_id),
+    )
+
+    if int(wallet.id) != snapshot[
+        "settlement_wallet_id"
+    ]:
+        raise NegativeBybitFlowError(
+            "Active settlement wallet ID mismatch "
+            "before withdrawal submit"
+        )
+
+    if (
+        str(wallet.address).strip().lower()
+        != snapshot["address"].lower()
+    ):
+        raise NegativeBybitFlowError(
+            "Active settlement wallet address "
+            "mismatch before withdrawal submit"
+        )
+
+    settlement_batch_id = int(
+        settlement_batch.id
+    )
+
+    expected_flow_id = int(flow.id)
+
+    # Release all FOR UPDATE locks before the
+    # fresh Bybit fee GET.
+    db.commit()
+
+    coin_info = query_coin_info(
+        bybit_client,
+        coin=snapshot["coin"],
+        chain=snapshot["chain"],
+    )
+
+    fee_revalidation = (
+        _validate_fresh_withdrawal_fee(
+            snapshot=snapshot,
+            coin_info=coin_info,
+            checked_at=resolved_now,
+        )
+    )
+
+    (
+        settlement_batch,
+        _,
+        flow,
+    ) = _locked_withdrawal_context(
+        db,
+        settlement_batch_id=(
+            settlement_batch_id
+        ),
+    )
+
+    if int(flow.id) != expected_flow_id:
+        raise NegativeBybitFlowError(
+            "Negative Bybit flow identity changed "
+            "during withdrawal fee revalidation"
+        )
+
+    current_intent = deepcopy(
+        flow.withdrawal_intent_json
+    )
+
+    if not isinstance(current_intent, dict):
+        raise NegativeBybitFlowError(
+            "Withdrawal intent disappeared before "
+            "claim"
+        )
+
+    _validate_withdrawal_snapshot_unchanged(
+        flow=flow,
+        intent=current_intent,
+        snapshot=snapshot,
+        allowed_states={"prepared"},
+    )
+
+    if (
+        _confirmed_master_balance_barrier(flow)
+        != barrier_snapshot
+    ):
+        raise NegativeBybitFlowError(
+            "Master balance barrier changed during "
+            "withdrawal submit"
+        )
+
+    current_wallet = (
+        _get_active_settlement_wallet(
+            db,
+            fund_id=int(flow.fund_id),
+        )
+    )
+
+    if int(current_wallet.id) != snapshot[
+        "settlement_wallet_id"
+    ]:
+        raise NegativeBybitFlowError(
+            "Active settlement wallet changed "
+            "during withdrawal submit"
+        )
+
+    if (
+        str(current_wallet.address)
+        .strip()
+        .lower()
+        != snapshot["address"].lower()
+    ):
+        raise NegativeBybitFlowError(
+            "Settlement wallet address changed "
+            "during withdrawal submit"
+        )
+
+    if (
+        current_intent.get("submit_claim")
+        is not None
+    ):
+        db.commit()
+
+        return _step_result(
+            ok=False,
+            transition=(
+                "submit_withdrawal_claim_"
+                "already_exists"
+            ),
+            settlement_batch=settlement_batch,
+            flow=flow,
+            status_before=status_before,
+            settlement_status_before=(
+                settlement_status_before
+            ),
+            idempotent=True,
+            diagnostics={
+                "pending": (
+                    "withdrawal_reconciliation"
+                ),
+                "did_bybit_post": False,
+                "bybit_post_count": 0,
+                "bybit_get_count": 1,
+                "no_automatic_resend": True,
+                "next_transition": (
+                    "reconcile_withdrawal"
+                ),
+            },
+        )
+
+    claim_token = str(uuid4())
+    timestamp_ms = int(
+        resolved_now.timestamp() * 1000
+    )
+
+    current_intent["state"] = "submitting"
+    current_intent["submit_claim"] = {
+        "claim_token": claim_token,
+        "claimed_at": (
+            resolved_now.isoformat()
+        ),
+        "submit_attempt_number": 1,
+        "timestamp_ms": timestamp_ms,
+        "fee_revalidation": (
+            fee_revalidation
+        ),
+        "no_automatic_resend": True,
+    }
+
+    flow.withdrawal_intent_json = (
+        current_intent
+    )
+    flow.withdrawal_submitted_at = (
+        resolved_now
+    )
+    flow.status = (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_SUBMITTING
+    )
+    flow.error = None
+    flow.updated_at = resolved_now
+
+    settlement_batch.status = (
+        BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_PENDING
+    )
+    settlement_batch.error = None
+    settlement_batch.updated_at = (
+        resolved_now
+    )
+
+    db.add(flow)
+    db.add(settlement_batch)
+    db.flush()
+
+    # Durable claim boundary.
+    # After this commit no automatic resend is
+    # permitted, including after process crash.
+    db.commit()
+
+    try:
+        guard_decision = (
+            require_bybit_master_withdrawal_guard(
+                db,
+                fund_id=snapshot["fund_id"],
+                settlement_batch_id=(
+                    settlement_batch_id
+                ),
+                amount_usdt=snapshot[
+                    "amount_usdt"
+                ],
+                request_id=snapshot[
+                    "request_id"
+                ],
+                metadata={
+                    "source": (
+                        "negative_bybit_flow_"
+                        "live_service"
+                    ),
+                    "intent_schema": (
+                        WITHDRAWAL_INTENT_SCHEMA
+                    ),
+                    "intent_state": "submitting",
+                    "claim_token": claim_token,
+                    "payload_fingerprint": snapshot[
+                        "payload_fingerprint"
+                    ],
+                    "coin": snapshot["coin"],
+                    "chain": snapshot["chain"],
+                    "address": snapshot[
+                        "address"
+                    ],
+                    "account_type": snapshot[
+                        "account_type"
+                    ],
+                    "fee_type": snapshot[
+                        "fee_type"
+                    ],
+                    "force_chain": snapshot[
+                        "force_chain"
+                    ],
+                    "fee_revalidated": True,
+                },
+            )
+        )
+
+        # Persist Guard audit and release its
+        # transaction before the HTTP POST.
+        db.commit()
+
+    except OperationGuardBlockedError as exc:
+        db.commit()
+
+        return _mark_withdrawal_guard_blocked(
+            db,
+            settlement_batch_id=(
+                settlement_batch_id
+            ),
+            snapshot=snapshot,
+            claim_token=claim_token,
+            error=exc,
+            now=resolved_now,
+        )
+
+    try:
+        created_withdrawal = (
+            create_master_withdrawal(
+                bybit_client,
+                request_id=snapshot[
+                    "request_id"
+                ],
+                coin=snapshot["coin"],
+                chain=snapshot["chain"],
+                address=snapshot["address"],
+                amount_usdt=snapshot[
+                    "amount_usdt"
+                ],
+                amount_str=snapshot[
+                    "amount_text"
+                ],
+                amount_precision=snapshot[
+                    "amount_precision"
+                ],
+                fee_type=snapshot[
+                    "fee_type"
+                ],
+                account_type=snapshot[
+                    "account_type"
+                ],
+                timestamp_ms=timestamp_ms,
+                force_chain=snapshot[
+                    "force_chain"
+                ],
+            )
+        )
+
+    except (
+        BybitApiError,
+        BybitAssetFlowError,
+    ) as exc:
+        return _mark_withdrawal_submit_unknown(
+            db,
+            settlement_batch_id=(
+                settlement_batch_id
+            ),
+            snapshot=snapshot,
+            claim_token=claim_token,
+            error=exc,
+            now=resolved_now,
+        )
+
+    (
+        settlement_batch,
+        _,
+        flow,
+    ) = _locked_withdrawal_context(
+        db,
+        settlement_batch_id=(
+            settlement_batch_id
+        ),
+    )
+
+    current_intent = deepcopy(
+        flow.withdrawal_intent_json
+    )
+
+    if not isinstance(current_intent, dict):
+        raise NegativeBybitFlowError(
+            "Withdrawal intent missing after POST "
+            "acknowledgement"
+        )
+
+    _validate_withdrawal_snapshot_unchanged(
+        flow=flow,
+        intent=current_intent,
+        snapshot=snapshot,
+        allowed_states={"submitting"},
+    )
+
+    if not _withdrawal_claim_matches(
+        intent=current_intent,
+        claim_token=claim_token,
+    ):
+        raise NegativeBybitFlowError(
+            "Withdrawal submit claim ownership "
+            "mismatch"
+        )
+
+    try:
+        _validate_exact_withdrawal_ack(
+            record=created_withdrawal,
+            snapshot=snapshot,
+        )
+    except NegativeBybitFlowError as exc:
+        return _mark_withdrawal_ack_mismatch(
+            db,
+            settlement_batch=(
+                settlement_batch
+            ),
+            flow=flow,
+            current_intent=current_intent,
+            snapshot=snapshot,
+            claim_token=claim_token,
+            guard_event_id=(
+                guard_decision.event_id
+            ),
+            created_withdrawal=(
+                created_withdrawal
+            ),
+            error=exc,
+            now=resolved_now,
+        )
+
+    current_intent["state"] = "reconciling"
+    current_intent["acknowledgement"] = {
+        "outcome": "accepted",
+        "claim_token": claim_token,
+        "guard_event_id": (
+            guard_decision.event_id
+        ),
+        "acknowledged_at": (
+            resolved_now.isoformat()
+        ),
+        "request_id": (
+            created_withdrawal.request_id
+        ),
+        "withdrawal_id": (
+            created_withdrawal.withdrawal_id
+        ),
+        "status": (
+            created_withdrawal.status
+        ),
+        "tx_hash": (
+            created_withdrawal.tx_hash
+        ),
+        "response": _json_dict(
+            created_withdrawal.raw
+        ),
+        "bybit_post_performed": True,
+        "no_automatic_resend": True,
+    }
+
+    flow.withdrawal_intent_json = (
+        current_intent
+    )
+    flow.withdrawal_id = (
+        created_withdrawal.withdrawal_id
+    )
+    flow.withdrawal_status = (
+        created_withdrawal.status
+    )
+    flow.withdrawal_amount_usdt = (
+        snapshot["amount_usdt"]
+    )
+    flow.withdrawal_fee_usdt = (
+        snapshot["fee_usdt"]
+    )
+    flow.withdrawal_coin = snapshot["coin"]
+    flow.withdrawal_chain = snapshot["chain"]
+    flow.withdrawal_address = (
+        snapshot["address"]
+    )
+    flow.withdrawal_tx_hash = (
+        created_withdrawal.tx_hash
+    )
+    flow.withdrawal_created_at = (
+        resolved_now
+    )
+    flow.status = (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILING
+    )
+    flow.error = None
+    flow.updated_at = resolved_now
+
+    settlement_batch.status = (
+        BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING
+    )
+    settlement_batch.error = None
+    settlement_batch.updated_at = (
+        resolved_now
+    )
+
+    db.add(flow)
+    db.add(settlement_batch)
+    db.flush()
+
+    result = _step_result(
+        ok=True,
+        transition="submit_withdrawal",
+        settlement_batch=settlement_batch,
+        flow=flow,
+        status_before=status_before,
+        settlement_status_before=(
+            settlement_status_before
+        ),
+        diagnostics={
+            "did_bybit_post": True,
+            "bybit_post_count": 1,
+            "bybit_get_count": 1,
+            "guard_event_id": (
+                guard_decision.event_id
+            ),
+            "claim_token": claim_token,
+            "payload_fingerprint": snapshot[
+                "payload_fingerprint"
+            ],
+            "no_automatic_resend": True,
+            "next_transition": (
+                "reconcile_withdrawal"
+            ),
+        },
+    )
+
+    db.commit()
+
+    return result
+
+
 def resume_negative_bybit_flow_once(
     db: Session,
     *,
@@ -3834,6 +5598,46 @@ def resume_negative_bybit_flow_once(
             amounts=amounts,
         )
 
+        if str(flow.status) == (
+            BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+        ):
+            if str(settlement_batch.status) != (
+                BATCH_STATUS_FAILED_REQUIRES_REVIEW
+            ):
+                raise NegativeBybitFlowError(
+                    "Failed flow has incompatible "
+                    "settlement batch status"
+                )
+
+            result = _step_result(
+                ok=False,
+                transition=(
+                    "failed_requires_review_"
+                    "already_recorded"
+                ),
+                settlement_batch=settlement_batch,
+                flow=flow,
+                status_before=status_before,
+                settlement_status_before=(
+                    settlement_status_before
+                ),
+                idempotent=True,
+                error=flow.error,
+                diagnostics={
+                    "did_bybit_post": False,
+                    "bybit_post_count": 0,
+                    "bybit_get_count": 0,
+                    "bsc_rpc_read_count": 0,
+                    "no_automatic_resend": True,
+                    "reserve_release_allowed": False,
+                    "pricing_unlock_allowed": False,
+                },
+            )
+
+            db.commit()
+
+            return result
+
         if isinstance(
             flow.universal_transfer_intent_json,
             dict,
@@ -3901,52 +5705,168 @@ def resume_negative_bybit_flow_once(
                     flow.withdrawal_intent_json,
                     dict,
                 ):
-                    _validate_withdrawal_intent(
-                        flow=flow,
-                        intent=(
-                            flow
-                            .withdrawal_intent_json
-                        ),
-                        allowed_states={"prepared"},
+                    withdrawal_intent = (
+                        flow
+                        .withdrawal_intent_json
                     )
 
-                    if str(flow.status) != (
-                        BYBIT_FLOW_STATUS_WITHDRAWAL_INTENT_PREPARED
-                    ):
-                        raise NegativeBybitFlowError(
-                            "Prepared withdrawal intent "
-                            "has incompatible flow status: "
-                            f"{flow.status}"
+                    withdrawal_state = str(
+                        withdrawal_intent.get(
+                            "state"
+                        )
+                        or ""
+                    ).strip()
+
+                    if withdrawal_state == "prepared":
+                        _validate_withdrawal_intent(
+                            flow=flow,
+                            intent=withdrawal_intent,
+                            allowed_states={
+                                "prepared"
+                            },
                         )
 
-                    result = _step_result(
-                        ok=True,
-                        transition=(
-                            "withdrawal_intent_"
-                            "already_prepared"
-                        ),
-                        settlement_batch=(
-                            settlement_batch
-                        ),
-                        flow=flow,
-                        status_before=status_before,
-                        settlement_status_before=(
-                            settlement_status_before
-                        ),
-                        idempotent=True,
-                        diagnostics={
-                            "did_bybit_post": False,
-                            "bybit_post_count": 0,
-                            "bybit_get_count": 0,
-                            "bsc_rpc_read_count": 0,
-                            "next_transition": (
-                                "submit_withdrawal"
-                            ),
-                        },
-                    )
+                        if str(flow.status) != (
+                            BYBIT_FLOW_STATUS_WITHDRAWAL_INTENT_PREPARED
+                        ):
+                            raise NegativeBybitFlowError(
+                                "Prepared withdrawal "
+                                "intent has incompatible "
+                                "flow status: "
+                                f"{flow.status}"
+                            )
 
-                    db.commit()
-                    return result
+                        return _submit_withdrawal_once(
+                            db,
+                            settlement_batch=(
+                                settlement_batch
+                            ),
+                            flow=flow,
+                            bybit_client=(
+                                bybit_client
+                            ),
+                            resolved_now=(
+                                resolved_now
+                            ),
+                            status_before=(
+                                status_before
+                            ),
+                            settlement_status_before=(
+                                settlement_status_before
+                            ),
+                        )
+
+                    if withdrawal_state in {
+                        "submitting",
+                        "reconciling",
+                    }:
+                        _validate_withdrawal_intent(
+                            flow=flow,
+                            intent=withdrawal_intent,
+                            allowed_states={
+                                "submitting",
+                                "reconciling",
+                            },
+                        )
+
+                        expected_status = (
+                            BYBIT_FLOW_STATUS_WITHDRAWAL_SUBMITTING
+                            if withdrawal_state
+                            == "submitting"
+                            else BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILING
+                        )
+
+                        if str(flow.status) != (
+                            expected_status
+                        ):
+                            raise NegativeBybitFlowError(
+                                "Withdrawal intent and "
+                                "flow status mismatch: "
+                                f"intent={withdrawal_state}, "
+                                f"flow={flow.status}"
+                            )
+
+                        result = _step_result(
+                            ok=False,
+                            transition=(
+                                "withdrawal_"
+                                "reconciliation_pending"
+                            ),
+                            settlement_batch=(
+                                settlement_batch
+                            ),
+                            flow=flow,
+                            status_before=status_before,
+                            settlement_status_before=(
+                                settlement_status_before
+                            ),
+                            idempotent=True,
+                            diagnostics={
+                                "pending": (
+                                    "withdrawal_"
+                                    "reconciliation"
+                                ),
+                                "did_bybit_post": False,
+                                "bybit_post_count": 0,
+                                "bybit_get_count": 0,
+                                "no_automatic_resend": True,
+                                "next_transition": (
+                                    "reconcile_withdrawal"
+                                ),
+                            },
+                        )
+
+                        db.commit()
+
+                        return result
+
+                    if withdrawal_state == (
+                        "failed_requires_review"
+                    ):
+                        if str(flow.status) != (
+                            BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+                        ):
+                            raise NegativeBybitFlowError(
+                                "Failed withdrawal "
+                                "intent has incompatible "
+                                "flow status"
+                            )
+
+                        result = _step_result(
+                            ok=False,
+                            transition=(
+                                "failed_requires_review_"
+                                "already_recorded"
+                            ),
+                            settlement_batch=(
+                                settlement_batch
+                            ),
+                            flow=flow,
+                            status_before=status_before,
+                            settlement_status_before=(
+                                settlement_status_before
+                            ),
+                            idempotent=True,
+                            error=flow.error,
+                            diagnostics={
+                                "did_bybit_post": False,
+                                "bybit_post_count": 0,
+                                "bybit_get_count": 0,
+                                "no_automatic_resend": True,
+                                "reserve_release_allowed": False,
+                                "pricing_unlock_allowed": False,
+                            },
+                        )
+
+                        db.commit()
+
+                        return result
+
+                    raise NegativeBybitFlowError(
+                        "Unsupported withdrawal "
+                        "intent state: "
+                        f"{withdrawal_state or 'empty'}"
+                    )
 
                 if (
                     flow.withdrawal_intent_json
