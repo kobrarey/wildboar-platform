@@ -31,6 +31,8 @@ from app.settlement.statuses import (
     BYBIT_FLOW_STATUS_CREATED,
     BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW,
     BYBIT_FLOW_STATUS_MASTER_BALANCE_CONFIRMED,
+    BYBIT_FLOW_STATUS_SETTLEMENT_WALLET_RECEIPT_CONFIRMED,
+    BYBIT_FLOW_STATUS_SETTLEMENT_WALLET_RECEIPT_PENDING,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_INTENT_PREPARED,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILING,
     BYBIT_FLOW_STATUS_UNIVERSAL_TRANSFER_RECONCILED,
@@ -150,6 +152,13 @@ def make_flow() -> SimpleNamespace:
         settlement_wallet_address=None,
         settlement_wallet_balance_before_usdt=None,
         settlement_wallet_balance_after_usdt=None,
+        settlement_wallet_receipt_confirmations=None,
+        settlement_wallet_receipt_block_number=None,
+        settlement_wallet_receipt_status=None,
+        settlement_wallet_received_usdt=None,
+        settlement_wallet_receipt_tx_hash=None,
+        settlement_wallet_receipt_confirmed_at=None,
+        settlement_wallet_receipt_json=None,
         withdrawal_policy_version=None,
         coin_info_snapshot_json=None,
         withdrawal_request_id=None,
@@ -1032,6 +1041,331 @@ def advance_to_withdrawal_reconciling(
     return SimpleNamespace(
         flow=prepared.flow,
         reads=prepared.reads,
+    )
+
+
+def advance_to_withdrawal_reconciled(
+    env: SimpleNamespace,
+    monkeypatch: pytest.MonkeyPatch,
+) -> SimpleNamespace:
+    advanced = (
+        advance_to_withdrawal_reconciling(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    record = make_withdrawal_record(
+        request_id=flow.withdrawal_request_id,
+        status="SUCCESS",
+        tx_hash="0xabc123",
+    )
+
+    install_withdrawal_reconciliation_reads(
+        monkeypatch,
+        env,
+        exact_record=record,
+        bounded_records=[record],
+    )
+
+    result = resume_once(env)
+
+    assert result.ok is True
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_withdrawal_confirmed"
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_WITHDRAWAL_RECONCILED
+    )
+
+    assert flow.withdrawal_intent_json[
+        "state"
+    ] == "confirmed"
+
+    assert flow.withdrawal_tx_hash == (
+        "0xabc123"
+    )
+
+    return SimpleNamespace(
+        flow=flow,
+        reads=advanced.reads,
+        withdrawal_record=record,
+    )
+
+
+def install_bsc_receipt_web3(
+    monkeypatch: pytest.MonkeyPatch,
+    env: SimpleNamespace,
+    *,
+    get_web3_error: (
+        BaseException | None
+    ) = None,
+    receipt_error: (
+        BaseException | None
+    ) = None,
+    receipt_present: bool = True,
+    receipt_status: int = 1,
+    receipt_tx_hash: str = "0xabc123",
+    receipt_block_number: int = 55500010,
+    current_block_number: int = 55500021,
+    current_block_error: (
+        BaseException | None
+    ) = None,
+    transfer_amounts_usdt: tuple[
+        Decimal,
+        ...,
+    ] = (
+        Decimal("100"),
+    ),
+    transfer_destination: (
+        str | None
+    ) = None,
+    balance_after_usdt: Decimal = (
+        Decimal("107.25")
+    ),
+) -> SimpleNamespace:
+    flow = env.state["flow"]
+
+    wallet_address = str(
+        flow.settlement_wallet_address
+    )
+
+    contract_address = str(
+        service.settings.BSC_USDT_CONTRACT
+    )
+
+    decimals = int(
+        service.settings.BSC_USDT_DECIMALS
+    )
+
+    transfer_topic = (
+        "0x"
+        + ("ab" * 32)
+    )
+
+    source_topic = (
+        "0x"
+        + ("0" * 24)
+        + ("2" * 40)
+    )
+
+    resolved_destination = (
+        transfer_destination
+        if transfer_destination is not None
+        else wallet_address
+    )
+
+    destination_topic = (
+        "0x"
+        + ("0" * 24)
+        + resolved_destination[
+            2:
+        ].lower()
+    )
+
+    logs: list[dict[str, Any]] = []
+
+    for log_index, amount_usdt in enumerate(
+        transfer_amounts_usdt
+    ):
+        amount_raw_decimal = (
+            Decimal(amount_usdt)
+            * (
+                Decimal("10")
+                ** decimals
+            )
+        )
+
+        amount_raw = int(
+            amount_raw_decimal
+        )
+
+        assert Decimal(amount_raw) == (
+            amount_raw_decimal
+        )
+
+        logs.append(
+            {
+                "address": contract_address,
+                "topics": [
+                    transfer_topic,
+                    source_topic,
+                    destination_topic,
+                ],
+                "data": amount_raw,
+                "logIndex": log_index,
+            }
+        )
+
+    receipt = (
+        {
+            "transactionHash": (
+                receipt_tx_hash
+            ),
+            "status": receipt_status,
+            "blockNumber": (
+                receipt_block_number
+            ),
+            "logs": logs,
+        }
+        if receipt_present
+        else None
+    )
+
+    balance_after_raw_decimal = (
+        Decimal(balance_after_usdt)
+        * (
+            Decimal("10")
+            ** decimals
+        )
+    )
+
+    balance_after_raw = int(
+        balance_after_raw_decimal
+    )
+
+    assert Decimal(balance_after_raw) == (
+        balance_after_raw_decimal
+    )
+
+    receipt_calls: list[str] = []
+    balance_calls: list[
+        dict[str, Any]
+    ] = []
+    contract_calls: list[
+        dict[str, Any]
+    ] = []
+
+    class FakeBalanceCall:
+        def __init__(
+            self,
+            address: str,
+        ) -> None:
+            self.address = address
+
+        def call(
+            self,
+            *,
+            block_identifier,
+        ) -> int:
+            balance_calls.append(
+                {
+                    "address": self.address,
+                    "block_identifier": int(
+                        block_identifier
+                    ),
+                }
+            )
+
+            return balance_after_raw
+
+    class FakeContractFunctions:
+        def balanceOf(
+            self,
+            address,
+        ):
+            return FakeBalanceCall(
+                str(address)
+            )
+
+    class FakeContract:
+        def __init__(self) -> None:
+            self.functions = (
+                FakeContractFunctions()
+            )
+
+    class FakeEth:
+        def get_transaction_receipt(
+            self,
+            tx_hash,
+        ):
+            receipt_calls.append(
+                str(tx_hash)
+            )
+
+            if receipt_error is not None:
+                raise receipt_error
+
+            return deepcopy(receipt)
+
+        @property
+        def block_number(self):
+            if current_block_error is not None:
+                raise current_block_error
+
+            return current_block_number
+
+        def contract(
+            self,
+            *,
+            address,
+            abi,
+        ):
+            contract_calls.append(
+                {
+                    "address": str(address),
+                    "abi": deepcopy(abi),
+                }
+            )
+
+            return FakeContract()
+
+    class FakeWeb3:
+        def __init__(self) -> None:
+            self.eth = FakeEth()
+
+        @staticmethod
+        def to_checksum_address(
+            address,
+        ):
+            return str(address)
+
+        @staticmethod
+        def keccak(
+            *,
+            text,
+        ):
+            assert text == (
+                service
+                .ERC20_TRANSFER_EVENT_SIGNATURE
+            )
+
+            return bytes.fromhex(
+                "ab" * 32
+            )
+
+    fake_web3 = FakeWeb3()
+
+    def get_web3():
+        assert env.db.lock_active is False
+
+        env.db.events.append(
+            "bsc_receipt_rpc"
+        )
+
+        if get_web3_error is not None:
+            raise get_web3_error
+
+        return fake_web3
+
+    monkeypatch.setattr(
+        service,
+        "get_web3",
+        get_web3,
+    )
+
+    return SimpleNamespace(
+        web3=fake_web3,
+        receipt_calls=receipt_calls,
+        balance_calls=balance_calls,
+        contract_calls=contract_calls,
+        receipt=receipt,
+        logs=logs,
     )
 
 
@@ -4617,6 +4951,12 @@ def test_withdrawal_reconciliation_exact_success_confirms_without_post(
         env.client.post_calls
     ) == post_count_before
 
+    install_bsc_receipt_web3(
+        monkeypatch,
+        env,
+        receipt_present=False,
+    )
+
     get_count_before_rerun = len(
         env.client.get_calls
     )
@@ -4626,11 +4966,13 @@ def test_withdrawal_reconciliation_exact_success_confirms_without_post(
 
     rerun = resume_once(env)
 
-    assert rerun.ok is True
-    assert rerun.idempotent is True
+    assert rerun.ok is False
     assert rerun.diagnostics[
         "transition"
-    ] == "withdrawal_already_reconciled"
+    ] == (
+        "reconcile_settlement_wallet_"
+        "receipt_pending"
+    )
 
     assert rerun.diagnostics[
         "bybit_get_count"
@@ -4638,10 +4980,18 @@ def test_withdrawal_reconciliation_exact_success_confirms_without_post(
     assert rerun.diagnostics[
         "bybit_post_count"
     ] == 0
+    assert rerun.diagnostics[
+        "bsc_rpc_read_count"
+    ] == 1
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_SETTLEMENT_WALLET_RECEIPT_PENDING
+    )
 
     assert len(
         env.client.get_calls
     ) == get_count_before_rerun
+
     assert len(
         env.client.post_calls
     ) == post_count_before_rerun
@@ -4892,3 +5242,728 @@ def test_withdrawal_reconciliation_terminal_status_requires_review(
     assert len(
         env.client.post_calls
     ) == post_count_before
+
+
+def test_settlement_wallet_receipt_rpc_unavailable_stays_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    advanced = (
+        advance_to_withdrawal_reconciled(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    install_bsc_receipt_web3(
+        monkeypatch,
+        env,
+        get_web3_error=RuntimeError(
+            "simulated BSC RPC unavailable"
+        ),
+    )
+
+    get_count_before = len(
+        env.client.get_calls
+    )
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    evidence = (
+        flow.settlement_wallet_receipt_json
+    )
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_settlement_wallet_"
+        "receipt_pending"
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_SETTLEMENT_WALLET_RECEIPT_PENDING
+    )
+    assert flow.settlement_wallet_receipt_status == (
+        "PENDING"
+    )
+
+    assert evidence["state"] == "pending"
+    assert (
+        "simulated BSC RPC unavailable"
+        in evidence["pending_error"]
+    )
+    assert evidence[
+        "raw_receipt_omitted"
+    ] is True
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_settlement_wallet_receipt_missing_stays_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    advanced = (
+        advance_to_withdrawal_reconciled(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    calls = install_bsc_receipt_web3(
+        monkeypatch,
+        env,
+        receipt_present=False,
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    evidence = (
+        flow.settlement_wallet_receipt_json
+    )
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_settlement_wallet_"
+        "receipt_pending"
+    )
+
+    assert evidence["state"] == "pending"
+    assert evidence["receipt_status"] is None
+    assert evidence["confirmations"] == 0
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_SETTLEMENT_WALLET_RECEIPT_PENDING
+    )
+    assert flow.settlement_wallet_receipt_confirmations == 0
+
+    assert calls.receipt_calls == [
+        "0xabc123",
+    ]
+    assert calls.balance_calls == []
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_settlement_wallet_receipt_insufficient_confirmations_stays_pending(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    advanced = (
+        advance_to_withdrawal_reconciled(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    receipt_block = 55500010
+
+    calls = install_bsc_receipt_web3(
+        monkeypatch,
+        env,
+        receipt_block_number=receipt_block,
+        current_block_number=(
+            receipt_block + 4
+        ),
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    evidence = (
+        flow.settlement_wallet_receipt_json
+    )
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_settlement_wallet_"
+        "receipt_pending"
+    )
+
+    assert evidence["state"] == "pending"
+    assert evidence["receipt_status"] == 1
+    assert evidence["confirmations"] == 5
+
+    assert evidence[
+        "required_confirmations"
+    ] == (
+        service.settings
+        .NEGATIVE_NET_BSC_INTENT_CONFIRMATIONS_REQUIRED
+    )
+
+    assert flow.settlement_wallet_receipt_confirmations == 5
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_SETTLEMENT_WALLET_RECEIPT_PENDING
+    )
+
+    # Logs and balance are not accepted before
+    # the required confirmations.
+    assert calls.balance_calls == []
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_settlement_wallet_receipt_timeout_requires_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    advanced = (
+        advance_to_withdrawal_reconciled(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    install_bsc_receipt_web3(
+        monkeypatch,
+        env,
+        receipt_present=False,
+    )
+
+    max_pending_sec = int(
+        service.settings
+        .NEGATIVE_NET_BSC_INTENT_MAX_PENDING_SEC
+    )
+
+    later = (
+        flow.withdrawal_confirmed_at
+        + timedelta(
+            seconds=max_pending_sec + 1
+        )
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = (
+        service.resume_negative_bybit_flow_once(
+            env.db,
+            settlement_batch_id=101,
+            bybit_client=env.client,
+            fund_sub_uid="70001",
+            master_uid="90001",
+            now=later,
+        )
+    )
+
+    evidence = (
+        flow.settlement_wallet_receipt_json
+    )
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_settlement_wallet_"
+        "receipt_failed"
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert flow.settlement_wallet_receipt_status == (
+        "FAILED_REQUIRES_REVIEW"
+    )
+
+    assert evidence["state"] == (
+        "failed_requires_review"
+    )
+    assert evidence["pending_age_sec"] == (
+        max_pending_sec + 1
+    )
+    assert (
+        "exceeded maximum pending time"
+        in evidence["error"].lower()
+    )
+
+    assert result.diagnostics[
+        "reserve_release_allowed"
+    ] is False
+    assert result.diagnostics[
+        "pricing_unlock_allowed"
+    ] is False
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_settlement_wallet_receipt_status_zero_requires_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    advanced = (
+        advance_to_withdrawal_reconciled(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    calls = install_bsc_receipt_web3(
+        monkeypatch,
+        env,
+        receipt_status=0,
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    evidence = (
+        flow.settlement_wallet_receipt_json
+    )
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_settlement_wallet_"
+        "receipt_failed"
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert evidence["receipt_status"] == 0
+
+    assert (
+        "receipt status 0"
+        in evidence["error"].lower()
+    )
+
+    assert calls.balance_calls == []
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_settlement_wallet_receipt_tx_hash_mismatch_requires_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    advanced = (
+        advance_to_withdrawal_reconciled(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    install_bsc_receipt_web3(
+        monkeypatch,
+        env,
+        receipt_tx_hash="0xdeadbeef",
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    evidence = (
+        flow.settlement_wallet_receipt_json
+    )
+
+    assert result.ok is False
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert (
+        "transaction hash mismatch"
+        in evidence["error"].lower()
+    )
+
+    assert evidence[
+        "observed_tx_hash"
+    ] == "0xdeadbeef"
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+@pytest.mark.parametrize(
+    (
+        "transfer_amounts",
+        "expected_error",
+    ),
+    [
+        (
+            (),
+            "exactly one usdt transfer",
+        ),
+        (
+            (
+                Decimal("100"),
+                Decimal("100"),
+            ),
+            "exactly one usdt transfer",
+        ),
+        (
+            (
+                Decimal("99"),
+            ),
+            "transfer amount does not match",
+        ),
+    ],
+)
+def test_settlement_wallet_receipt_transfer_log_mismatch_requires_review(
+    monkeypatch: pytest.MonkeyPatch,
+    transfer_amounts: tuple[
+        Decimal,
+        ...,
+    ],
+    expected_error: str,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    advanced = (
+        advance_to_withdrawal_reconciled(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    install_bsc_receipt_web3(
+        monkeypatch,
+        env,
+        transfer_amounts_usdt=(
+            transfer_amounts
+        ),
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    evidence = (
+        flow.settlement_wallet_receipt_json
+    )
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_settlement_wallet_"
+        "receipt_failed"
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert expected_error in (
+        evidence["error"].lower()
+    )
+
+    assert evidence[
+        "matched_transfer_log_count"
+    ] == len(transfer_amounts)
+
+    assert evidence[
+        "exact_transfer_log_match"
+    ] is False
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_settlement_wallet_receipt_balance_delta_mismatch_requires_review(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    advanced = (
+        advance_to_withdrawal_reconciled(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    install_bsc_receipt_web3(
+        monkeypatch,
+        env,
+        transfer_amounts_usdt=(
+            Decimal("100"),
+        ),
+        # Baseline is 7.25, so this produces
+        # delta=99 instead of the required 100.
+        balance_after_usdt=Decimal(
+            "106.25"
+        ),
+    )
+
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    evidence = (
+        flow.settlement_wallet_receipt_json
+    )
+
+    assert result.ok is False
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_settlement_wallet_"
+        "receipt_failed"
+    )
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_FAILED_REQUIRES_REVIEW
+    )
+
+    assert evidence[
+        "exact_transfer_log_match"
+    ] is True
+    assert evidence[
+        "exact_balance_delta_match"
+    ] is False
+
+    assert evidence[
+        "balance_delta_usdt"
+    ] == "99"
+
+    assert (
+        "balance delta"
+        in evidence["error"].lower()
+    )
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+
+def test_settlement_wallet_receipt_exact_confirmation_is_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    env = install_service_fakes(monkeypatch)
+
+    advanced = (
+        advance_to_withdrawal_reconciled(
+            env,
+            monkeypatch,
+        )
+    )
+
+    flow = advanced.flow
+
+    calls = install_bsc_receipt_web3(
+        monkeypatch,
+        env,
+        receipt_status=1,
+        receipt_tx_hash="0xabc123",
+        receipt_block_number=55500010,
+        current_block_number=55500021,
+        transfer_amounts_usdt=(
+            Decimal("100"),
+        ),
+        balance_after_usdt=Decimal(
+            "107.25"
+        ),
+    )
+
+    get_count_before = len(
+        env.client.get_calls
+    )
+    post_count_before = len(
+        env.client.post_calls
+    )
+
+    result = resume_once(env)
+
+    evidence = (
+        flow.settlement_wallet_receipt_json
+    )
+
+    assert result.ok is True
+    assert result.diagnostics[
+        "transition"
+    ] == (
+        "reconcile_settlement_wallet_"
+        "receipt_confirmed"
+    )
+
+    assert result.diagnostics[
+        "bybit_get_count"
+    ] == 0
+    assert result.diagnostics[
+        "bybit_post_count"
+    ] == 0
+    assert result.diagnostics[
+        "bsc_rpc_read_count"
+    ] == 1
+
+    assert flow.status == (
+        BYBIT_FLOW_STATUS_SETTLEMENT_WALLET_RECEIPT_CONFIRMED
+    )
+    assert env.batch.status == (
+        BATCH_STATUS_NEGATIVE_NET_WITHDRAWAL_RECONCILING
+    )
+
+    assert flow.settlement_wallet_receipt_status == (
+        "CONFIRMED"
+    )
+    assert flow.settlement_wallet_received_usdt == (
+        Decimal("100")
+    )
+    assert flow.settlement_wallet_balance_before_usdt == (
+        Decimal("7.25")
+    )
+    assert flow.settlement_wallet_balance_after_usdt == (
+        Decimal("107.25")
+    )
+
+    assert flow.settlement_wallet_receipt_tx_hash == (
+        "0xabc123"
+    )
+    assert flow.settlement_wallet_receipt_confirmations == 12
+    assert flow.settlement_wallet_receipt_block_number == (
+        55500010
+    )
+    assert flow.settlement_wallet_receipt_confirmed_at == NOW
+
+    assert evidence["state"] == "confirmed"
+    assert evidence[
+        "exact_transfer_log_match"
+    ] is True
+    assert evidence[
+        "exact_balance_delta_match"
+    ] is True
+    assert evidence[
+        "balance_delta_usdt"
+    ] == "100"
+    assert evidence[
+        "raw_receipt_omitted"
+    ] is True
+    assert "raw_receipt" not in evidence
+
+    assert calls.receipt_calls == [
+        "0xabc123",
+    ]
+    assert len(calls.balance_calls) == 1
+    assert calls.balance_calls[0][
+        "block_identifier"
+    ] == 55500021
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before
+
+    receipt_call_count_before = len(
+        calls.receipt_calls
+    )
+    balance_call_count_before = len(
+        calls.balance_calls
+    )
+    get_count_before_rerun = len(
+        env.client.get_calls
+    )
+    post_count_before_rerun = len(
+        env.client.post_calls
+    )
+
+    rerun = resume_once(env)
+
+    assert rerun.ok is True
+    assert rerun.idempotent is True
+    assert rerun.diagnostics[
+        "transition"
+    ] == (
+        "settlement_wallet_receipt_"
+        "already_confirmed"
+    )
+
+    assert rerun.diagnostics[
+        "bsc_rpc_read_count"
+    ] == 0
+    assert rerun.diagnostics[
+        "bybit_get_count"
+    ] == 0
+    assert rerun.diagnostics[
+        "bybit_post_count"
+    ] == 0
+
+    assert len(
+        calls.receipt_calls
+    ) == receipt_call_count_before
+
+    assert len(
+        calls.balance_calls
+    ) == balance_call_count_before
+
+    assert len(
+        env.client.get_calls
+    ) == get_count_before_rerun
+
+    assert len(
+        env.client.post_calls
+    ) == post_count_before_rerun
