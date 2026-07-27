@@ -119,6 +119,10 @@ BYBIT_CASH_DELIVERY_REPORT_SCHEMA = (
     "negative_cash_delivery_report_v1"
 )
 
+USER_WALLET_DB_GATE_SCHEMA = (
+    "negative_finalization_user_wallet_db_gate_v1"
+)
+
 
 class NegativeShareQuantityError(
     NegativeFinalizationError
@@ -1957,6 +1961,9 @@ def _validate_balance_refresh_evidence(
                 "amount_usdt": _q10(
                     leg.amount_usdt
                 ),
+                "observed_after_usdt": (
+                    _q10(leg_after)
+                ),
                 "block_number": (
                     block_number
                 ),
@@ -1994,6 +2001,656 @@ def _validate_balance_refresh_evidence(
         "validated_legs": validated_legs,
         "absolute_onchain_sync": True,
         "arithmetic_balance_updates": False,
+    }
+
+
+def _authoritative_payout_wallet_id(
+    leg: FundNegativePayoutLeg,
+) -> int:
+    raw_wallet_id = (
+        leg.to_user_wallet_id
+        if leg.to_user_wallet_id is not None
+        else leg.user_wallet_id
+    )
+
+    if (
+        raw_wallet_id is None
+        or isinstance(
+            raw_wallet_id,
+            (bool, float),
+        )
+    ):
+        raise NegativeFinalizationError(
+            "payout_user_wallet_missing: "
+            "authoritative payout wallet ID is "
+            f"missing for payout_leg_id={leg.id}"
+        )
+
+    try:
+        wallet_id = int(
+            str(raw_wallet_id).strip()
+        )
+    except (
+        TypeError,
+        ValueError,
+    ) as exc:
+        raise NegativeFinalizationError(
+            "payout_user_wallet_missing: "
+            "authoritative payout wallet ID is "
+            f"invalid for payout_leg_id={leg.id}"
+        ) from exc
+
+    if wallet_id <= 0:
+        raise NegativeFinalizationError(
+            "payout_user_wallet_missing: "
+            "authoritative payout wallet ID must "
+            f"be positive for payout_leg_id={leg.id}"
+        )
+
+    return wallet_id
+
+
+def _lock_payout_user_wallets(
+    db: Session,
+    *,
+    payout_legs: list[
+        FundNegativePayoutLeg
+    ],
+) -> dict[int, UserWallet]:
+    if not payout_legs:
+        raise NegativeFinalizationError(
+            "payout_user_wallet_missing: "
+            "no payout legs were supplied"
+        )
+
+    wallet_id_to_leg_id: dict[
+        int,
+        int,
+    ] = {}
+
+    for leg in payout_legs:
+        wallet_id = (
+            _authoritative_payout_wallet_id(
+                leg
+            )
+        )
+
+        existing_leg_id = (
+            wallet_id_to_leg_id.get(
+                wallet_id
+            )
+        )
+
+        if existing_leg_id is not None:
+            raise NegativeFinalizationError(
+                "payout_user_wallet_duplicate_mapping: "
+                f"user_wallet_id={wallet_id} is "
+                "referenced by payout legs "
+                f"{existing_leg_id} and {leg.id}"
+            )
+
+        wallet_id_to_leg_id[
+            wallet_id
+        ] = int(leg.id)
+
+    wallet_ids = sorted(
+        wallet_id_to_leg_id
+    )
+
+    wallet_rows = (
+        db.query(UserWallet)
+        .filter(
+            UserWallet.id.in_(
+                wallet_ids
+            )
+        )
+        .order_by(
+            UserWallet.id.asc()
+        )
+        .with_for_update()
+        .all()
+    )
+
+    wallets_by_id: dict[
+        int,
+        UserWallet,
+    ] = {}
+
+    for wallet in wallet_rows:
+        try:
+            wallet_id = int(wallet.id)
+        except (
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise NegativeFinalizationError(
+                "payout_user_wallet_duplicate_mapping: "
+                "loaded payout wallet has an "
+                "invalid primary key"
+            ) from exc
+
+        if wallet_id in wallets_by_id:
+            raise NegativeFinalizationError(
+                "payout_user_wallet_duplicate_mapping: "
+                "duplicate locked UserWallet row: "
+                f"user_wallet_id={wallet_id}"
+            )
+
+        if wallet_id not in (
+            wallet_id_to_leg_id
+        ):
+            raise NegativeFinalizationError(
+                "payout_user_wallet_duplicate_mapping: "
+                "unexpected UserWallet row returned: "
+                f"user_wallet_id={wallet_id}"
+            )
+
+        wallets_by_id[
+            wallet_id
+        ] = wallet
+
+    missing_wallet_ids = sorted(
+        set(wallet_ids)
+        - set(wallets_by_id)
+    )
+
+    if missing_wallet_ids:
+        raise NegativeFinalizationError(
+            "payout_user_wallet_missing: "
+            "exact payout UserWallet rows were "
+            f"not found: {missing_wallet_ids}"
+        )
+
+    if len(wallets_by_id) != len(
+        payout_legs
+    ):
+        raise NegativeFinalizationError(
+            "payout_user_wallet_duplicate_mapping: "
+            "payout leg to UserWallet mapping "
+            "is not one-to-one"
+        )
+
+    return wallets_by_id
+
+
+def _wallet_gate_aware_datetime(
+    value: Any,
+    *,
+    missing_reason: str,
+    naive_reason: str,
+    field_name: str,
+) -> datetime:
+    if value is None:
+        raise NegativeFinalizationError(
+            f"{missing_reason}: "
+            f"{field_name} is missing"
+        )
+
+    if not isinstance(
+        value,
+        datetime,
+    ):
+        raise NegativeFinalizationError(
+            f"{naive_reason}: "
+            f"{field_name} is not a datetime"
+        )
+
+    if (
+        value.tzinfo is None
+        or value.utcoffset() is None
+    ):
+        raise NegativeFinalizationError(
+            f"{naive_reason}: "
+            f"{field_name} must be timezone-aware"
+        )
+
+    return value.astimezone(
+        timezone.utc
+    )
+
+
+def _validate_payout_user_wallet_db_gate(
+    *,
+    payout_batch: FundNegativePayoutBatch,
+    payout_legs: list[
+        FundNegativePayoutLeg
+    ],
+    locked_wallets: dict[
+        int,
+        UserWallet,
+    ],
+    balance_refresh_validation: dict[
+        str,
+        Any,
+    ],
+) -> dict[str, Any]:
+    validated_rows = (
+        balance_refresh_validation.get(
+            "validated_legs"
+        )
+    )
+
+    if not isinstance(
+        validated_rows,
+        list,
+    ):
+        raise NegativeFinalizationError(
+            "payout_user_wallet_missing: "
+            "validated payout balance-refresh "
+            "rows are missing"
+        )
+
+    refresh_by_leg_id: dict[
+        int,
+        dict[str, Any],
+    ] = {}
+
+    for raw_row in validated_rows:
+        if not isinstance(
+            raw_row,
+            dict,
+        ):
+            raise NegativeFinalizationError(
+                "payout_user_wallet_duplicate_mapping: "
+                "invalid validated payout wallet row"
+            )
+
+        leg_id = (
+            _balance_refresh_integer(
+                raw_row.get(
+                    "payout_leg_id"
+                ),
+                field_name=(
+                    "balance_refresh.validated_legs."
+                    "payout_leg_id"
+                ),
+            )
+        )
+
+        if leg_id in refresh_by_leg_id:
+            raise NegativeFinalizationError(
+                "payout_user_wallet_duplicate_mapping: "
+                "duplicate validated payout leg: "
+                f"payout_leg_id={leg_id}"
+            )
+
+        refresh_by_leg_id[
+            leg_id
+        ] = raw_row
+
+    if len(refresh_by_leg_id) != len(
+        payout_legs
+    ):
+        raise NegativeFinalizationError(
+            "payout_user_wallet_duplicate_mapping: "
+            "validated payout wallet row count "
+            "does not match payout leg count"
+        )
+
+    batch_refresh_completed_at = (
+        _wallet_gate_aware_datetime(
+            payout_batch
+            .balance_refresh_completed_at,
+            missing_reason=(
+                "payout_user_wallet_updated_at_missing"
+            ),
+            naive_reason=(
+                "payout_user_wallet_updated_at_"
+                "not_timezone_aware"
+            ),
+            field_name=(
+                "payout_batch."
+                "balance_refresh_completed_at"
+            ),
+        )
+    )
+
+    evidence_rows: list[
+        dict[str, Any]
+    ] = []
+
+    for leg in sorted(
+        payout_legs,
+        key=lambda item: int(item.id),
+    ):
+        leg_id = int(leg.id)
+        wallet_id = (
+            _authoritative_payout_wallet_id(
+                leg
+            )
+        )
+
+        wallet = locked_wallets.get(
+            wallet_id
+        )
+
+        if wallet is None:
+            raise NegativeFinalizationError(
+                "payout_user_wallet_missing: "
+                "locked payout UserWallet is "
+                f"missing for payout_leg_id={leg_id}, "
+                f"user_wallet_id={wallet_id}"
+            )
+
+        try:
+            loaded_wallet_id = int(
+                wallet.id
+            )
+        except (
+            TypeError,
+            ValueError,
+        ) as exc:
+            raise NegativeFinalizationError(
+                "payout_user_wallet_missing: "
+                "loaded payout UserWallet ID "
+                f"is invalid for payout_leg_id={leg_id}"
+            ) from exc
+
+        if loaded_wallet_id != wallet_id:
+            raise NegativeFinalizationError(
+                "payout_user_wallet_missing: "
+                "loaded UserWallet does not match "
+                "the authoritative payout wallet ID: "
+                f"payout_leg_id={leg_id}, "
+                f"expected={wallet_id}, "
+                f"observed={loaded_wallet_id}"
+            )
+
+        if leg.user_id is None:
+            raise NegativeFinalizationError(
+                "payout_user_wallet_user_mismatch: "
+                "payout leg user_id is missing: "
+                f"payout_leg_id={leg_id}"
+            )
+
+        expected_user_id = int(
+            leg.user_id
+        )
+
+        if int(wallet.user_id) != (
+            expected_user_id
+        ):
+            raise NegativeFinalizationError(
+                "payout_user_wallet_user_mismatch: "
+                f"payout_leg_id={leg_id}, "
+                f"user_wallet_id={wallet_id}, "
+                f"expected_user_id={expected_user_id}, "
+                f"observed_user_id={wallet.user_id}"
+            )
+
+        wallet_blockchain = str(
+            wallet.blockchain or ""
+        ).strip().upper()
+
+        if wallet_blockchain != "BSC":
+            raise NegativeFinalizationError(
+                "payout_user_wallet_blockchain_mismatch: "
+                f"payout_leg_id={leg_id}, "
+                f"user_wallet_id={wallet_id}, "
+                f"observed={wallet_blockchain or 'empty'}"
+            )
+
+        expected_address = str(
+            leg.to_address or ""
+        ).strip().lower()
+
+        wallet_address = str(
+            wallet.address or ""
+        ).strip().lower()
+
+        if (
+            not expected_address
+            or wallet_address
+            != expected_address
+        ):
+            raise NegativeFinalizationError(
+                "payout_user_wallet_address_mismatch: "
+                f"payout_leg_id={leg_id}, "
+                f"user_wallet_id={wallet_id}"
+            )
+
+        refresh_row = (
+            refresh_by_leg_id.get(
+                leg_id
+            )
+        )
+
+        if refresh_row is None:
+            raise NegativeFinalizationError(
+                "payout_user_wallet_missing: "
+                "validated balance-refresh row "
+                f"is missing for payout_leg_id={leg_id}"
+            )
+
+        refresh_wallet_id = (
+            _balance_refresh_integer(
+                refresh_row.get(
+                    "user_wallet_id"
+                ),
+                field_name=(
+                    "balance_refresh.validated_legs."
+                    f"{leg_id}.user_wallet_id"
+                ),
+            )
+        )
+
+        if refresh_wallet_id != wallet_id:
+            raise NegativeFinalizationError(
+                "payout_user_wallet_missing: "
+                "balance-refresh wallet ID does "
+                "not match authoritative payout "
+                f"wallet: payout_leg_id={leg_id}"
+            )
+
+        refresh_address = str(
+            refresh_row.get(
+                "address"
+            )
+            or ""
+        ).strip().lower()
+
+        if refresh_address != (
+            expected_address
+        ):
+            raise NegativeFinalizationError(
+                "payout_user_wallet_address_mismatch: "
+                "balance-refresh address does not "
+                "match exact payout wallet: "
+                f"payout_leg_id={leg_id}"
+            )
+
+        expected_after = (
+            _balance_refresh_decimal(
+                refresh_row.get(
+                    "observed_after_usdt"
+                ),
+                field_name=(
+                    "balance_refresh.validated_legs."
+                    f"{leg_id}.observed_after_usdt"
+                ),
+            )
+        )
+
+        if wallet.usdt_balance is None:
+            raise NegativeFinalizationError(
+                "payout_user_wallet_balance_missing: "
+                f"payout_leg_id={leg_id}, "
+                f"user_wallet_id={wallet_id}"
+            )
+
+        db_balance = (
+            _balance_refresh_decimal(
+                wallet.usdt_balance,
+                field_name=(
+                    f"user_wallet_{wallet_id}."
+                    "usdt_balance"
+                ),
+            )
+        )
+
+        if not _same_decimal(
+            db_balance,
+            expected_after,
+        ):
+            raise NegativeFinalizationError(
+                "payout_user_wallet_balance_mismatch: "
+                f"payout_leg_id={leg_id}, "
+                f"user_wallet_id={wallet_id}, "
+                f"expected={_q10(expected_after)}, "
+                f"observed={_q10(db_balance)}"
+            )
+
+        if not _same_decimal(
+            leg.wallet_balance_after_usdt,
+            expected_after,
+        ):
+            raise NegativeFinalizationError(
+                "payout_user_wallet_balance_mismatch: "
+                "payout leg balance-after no longer "
+                "matches authoritative refresh: "
+                f"payout_leg_id={leg_id}"
+            )
+
+        if (
+            wallet.usdt_balance_block
+            is None
+        ):
+            raise NegativeFinalizationError(
+                "payout_user_wallet_block_missing: "
+                f"payout_leg_id={leg_id}, "
+                f"user_wallet_id={wallet_id}"
+            )
+
+        db_block = (
+            _balance_refresh_integer(
+                wallet.usdt_balance_block,
+                field_name=(
+                    f"user_wallet_{wallet_id}."
+                    "usdt_balance_block"
+                ),
+            )
+        )
+
+        expected_block = (
+            _balance_refresh_integer(
+                refresh_row.get(
+                    "block_number"
+                ),
+                field_name=(
+                    "balance_refresh.validated_legs."
+                    f"{leg_id}.block_number"
+                ),
+            )
+        )
+
+        if db_block != expected_block:
+            raise NegativeFinalizationError(
+                "payout_user_wallet_block_mismatch: "
+                f"payout_leg_id={leg_id}, "
+                f"user_wallet_id={wallet_id}, "
+                f"expected={expected_block}, "
+                f"observed={db_block}"
+            )
+
+        payout_confirmed_at = (
+            _wallet_gate_aware_datetime(
+                leg.confirmed_at,
+                missing_reason=(
+                    "payout_user_wallet_updated_at_stale"
+                ),
+                naive_reason=(
+                    "payout_user_wallet_updated_at_"
+                    "not_timezone_aware"
+                ),
+                field_name=(
+                    f"payout_leg_{leg_id}."
+                    "confirmed_at"
+                ),
+            )
+        )
+
+        db_updated_at = (
+            _wallet_gate_aware_datetime(
+                wallet
+                .usdt_balance_updated_at,
+                missing_reason=(
+                    "payout_user_wallet_updated_at_"
+                    "missing"
+                ),
+                naive_reason=(
+                    "payout_user_wallet_updated_at_"
+                    "not_timezone_aware"
+                ),
+                field_name=(
+                    f"user_wallet_{wallet_id}."
+                    "usdt_balance_updated_at"
+                ),
+            )
+        )
+
+        if db_updated_at < (
+            payout_confirmed_at
+        ):
+            raise NegativeFinalizationError(
+                "payout_user_wallet_updated_at_stale: "
+                f"payout_leg_id={leg_id}, "
+                f"user_wallet_id={wallet_id}, "
+                f"wallet_updated_at="
+                f"{db_updated_at.isoformat()}, "
+                f"payout_confirmed_at="
+                f"{payout_confirmed_at.isoformat()}"
+            )
+
+        evidence_rows.append(
+            {
+                "payout_leg_id": leg_id,
+                "user_id": expected_user_id,
+                "user_wallet_id": wallet_id,
+                "address": expected_address,
+                "db_usdt_balance": (
+                    _q10(db_balance)
+                ),
+                "expected_observed_after_usdt": (
+                    _q10(expected_after)
+                ),
+                "db_usdt_balance_block": (
+                    db_block
+                ),
+                "expected_refresh_block": (
+                    expected_block
+                ),
+                "db_usdt_balance_updated_at": (
+                    db_updated_at
+                ),
+                "payout_confirmed_at": (
+                    payout_confirmed_at
+                ),
+                "batch_balance_refresh_completed_at": (
+                    batch_refresh_completed_at
+                ),
+                "exact_balance_match": True,
+                "exact_block_match": True,
+            }
+        )
+
+    if set(locked_wallets) != {
+        row["user_wallet_id"]
+        for row in evidence_rows
+    }:
+        raise NegativeFinalizationError(
+            "payout_user_wallet_duplicate_mapping: "
+            "locked UserWallet set does not exactly "
+            "match payout evidence"
+        )
+
+    return {
+        "schema": (
+            USER_WALLET_DB_GATE_SCHEMA
+        ),
+        "all_wallets_locked": True,
+        "all_wallets_exact_match": True,
+        "arithmetic_balance_updates": False,
+        "wallets": evidence_rows,
     }
 
 
@@ -5385,6 +6042,44 @@ def finalize_negative_net_settlement(
                 "no_nav_chart_writes": True,
             }
         )
+
+        locked_payout_wallets = (
+            _lock_payout_user_wallets(
+                db,
+                payout_legs=payout_legs,
+            )
+        )
+
+        user_wallet_db_gate = (
+            _validate_payout_user_wallet_db_gate(
+                payout_batch=payout_batch,
+                payout_legs=payout_legs,
+                locked_wallets=(
+                    locked_payout_wallets
+                ),
+                balance_refresh_validation=(
+                    input_validation[
+                        "balance_refresh"
+                    ]
+                ),
+            )
+        )
+
+        finalization.validation_json = (
+            _json_dict(
+                {
+                    **(
+                        finalization
+                        .validation_json
+                        or {}
+                    ),
+                    "user_wallet_db_gate": (
+                        user_wallet_db_gate
+                    ),
+                }
+            )
+        )
+        finalization.updated_at = now
 
         context = _prepare_accounting_context(
             db,

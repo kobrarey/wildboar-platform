@@ -167,6 +167,7 @@ def test_completed_payout_finalizes_accounting_once(
     payout_legs = [
         SimpleNamespace(
             id=51,
+            user_id=101,
             status=PAYOUT_LEG_STATUS_BALANCE_REFRESHED,
             balance_refresh_json={
                 "live": True,
@@ -191,6 +192,7 @@ def test_completed_payout_finalizes_accounting_once(
             settlement_batch_id=11,
             fund_id=3,
             amount_usdt=Decimal("10"),
+            confirmed_at=now,
             user_wallet_id=501,
             to_user_wallet_id=501,
             wallet_balance_before_usdt=Decimal(
@@ -297,6 +299,36 @@ def test_completed_payout_finalizes_accounting_once(
         updated_at=now,
     )
 
+    payout_wallet = SimpleNamespace(
+        id=501,
+        user_id=101,
+        blockchain="BSC",
+        address=(
+            "0x2222222222222222222222222222222222222222"
+        ),
+        usdt_balance=Decimal("10"),
+        usdt_balance_updated_at=now,
+        usdt_balance_block=500,
+        usdt_reserved=Decimal("0"),
+        is_active=False,
+    )
+
+    wallet_gate_lock_calls: list[
+        int
+    ] = []
+
+    def lock_payout_user_wallets(
+        *args,
+        **kwargs,
+    ):
+        wallet_gate_lock_calls.append(
+            501
+        )
+
+        return {
+            501: payout_wallet,
+        }
+
     context = {
         "orders": [order],
         "buy_orders": [],
@@ -392,6 +424,12 @@ def test_completed_payout_finalizes_accounting_once(
             **kwargs: _value,
         )
 
+    monkeypatch.setattr(
+        finalization,
+        "_lock_payout_user_wallets",
+        lock_payout_user_wallets,
+    )
+
     def lock_runtime_state(
         *args,
         **kwargs,
@@ -449,6 +487,44 @@ def test_completed_payout_finalizes_accounting_once(
 
     assert first.ok is True
     assert first.idempotent is False
+
+    assert wallet_gate_lock_calls == [
+        501
+    ]
+
+    assert (
+        db.finalization
+        .validation_json[
+            "user_wallet_db_gate"
+        ][
+            "schema"
+        ]
+        == (
+            finalization
+            .USER_WALLET_DB_GATE_SCHEMA
+        )
+    )
+
+    assert (
+        db.finalization
+        .validation_json[
+            "user_wallet_db_gate"
+        ][
+            "all_wallets_exact_match"
+        ]
+        is True
+    )
+
+    assert (
+        db.finalization
+        .validation_json[
+            "user_wallet_db_gate"
+        ][
+            "arithmetic_balance_updates"
+        ]
+        is False
+    )
+
     assert first.status_after == (
         FINALIZATION_BATCH_STATUS_COMPLETED
     )
@@ -489,6 +565,10 @@ def test_completed_payout_finalizes_accounting_once(
         db.flush_calls,
     )
 
+    payout_wallet.usdt_balance = Decimal(
+        "25"
+    )
+
     second = (
         finalization
         .finalize_negative_net_settlement(
@@ -500,6 +580,14 @@ def test_completed_payout_finalizes_accounting_once(
 
     assert second.ok is True
     assert second.idempotent is True
+
+    assert payout_wallet.usdt_balance == (
+        Decimal("25")
+    )
+
+    assert wallet_gate_lock_calls == [
+        501
+    ]
 
     # Completed rerun returns before trying
     # to acquire or release an active

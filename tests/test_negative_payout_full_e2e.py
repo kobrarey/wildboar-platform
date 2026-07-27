@@ -589,18 +589,22 @@ def test_negative_payout_full_fake_e2e(
     wallet_one = SimpleNamespace(
         id=101,
         user_id=1001,
+        blockchain="BSC",
         address=USER_ONE_ADDRESS,
         usdt_balance=Decimal("1"),
         usdt_balance_updated_at=None,
         usdt_balance_block=None,
+        is_active=False,
     )
     wallet_two = SimpleNamespace(
         id=102,
         user_id=1002,
+        blockchain="BSC",
         address=USER_TWO_ADDRESS,
         usdt_balance=Decimal("2"),
         usdt_balance_updated_at=None,
         usdt_balance_block=None,
+        is_active=False,
     )
 
     db.wallet_queue = [
@@ -670,6 +674,26 @@ def test_negative_payout_full_fake_e2e(
     )
     assert wallet_two.usdt_balance != Decimal(
         "22"
+    )
+
+    assert (
+        wallet_one.usdt_balance_block
+        == 987654
+    )
+
+    assert (
+        wallet_two.usdt_balance_block
+        == 987654
+    )
+
+    assert (
+        wallet_one.usdt_balance_updated_at
+        == now
+    )
+
+    assert (
+        wallet_two.usdt_balance_updated_at
+        == now
     )
 
     assert (
@@ -922,6 +946,15 @@ def test_negative_payout_full_fake_e2e(
         validate_bybit_cash_delivery,
     )
 
+    assert db.wallet_queue == []
+
+    db.wallet_queue.append(
+        [
+            wallet_one,
+            wallet_two,
+        ]
+    )
+
     first = (
         finalization
         .finalize_negative_net_settlement(
@@ -964,6 +997,40 @@ def test_negative_payout_full_fake_e2e(
         == [(11, 31)]
     )
 
+    assert db.wallet_queue == []
+
+    assert (
+        db.finalization
+        .validation_json[
+            "user_wallet_db_gate"
+        ][
+            "all_wallets_locked"
+        ]
+        is True
+    )
+
+    assert (
+        db.finalization
+        .validation_json[
+            "user_wallet_db_gate"
+        ][
+            "all_wallets_exact_match"
+        ]
+        is True
+    )
+
+    assert (
+        len(
+            db.finalization
+            .validation_json[
+                "user_wallet_db_gate"
+            ][
+                "wallets"
+            ]
+        )
+        == 2
+    )
+
     state_after_first = (
         fund.shares_outstanding_current,
         position_one.shares,
@@ -971,6 +1038,10 @@ def test_negative_payout_full_fake_e2e(
         position_two.shares,
         position_two.shares_reserved,
         db.flush_calls,
+    )
+
+    wallet_one.usdt_balance = Decimal(
+        "99.25"
     )
 
     second = (
@@ -984,6 +1055,12 @@ def test_negative_payout_full_fake_e2e(
 
     assert second.ok is True
     assert second.idempotent is True
+
+    assert wallet_one.usdt_balance == (
+        Decimal("99.25")
+    )
+
+    assert db.wallet_queue == []
 
     assert (
         bybit_cash_delivery_gate_calls

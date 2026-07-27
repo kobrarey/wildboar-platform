@@ -375,6 +375,42 @@ def test_wrong_owner_marks_current_batch_review_before_accounting(
         },
     )
 
+    wallet_gate_calls: list[str] = []
+
+    monkeypatch.setattr(
+        service,
+        "_lock_payout_user_wallets",
+        lambda *args, **kwargs: {},
+    )
+
+    def validate_wallet_db_gate(
+        *args,
+        **kwargs,
+    ):
+        wallet_gate_calls.append(
+            "validated"
+        )
+
+        return {
+            "schema": (
+                "negative_finalization_"
+                "user_wallet_db_gate_v1"
+            ),
+            "all_wallets_locked": True,
+            "all_wallets_exact_match": True,
+            "arithmetic_balance_updates": False,
+            "wallets": [],
+        }
+
+    monkeypatch.setattr(
+        service,
+        (
+            "_validate_payout_user_"
+            "wallet_db_gate"
+        ),
+        validate_wallet_db_gate,
+    )
+
     monkeypatch.setattr(
         service,
         "_prepare_accounting_context",
@@ -461,3 +497,7 @@ def test_wrong_owner_marks_current_batch_review_before_accounting(
         db.finalization.pricing_unlocked_at
         is None
     )
+
+    assert wallet_gate_calls == [
+        "validated"
+    ]
