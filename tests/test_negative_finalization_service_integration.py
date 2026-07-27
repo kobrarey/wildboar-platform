@@ -15,6 +15,7 @@ from app.settlement.statuses import (
     ORDER_STATUS_PROCESSING,
     ORDER_STATUS_SUCCESS,
     PAYOUT_BATCH_STATUS_COMPLETED,
+    PAYOUT_BALANCE_REFRESH_STATUS_CONFIRMED,
     PAYOUT_LEG_STATUS_BALANCE_REFRESHED,
     SALE_BATCH_STATUS_SALE_EXECUTION_COMPLETED,
 )
@@ -92,12 +93,75 @@ def test_completed_payout_finalizes_accounting_once(
     payout_batch = SimpleNamespace(
         id=41,
         status=PAYOUT_BATCH_STATUS_COMPLETED,
-        balance_refresh_json={
-            "absolute_onchain_sync": True,
-        },
-        confirmed_total_payout_usdt=Decimal("10"),
+        expected_total_payout_usdt=Decimal(
+            "10"
+        ),
+        confirmed_total_payout_usdt=Decimal(
+            "10"
+        ),
         payout_leg_count=1,
         confirmed_payout_leg_count=1,
+        balance_refresh_status=(
+            PAYOUT_BALANCE_REFRESH_STATUS_CONFIRMED
+        ),
+        balance_refresh_completed_at=now,
+        settlement_wallet_usdt_before=Decimal(
+            "20"
+        ),
+        settlement_wallet_usdt_after=Decimal(
+            "10"
+        ),
+        balance_refresh_json={
+            "live": True,
+            "absolute_onchain_sync": True,
+            "block_number": 500,
+            "settlement_wallet": {
+                "address": (
+                    "0x1111111111111111111111111111111111111111"
+                ),
+                "before_usdt": Decimal(
+                    "20"
+                ),
+                "confirmed_total_payout_usdt": Decimal(
+                    "10"
+                ),
+                "observed_after_usdt": Decimal(
+                    "10"
+                ),
+                "arithmetic_debit_applied": False,
+            },
+            "user_wallets": [
+                {
+                    "user_wallet_id": 501,
+                    "address": (
+                        "0x2222222222222222222222222222222222222222"
+                    ),
+                    "before_usdt": Decimal(
+                        "0"
+                    ),
+                    "payout_amount_usdt": Decimal(
+                        "10"
+                    ),
+                    "observed_after_usdt": Decimal(
+                        "10"
+                    ),
+                    "block_number": 500,
+                    "absolute_onchain_sync": True,
+                }
+            ],
+        },
+        settlement_batch_id=11,
+        settlement_wallet_address=(
+            "0x1111111111111111111111111111111111111111"
+        ),
+        gas_status="ready",
+        gas_topup_tx_hash=None,
+        gas_reconciliation_json={
+            "live": True,
+            "gas_sufficient": True,
+            "no_real_gas_topup_needed": True,
+            "durable_intent_not_required": True,
+        },
     )
 
     payout_legs = [
@@ -105,8 +169,97 @@ def test_completed_payout_finalizes_accounting_once(
             id=51,
             status=PAYOUT_LEG_STATUS_BALANCE_REFRESHED,
             balance_refresh_json={
+                "live": True,
                 "absolute_onchain_sync": True,
+                "block_number": 500,
+                "user_wallet_id": 501,
+                "address": (
+                    "0x2222222222222222222222222222222222222222"
+                ),
+                "before_usdt": Decimal(
+                    "0"
+                ),
+                "payout_amount_usdt": Decimal(
+                    "10"
+                ),
+                "observed_after_usdt": Decimal(
+                    "10"
+                ),
+                "arithmetic_credit_applied": False,
             },
+            payout_batch_id=41,
+            settlement_batch_id=11,
+            fund_id=3,
+            amount_usdt=Decimal("10"),
+            user_wallet_id=501,
+            to_user_wallet_id=501,
+            wallet_balance_before_usdt=Decimal(
+                "0"
+            ),
+            wallet_balance_after_usdt=Decimal(
+                "10"
+            ),
+            from_address=(
+                "0x1111111111111111111111111111111111111111"
+            ),
+            to_address=(
+                "0x2222222222222222222222222222222222222222"
+            ),
+            tx_hash=(
+                "0x"
+                + ("a" * 64)
+            ),
+            confirmation_json={
+                "durable_intent": True,
+                "intent_id": 81,
+                "intent_status": "confirmed",
+                "tx_hash": (
+                    "0x"
+                    + ("a" * 64)
+                ),
+                "confirmed": True,
+            },
+        )
+    ]
+
+    bsc_intents = [
+        SimpleNamespace(
+            id=81,
+            scope_key=(
+                "negative-payout:11:41:51"
+            ),
+            action_type=(
+                "negative_redeem_payout"
+            ),
+            settlement_batch_id=11,
+            payout_batch_id=41,
+            payout_leg_id=51,
+            fund_id=3,
+            asset="USDT",
+            amount=Decimal("10"),
+            from_address=(
+                "0x1111111111111111111111111111111111111111"
+            ),
+            to_address=(
+                "0x2222222222222222222222222222222222222222"
+            ),
+            prepared_tx_hash=(
+                "0x"
+                + ("a" * 64)
+            ),
+            intent_fingerprint=(
+                "b" * 64
+            ),
+            status="confirmed",
+            receipt_status=1,
+            confirmations=max(
+                1,
+                int(
+                    finalization.settings
+                    .NEGATIVE_NET_PAYOUT_CONFIRMATIONS_REQUIRED
+                ),
+            ),
+            confirmed_at=now,
         )
     ]
 
@@ -135,6 +288,7 @@ def test_completed_payout_finalizes_accounting_once(
     )
 
     runtime_state = SimpleNamespace(
+        fund_id=3,
         pricing_locked=True,
         pricing_lock_reason="settlement",
         pricing_lock_batch_id=11,
@@ -217,6 +371,8 @@ def test_completed_payout_finalizes_accounting_once(
             value,
         )
 
+    runtime_lock_calls: list[int] = []
+
     replacements = {
         "_lock_settlement_batch": settlement_batch,
         "_lock_fund": fund,
@@ -224,7 +380,7 @@ def test_completed_payout_finalizes_accounting_once(
         "_lock_bybit_flow": bybit_flow,
         "_lock_payout_batch": payout_batch,
         "_lock_payout_legs": payout_legs,
-        "_lock_runtime_state": runtime_state,
+        "_lock_bsc_intents": bsc_intents,
     }
 
     for name, value in replacements.items():
@@ -235,6 +391,34 @@ def test_completed_payout_finalizes_accounting_once(
             _value=value,
             **kwargs: _value,
         )
+
+    def lock_runtime_state(
+        *args,
+        **kwargs,
+    ):
+        runtime_lock_calls.append(1)
+        return runtime_state
+
+    monkeypatch.setattr(
+        finalization,
+        "_lock_runtime_state",
+        lock_runtime_state,
+    )
+
+    monkeypatch.setattr(
+        finalization,
+        (
+            "_validate_bybit_cash_"
+            "delivery_evidence"
+        ),
+        lambda *args, **kwargs: {
+            "schema": (
+                "negative_finalization_"
+                "bybit_cash_delivery_gate_v1"
+            ),
+            "durable_evidence_validated": True,
+        },
+    )
 
     monkeypatch.setattr(
         finalization,
@@ -287,6 +471,8 @@ def test_completed_payout_finalizes_accounting_once(
     assert runtime_state.pricing_lock_batch_id is None
     assert runtime_state.pricing_unlocked_at == now
 
+    assert len(runtime_lock_calls) == 1
+
     assert settlement_batch.pricing_unlocked_at == now
     assert settlement_batch.accounting_finalized_at == now
 
@@ -314,6 +500,11 @@ def test_completed_payout_finalizes_accounting_once(
 
     assert second.ok is True
     assert second.idempotent is True
+
+    # Completed rerun returns before trying
+    # to acquire or release an active
+    # runtime pricing lock.
+    assert len(runtime_lock_calls) == 1
 
     assert (
         fund.shares_outstanding_current,

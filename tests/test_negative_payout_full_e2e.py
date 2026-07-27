@@ -476,6 +476,13 @@ def test_negative_payout_full_fake_e2e(
         payout_leg_count=2,
         confirmed_payout_leg_count=0,
         gas_status="ready",
+        gas_topup_tx_hash=None,
+        gas_reconciliation_json={
+            "live": True,
+            "gas_sufficient": True,
+            "no_real_gas_topup_needed": True,
+            "durable_intent_not_required": True,
+        },
         balance_refresh_status="not_started",
         balance_refresh_started_at=None,
         balance_refresh_completed_at=None,
@@ -758,6 +765,7 @@ def test_negative_payout_full_fake_e2e(
     )
 
     runtime_state = SimpleNamespace(
+        fund_id=3,
         pricing_locked=True,
         pricing_lock_reason="settlement",
         pricing_lock_batch_id=11,
@@ -849,6 +857,10 @@ def test_negative_payout_full_fake_e2e(
             leg_one,
             leg_two,
         ],
+        "_lock_bsc_intents": [
+            intent_one,
+            intent_two,
+        ],
         "_lock_runtime_state": runtime_state,
     }
 
@@ -877,6 +889,37 @@ def test_negative_payout_full_fake_e2e(
         finalization,
         "apply_redeem_cost_basis",
         lambda *args, **kwargs: None,
+    )
+
+    bybit_cash_delivery_gate_calls = []
+
+    def validate_bybit_cash_delivery(
+        *,
+        settlement_batch,
+        bybit_flow,
+    ):
+        bybit_cash_delivery_gate_calls.append(
+            (
+                int(settlement_batch.id),
+                int(bybit_flow.id),
+            )
+        )
+
+        return {
+            "schema": (
+                "negative_finalization_"
+                "bybit_cash_delivery_gate_v1"
+            ),
+            "durable_evidence_validated": True,
+        }
+
+    monkeypatch.setattr(
+        finalization,
+        (
+            "_validate_bybit_cash_"
+            "delivery_evidence"
+        ),
+        validate_bybit_cash_delivery,
     )
 
     first = (
@@ -916,6 +959,11 @@ def test_negative_payout_full_fake_e2e(
     assert runtime_state.pricing_locked is False
     assert runtime_state.pricing_unlocked_at == now
 
+    assert (
+        bybit_cash_delivery_gate_calls
+        == [(11, 31)]
+    )
+
     state_after_first = (
         fund.shares_outstanding_current,
         position_one.shares,
@@ -936,6 +984,14 @@ def test_negative_payout_full_fake_e2e(
 
     assert second.ok is True
     assert second.idempotent is True
+
+    assert (
+        bybit_cash_delivery_gate_calls
+        == [
+            (11, 31),
+            (11, 31),
+        ]
+    )
 
     assert (
         fund.shares_outstanding_current,
