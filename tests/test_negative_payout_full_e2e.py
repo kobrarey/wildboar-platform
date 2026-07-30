@@ -439,6 +439,12 @@ def test_negative_payout_full_fake_e2e(
         planned_shares_to_issue=Decimal("0"),
         planned_shares_to_redeem=Decimal("15"),
         planned_net_shares_change=Decimal("-15"),
+        total_net_user_payout_usdt=Decimal(
+            "30"
+        ),
+        withdrawal_request_amount_usdt=Decimal(
+            "30.04"
+        ),
         pricing_locked_at=now,
         pricing_unlocked_at=None,
         accounting_finalized_at=None,
@@ -487,7 +493,9 @@ def test_negative_payout_full_fake_e2e(
         balance_refresh_started_at=None,
         balance_refresh_completed_at=None,
         balance_refresh_json=None,
-        settlement_wallet_usdt_before=Decimal("100"),
+        settlement_wallet_usdt_before=Decimal(
+            "100.04"
+        ),
         settlement_wallet_usdt_after=None,
         updated_at=now,
     )
@@ -620,7 +628,7 @@ def test_negative_payout_full_fake_e2e(
 
     observed_balances = {
         SETTLEMENT_ADDRESS.lower(): Decimal(
-            "77.5"
+            "70.04"
         ),
         USER_ONE_ADDRESS.lower(): Decimal(
             "13.25"
@@ -698,7 +706,7 @@ def test_negative_payout_full_fake_e2e(
 
     assert (
         payout_batch.settlement_wallet_usdt_after
-        == Decimal("77.5")
+        == Decimal("70.04")
     )
     assert (
         payout_batch.settlement_wallet_usdt_after
@@ -740,6 +748,18 @@ def test_negative_payout_full_fake_e2e(
     bybit_flow = SimpleNamespace(
         id=31,
         status=BYBIT_FLOW_STATUS_COMPLETED,
+        settlement_wallet_received_usdt=Decimal(
+            "30.04"
+        ),
+        settlement_wallet_balance_before_usdt=Decimal(
+            "70"
+        ),
+        settlement_wallet_balance_after_usdt=Decimal(
+            "100.04"
+        ),
+        settlement_wallet_receipt_json={
+            "unrelated_additional_incoming_raw": 0,
+        },
     )
 
     order_one = SimpleNamespace(
@@ -1029,6 +1049,49 @@ def test_negative_payout_full_fake_e2e(
             ]
         )
         == 2
+    )
+
+    assert (
+        leg_one.amount_usdt
+        + leg_two.amount_usdt
+        == Decimal("30")
+    )
+    assert (
+        leg_one.amount_usdt
+        + leg_two.amount_usdt
+        != Decimal("30.04")
+    )
+
+    residual_evidence = (
+        db.finalization
+        .validation_json[
+            "settlement_wallet_residual"
+        ]
+    )
+
+    assert (
+        residual_evidence[
+            "expected_residual_usdt"
+        ]
+        == "0.04"
+    )
+    assert (
+        residual_evidence[
+            "actual_attributable_residual_usdt"
+        ]
+        == "0.04"
+    )
+    assert (
+        residual_evidence[
+            "residual_owner"
+        ]
+        == "fund"
+    )
+    assert (
+        residual_evidence[
+            "residual_is_user_payout"
+        ]
+        is False
     )
 
     state_after_first = (

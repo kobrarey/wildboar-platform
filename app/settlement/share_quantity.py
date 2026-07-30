@@ -7,6 +7,7 @@ from typing import Any
 
 
 SHARE_QUANTUM = Decimal("0.0001")
+MIN_REDEEM_SHARES = SHARE_QUANTUM
 ZERO = Decimal("0")
 
 BUY_SHARE_QUANTITY_BELOW_MINIMUM_ERROR = (
@@ -237,6 +238,11 @@ def validate_redeem_share_input_precision(
     if quantity <= ZERO:
         raise ShareQuantityError(
             "redeem_shares_must_be_positive"
+        )
+
+    if quantity < MIN_REDEEM_SHARES:
+        raise ShareQuantityError(
+            "redeem_shares_below_minimum"
         )
 
     require_share_quantity_4dp_aligned(

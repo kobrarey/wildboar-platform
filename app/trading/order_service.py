@@ -27,6 +27,7 @@ from app.settlement.statuses import (
     ORDER_STATUS_SETTLING,
 )
 from app.settlement.share_quantity import (
+    MIN_REDEEM_SHARES,
     RedeemSharePrecisionError,
     ShareQuantityError,
     require_share_quantity_4dp_aligned,
@@ -98,10 +99,18 @@ def validate_buy_amount_limits(amount: Decimal) -> None:
         raise TradingOrderError("buy_amount_above_max")
 
 
-def validate_redeem_shares_limits(shares: Decimal) -> None:
-    if shares > settings.TRADING_REDEEM_MAX_SHARES:
-        raise TradingOrderError("redeem_shares_above_max")
+def validate_redeem_shares_limits(
+    shares: Decimal,
+) -> None:
+    if shares < MIN_REDEEM_SHARES:
+        raise TradingOrderError(
+            "redeem_shares_below_minimum"
+        )
 
+    if shares > settings.TRADING_REDEEM_MAX_SHARES:
+        raise TradingOrderError(
+            "redeem_shares_above_max"
+        )
 
 def _dec(value: Any) -> Decimal:
     if value is None:

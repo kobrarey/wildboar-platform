@@ -880,28 +880,62 @@ def _validate_target_fields(
         raise NegativeBybitFlowError("Sale batch bybit_withdrawal_fee_usdt mismatch")
 
     expected_required_master = (
-        total_net_user_payout_usdt
+        withdrawal_request_amount_usdt
         + bybit_withdrawal_fee_usdt
         + total_partial_month_fee_usdt
     )
-    if not _same_decimal(required_master_usdt, expected_required_master):
+
+    if not _same_decimal(
+        required_master_usdt,
+        expected_required_master,
+    ):
         raise NegativeBybitFlowError(
             "required_master_usdt formula mismatch: "
-            "expected total_net_user_payout_usdt + bybit_withdrawal_fee_usdt + "
+            "expected "
+            "withdrawal_request_amount_usdt + "
+            "bybit_withdrawal_fee_usdt + "
             "total_partial_month_fee_usdt"
         )
 
-    if not _same_decimal(withdrawal_request_amount_usdt, total_net_user_payout_usdt):
+    if (
+        withdrawal_request_amount_usdt
+        < total_net_user_payout_usdt
+    ):
         raise NegativeBybitFlowError(
-            "withdrawal_request_amount_usdt must equal total_net_user_payout_usdt"
+            "withdrawal_request_amount_usdt must "
+            "be >= total_net_user_payout_usdt"
+        )
+
+    settlement_wallet_residual_usdt = (
+        withdrawal_request_amount_usdt
+        - total_net_user_payout_usdt
+    )
+
+    if settlement_wallet_residual_usdt < ZERO:
+        raise NegativeBybitFlowError(
+            "settlement_wallet_residual_usdt "
+            "must be non-negative"
         )
 
     return {
-        "required_master_usdt": required_master_usdt,
-        "withdrawal_request_amount_usdt": withdrawal_request_amount_usdt,
-        "bybit_withdrawal_fee_usdt": bybit_withdrawal_fee_usdt,
-        "total_net_user_payout_usdt": total_net_user_payout_usdt,
-        "total_partial_month_fee_usdt": total_partial_month_fee_usdt,
+        "required_master_usdt": (
+            required_master_usdt
+        ),
+        "withdrawal_request_amount_usdt": (
+            withdrawal_request_amount_usdt
+        ),
+        "bybit_withdrawal_fee_usdt": (
+            bybit_withdrawal_fee_usdt
+        ),
+        "total_net_user_payout_usdt": (
+            total_net_user_payout_usdt
+        ),
+        "total_partial_month_fee_usdt": (
+            total_partial_month_fee_usdt
+        ),
+        "settlement_wallet_residual_usdt": (
+            settlement_wallet_residual_usdt
+        ),
     }
 
 
@@ -1496,6 +1530,17 @@ def execute_negative_bybit_flow_live(
         if chain != "BSC":
             raise NegativeBybitFlowError("Live negative-net Bybit flow chain must be BSC")
 
+        withdrawal_fee_type = int(
+            settings
+            .NEGATIVE_NET_WITHDRAWAL_FEE_TYPE
+        )
+
+        if withdrawal_fee_type != 0:
+            raise NegativeBybitFlowError(
+                "Negative-net Bybit withdrawal "
+                "requires feeType=0"
+            )
+
         if wallet.blockchain != chain:
             raise NegativeBybitFlowError("Settlement wallet blockchain mismatch")
 
@@ -1552,6 +1597,22 @@ def execute_negative_bybit_flow_live(
                 "Withdrawal amount is below Bybit withdrawMin: "
                 f"withdrawMin={coin_info.withdraw_min}, "
                 f"amount={amounts['withdrawal_request_amount_usdt']}"
+            )
+
+        if (
+            coin_info.withdraw_max is not None
+            and dec(coin_info.withdraw_max) > ZERO
+            and amounts[
+                "withdrawal_request_amount_usdt"
+            ] > dec(coin_info.withdraw_max)
+        ):
+            raise NegativeBybitFlowError(
+                "Withdrawal amount exceeds "
+                "Bybit withdrawMax: "
+                f"withdrawMax="
+                f"{coin_info.withdraw_max}, "
+                f"amount="
+                f"{amounts['withdrawal_request_amount_usdt']}"
             )
 
         withdrawal_amount_str, withdrawal_amount_actual = withdrawal_actual_amount(
@@ -1663,7 +1724,9 @@ def execute_negative_bybit_flow_live(
                 "settlement_wallet_address": settlement_wallet_address,
                 "from_sub_uid": flow.from_sub_uid,
                 "to_master_uid": flow.to_master_uid,
-                "fee_type": settings.NEGATIVE_NET_WITHDRAWAL_FEE_TYPE,
+                "fee_type": (
+                    withdrawal_fee_type
+                ),
                 "universal_transfer_required_raw": str(amounts["required_master_usdt"]),
                 "universal_transfer_amount_str": universal_transfer_amount_str,
                 "universal_transfer_amount_actual": str(universal_transfer_amount_actual),
@@ -1676,6 +1739,16 @@ def execute_negative_bybit_flow_live(
                     "balance_route_selected"
                 ],
                 "withdrawal_request_amount_raw": str(amounts["withdrawal_request_amount_usdt"]),
+                "total_net_user_payout_usdt": str(
+                    amounts[
+                        "total_net_user_payout_usdt"
+                    ]
+                ),
+                "settlement_wallet_residual_usdt": str(
+                    amounts[
+                        "settlement_wallet_residual_usdt"
+                    ]
+                ),
                 "withdrawal_amount_str": withdrawal_amount_str,
                 "withdrawal_amount_actual": str(withdrawal_amount_actual),
                 "withdrawal_amount_precision": int(coin_info.min_accuracy),
@@ -1973,6 +2046,9 @@ def execute_negative_bybit_flow_live(
                         "amount_precision": int(coin_info.min_accuracy),
                         "account_type": "FUND",
                         "forceChain": 1,
+                        "feeType": (
+                            withdrawal_fee_type
+                        ),
                     },
                 )
             except OperationGuardBlockedError as exc:
@@ -1997,7 +2073,9 @@ def execute_negative_bybit_flow_live(
                     amount_usdt=withdrawal_amount_actual,
                     amount_str=withdrawal_amount_str,
                     amount_precision=int(coin_info.min_accuracy),
-                    fee_type=int(settings.NEGATIVE_NET_WITHDRAWAL_FEE_TYPE),
+                    fee_type=(
+                        withdrawal_fee_type
+                    ),
                     account_type="FUND",
                     timestamp_ms=int(now.timestamp() * 1000),
                     force_chain=1,

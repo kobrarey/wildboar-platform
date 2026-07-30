@@ -7,6 +7,7 @@ from decimal import Decimal
 
 from app.config import settings
 from app.db import SessionLocal
+from app.models import FundWallet
 from app.navcalc.db_writer import (
     get_fund_by_code,
     get_fund_shares_outstanding_current,
@@ -23,10 +24,17 @@ from app.navcalc.minute_builder import (
 from app.navcalc.nav_guard import evaluate_and_record_nav_guard, mark_nav_guard_accepted
 from app.navcalc.portfolio_nav import compute_nav
 from app.navcalc.schemas import FundNavConfig, MinuteState
+from app.settlement.bsc_balance_service import (
+    read_bsc_block_number,
+    read_bsc_usdt_balance,
+)
+from app.settlement.gas_service import get_web3
 from app.settlement.pricing_lock import is_pricing_locked
 
 
 log = logging.getLogger("navcalc.collector")
+
+ZERO = Decimal("0")
 
 
 def _log_gap_minutes(
@@ -45,6 +53,140 @@ def _log_gap_minutes(
             cursor.isoformat(),
         )
         cursor += timedelta(minutes=1)
+
+
+def _select_active_settlement_wallet(
+    rows,
+):
+    matches = [
+        row
+        for row in rows
+        if (
+            str(
+                getattr(
+                    row,
+                    "blockchain",
+                    "",
+                )
+                or ""
+            )
+            .strip()
+            .upper()
+            == "BSC"
+            and str(
+                getattr(
+                    row,
+                    "wallet_type",
+                    "",
+                )
+                or ""
+            )
+            .strip()
+            .lower()
+            == "settlement"
+            and bool(
+                getattr(
+                    row,
+                    "is_active",
+                    False,
+                )
+            )
+        )
+    ]
+
+    if len(matches) > 1:
+        raise NavConfigError(
+            "Fund has more than one active "
+            "BSC settlement wallet"
+        )
+
+    return matches[0] if matches else None
+
+
+def _read_active_settlement_wallet_usdt(
+    *,
+    fund_id: int,
+    fund_code: str,
+) -> tuple[Decimal, dict]:
+    with SessionLocal() as db:
+        rows = (
+            db.query(FundWallet)
+            .filter(
+                FundWallet.fund_id
+                == int(fund_id)
+            )
+            .all()
+        )
+
+        wallet = (
+            _select_active_settlement_wallet(
+                rows
+            )
+        )
+
+        if wallet is None:
+            return ZERO, {
+                "included": False,
+                "reason": (
+                    "no_active_settlement_wallet"
+                ),
+                "fund_id": int(fund_id),
+                "fund_code": str(fund_code),
+            }
+
+        wallet_id = int(wallet.id)
+        wallet_address = str(
+            wallet.address or ""
+        ).strip()
+
+    if not wallet_address:
+        raise NavConfigError(
+            "Active BSC settlement wallet has "
+            "no address"
+        )
+
+    # The DB session is closed before any RPC.
+    w3 = get_web3()
+
+    block_number = read_bsc_block_number(
+        w3
+    )
+
+    balance_usdt = read_bsc_usdt_balance(
+        w3,
+        wallet_address,
+        block_identifier=block_number,
+    )
+
+    if balance_usdt < ZERO:
+        raise NavConfigError(
+            "Active BSC settlement wallet USDT "
+            "balance is negative"
+        )
+
+    return balance_usdt, {
+        "included": True,
+        "source": (
+            "bsc_usdt_balance_of"
+        ),
+        "fund_id": int(fund_id),
+        "fund_code": str(fund_code),
+        "fund_wallet_id": wallet_id,
+        "wallet_type": "settlement",
+        "blockchain": "BSC",
+        "address": wallet_address,
+        "asset": "USDT",
+        "balance_usdt": str(
+            balance_usdt
+        ),
+        "block_number": int(
+            block_number
+        ),
+        "confirmed_block_snapshot": True,
+        "bnb_excluded": True,
+        "user_wallets_excluded": True,
+        "fee_wallets_excluded": True,
+    }
 
 
 def _read_current_shares_outstanding(
@@ -137,7 +279,25 @@ def run_collector_forever(
                 fund_code=cfg.fund_code,
             )
 
-            result = compute_nav(cfg)
+            (
+                settlement_wallet_usdt,
+                settlement_wallet_meta,
+            ) = (
+                _read_active_settlement_wallet_usdt(
+                    fund_id=fund_id,
+                    fund_code=cfg.fund_code,
+                )
+            )
+
+            result = compute_nav(
+                cfg,
+                settlement_wallet_usdt=(
+                    settlement_wallet_usdt
+                ),
+                settlement_wallet_meta=(
+                    settlement_wallet_meta
+                ),
+            )
             sample_ts = result.snapshot_ts
             sample_nav = result.nav_usd
             sample_minute = minute_floor(sample_ts)

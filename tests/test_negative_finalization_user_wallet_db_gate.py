@@ -961,6 +961,14 @@ def test_wallet_balance_mismatch_blocks_full_finalization_before_accounting(
             "balance_refresh": (
                 refresh_validation
             ),
+            "settlement_wallet_residual": {
+                "expected_residual_usdt": "0",
+                "actual_attributable_residual_usdt": (
+                    "0"
+                ),
+                "residual_owner": "fund",
+                "residual_is_user_payout": False,
+            },
         },
     )
 

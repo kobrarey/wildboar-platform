@@ -4470,6 +4470,232 @@ def _validate_bybit_cash_delivery_evidence(
     }
 
 
+def _validate_settlement_wallet_residual(
+    *,
+    settlement_batch: FundSettlementBatch,
+    bybit_flow: FundNegativeBybitFlow,
+    payout_batch: FundNegativePayoutBatch,
+) -> dict[str, Any]:
+    total_user_payout = (
+        _balance_refresh_decimal(
+            settlement_batch
+            .total_net_user_payout_usdt,
+            field_name=(
+                "settlement_batch."
+                "total_net_user_payout_usdt"
+            ),
+        )
+    )
+
+    withdrawal_amount = (
+        _balance_refresh_decimal(
+            settlement_batch
+            .withdrawal_request_amount_usdt,
+            field_name=(
+                "settlement_batch."
+                "withdrawal_request_amount_usdt"
+            ),
+        )
+    )
+
+    received_amount = (
+        _balance_refresh_decimal(
+            bybit_flow
+            .settlement_wallet_received_usdt,
+            field_name=(
+                "bybit_flow."
+                "settlement_wallet_received_usdt"
+            ),
+        )
+    )
+
+    if withdrawal_amount < total_user_payout:
+        raise NegativeFinalizationError(
+            "Withdrawal amount is below total "
+            "net user payout"
+        )
+
+    if received_amount < total_user_payout:
+        raise NegativeFinalizationError(
+            "Settlement wallet receipt is below "
+            "total net user payout"
+        )
+
+    if not _same_decimal(
+        received_amount,
+        withdrawal_amount,
+    ):
+        raise NegativeFinalizationError(
+            "Settlement wallet receipt does not "
+            "match technical withdrawal amount"
+        )
+
+    expected_residual = (
+        withdrawal_amount
+        - total_user_payout
+    )
+
+    if expected_residual < ZERO:
+        raise NegativeFinalizationError(
+            "Expected settlement wallet residual "
+            "is negative"
+        )
+
+    receipt_balance_before = (
+        _balance_refresh_decimal(
+            bybit_flow
+            .settlement_wallet_balance_before_usdt,
+            field_name=(
+                "bybit_flow."
+                "settlement_wallet_balance_before_usdt"
+            ),
+        )
+    )
+
+    receipt_balance_after = (
+        _balance_refresh_decimal(
+            bybit_flow
+            .settlement_wallet_balance_after_usdt,
+            field_name=(
+                "bybit_flow."
+                "settlement_wallet_balance_after_usdt"
+            ),
+        )
+    )
+
+    payout_balance_before = (
+        _balance_refresh_decimal(
+            payout_batch
+            .settlement_wallet_usdt_before,
+            field_name=(
+                "payout_batch."
+                "settlement_wallet_usdt_before"
+            ),
+        )
+    )
+
+    payout_balance_after = (
+        _balance_refresh_decimal(
+            payout_batch
+            .settlement_wallet_usdt_after,
+            field_name=(
+                "payout_batch."
+                "settlement_wallet_usdt_after"
+            ),
+        )
+    )
+
+    if not _same_decimal(
+        payout_balance_before,
+        receipt_balance_after,
+    ):
+        raise NegativeFinalizationError(
+            "Payout pre-balance does not match "
+            "confirmed receipt post-balance"
+        )
+
+    if not _same_decimal(
+        payout_balance_before
+        - payout_balance_after,
+        total_user_payout,
+    ):
+        raise NegativeFinalizationError(
+            "Settlement wallet USDT debit does not "
+            "match total user payout"
+        )
+
+    receipt = _balance_refresh_mapping(
+        bybit_flow
+        .settlement_wallet_receipt_json,
+        field_name=(
+            "bybit_flow."
+            "settlement_wallet_receipt_json"
+        ),
+    )
+
+    unrelated_raw = _balance_refresh_integer(
+        receipt.get(
+            "unrelated_additional_incoming_raw"
+        ),
+        field_name=(
+            "settlement_wallet_receipt."
+            "unrelated_additional_incoming_raw"
+        ),
+    )
+
+    decimals = int(
+        settings.BSC_USDT_DECIMALS
+    )
+
+    unrelated_incoming_usdt = (
+        Decimal(unrelated_raw)
+        / (
+            Decimal("10")
+            ** decimals
+        )
+    )
+
+    attributable_residual = (
+        payout_balance_after
+        - receipt_balance_before
+        - unrelated_incoming_usdt
+    )
+
+    if not _same_decimal(
+        attributable_residual,
+        expected_residual,
+    ):
+        raise NegativeFinalizationError(
+            "Actual attributable settlement wallet "
+            "residual does not match withdrawal "
+            "minus user payout"
+        )
+
+    return {
+        "schema": (
+            "negative_finalization_"
+            "settlement_wallet_residual_v1"
+        ),
+        "total_net_user_payout_usdt": str(
+            total_user_payout
+        ),
+        "withdrawal_request_amount_usdt": str(
+            withdrawal_amount
+        ),
+        "settlement_wallet_received_usdt": str(
+            received_amount
+        ),
+        "expected_residual_usdt": str(
+            expected_residual
+        ),
+        "actual_attributable_residual_usdt": str(
+            attributable_residual
+        ),
+        "receipt_balance_before_usdt": str(
+            receipt_balance_before
+        ),
+        "receipt_balance_after_usdt": str(
+            receipt_balance_after
+        ),
+        "payout_balance_before_usdt": str(
+            payout_balance_before
+        ),
+        "payout_balance_after_usdt": str(
+            payout_balance_after
+        ),
+        "unrelated_additional_incoming_usdt": str(
+            unrelated_incoming_usdt
+        ),
+        "residual_owner": "fund",
+        "residual_is_user_payout": False,
+        "residual_is_platform_fee": False,
+        "residual_is_fee_wallet_transfer": False,
+        "gas_asset": "BNB",
+        "gas_usdt_effect": "0",
+        "validated": True,
+    }
+
+
 def _validate_input_state(
     *,
     settlement_batch: FundSettlementBatch,
@@ -4578,6 +4804,14 @@ def _validate_input_state(
         )
     )
 
+    settlement_wallet_residual = (
+        _validate_settlement_wallet_residual(
+            settlement_batch=settlement_batch,
+            bybit_flow=bybit_flow,
+            payout_batch=payout_batch,
+        )
+    )
+
     return {
         "bybit_cash_delivery": (
             bybit_cash_delivery
@@ -4585,6 +4819,9 @@ def _validate_input_state(
         "bsc_delivery": bsc_delivery,
         "balance_refresh": (
             balance_refresh
+        ),
+        "settlement_wallet_residual": (
+            settlement_wallet_residual
         ),
     }
 
@@ -6032,6 +6269,11 @@ def finalize_negative_net_settlement(
                 "balance_refresh": (
                     input_validation[
                         "balance_refresh"
+                    ]
+                ),
+                "settlement_wallet_residual": (
+                    input_validation[
+                        "settlement_wallet_residual"
                     ]
                 ),
                 "pricing_locked_at": settlement_batch.pricing_locked_at,

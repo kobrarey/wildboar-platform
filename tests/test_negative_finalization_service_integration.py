@@ -66,6 +66,12 @@ def test_completed_payout_finalizes_accounting_once(
         planned_shares_to_issue=Decimal("0"),
         planned_shares_to_redeem=Decimal("10"),
         planned_net_shares_change=Decimal("-10"),
+        total_net_user_payout_usdt=Decimal(
+            "10"
+        ),
+        withdrawal_request_amount_usdt=Decimal(
+            "10"
+        ),
         pricing_locked_at=now,
         pricing_unlocked_at=None,
         accounting_finalized_at=None,
@@ -88,6 +94,18 @@ def test_completed_payout_finalizes_accounting_once(
     bybit_flow = SimpleNamespace(
         id=31,
         status=BYBIT_FLOW_STATUS_COMPLETED,
+        settlement_wallet_received_usdt=Decimal(
+            "10"
+        ),
+        settlement_wallet_balance_before_usdt=Decimal(
+            "10"
+        ),
+        settlement_wallet_balance_after_usdt=Decimal(
+            "20"
+        ),
+        settlement_wallet_receipt_json={
+            "unrelated_additional_incoming_raw": 0,
+        },
     )
 
     payout_batch = SimpleNamespace(

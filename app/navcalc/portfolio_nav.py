@@ -314,7 +314,55 @@ def _sanity_check(cash_spot: Decimal, total_equity: Decimal) -> Decimal:
     return diff_pct
 
 
-def compute_nav(cfg: FundNavConfig) -> NavResult:
+def _compose_nav_usd(
+    *,
+    cash_usd: Decimal,
+    spot_usd: Decimal,
+    bybit_funding_wallet_usd: Decimal,
+    settlement_wallet_usdt: Decimal,
+    earn_usd: Decimal,
+) -> tuple[Decimal, Decimal]:
+    cash = _to_decimal(cash_usd)
+    spot = _to_decimal(spot_usd)
+    bybit_funding = _to_decimal(
+        bybit_funding_wallet_usd
+    )
+    settlement_wallet = _to_decimal(
+        settlement_wallet_usdt
+    )
+    earn = _to_decimal(earn_usd)
+
+    if settlement_wallet < Decimal("0"):
+        raise NavSanityCheckError(
+            "Active settlement wallet USDT "
+            "balance cannot be negative"
+        )
+
+    fund_cash_wallets_usd = (
+        bybit_funding
+        + settlement_wallet
+    )
+
+    nav_usd = (
+        cash
+        + spot
+        + fund_cash_wallets_usd
+        + earn
+    )
+
+    return nav_usd, fund_cash_wallets_usd
+
+
+def compute_nav(
+    cfg: FundNavConfig,
+    *,
+    settlement_wallet_usdt: Decimal = Decimal(
+        "0"
+    ),
+    settlement_wallet_meta: (
+        dict[str, Any] | None
+    ) = None,
+) -> NavResult:
     client = BybitClient(
         cfg.bybit_api_key,
         cfg.bybit_api_secret,
@@ -331,20 +379,55 @@ def compute_nav(cfg: FundNavConfig) -> NavResult:
     cash_spot = cash + spot
 
     diff_pct = _sanity_check(cash_spot, total_equity)
-    nav_usd = cash + spot + funding_total + earn_total
+    (
+        nav_usd,
+        fund_cash_wallets_usd,
+    ) = _compose_nav_usd(
+        cash_usd=cash,
+        spot_usd=spot,
+        bybit_funding_wallet_usd=(
+            funding_total
+        ),
+        settlement_wallet_usdt=(
+            settlement_wallet_usdt
+        ),
+        earn_usd=earn_total,
+    )
 
     return NavResult(
         fund_code=cfg.fund_code,
         snapshot_ts=_utcnow(),
         nav_usd=nav_usd,
         uta_equity_usd=total_equity,
-        funding_wallet_usd=funding_total,
+        funding_wallet_usd=(
+            fund_cash_wallets_usd
+        ),
         earn_usd=earn_total,
         sanity_check_passed=True,
         source="bybit_v5",
         raw_meta={
             "cash_usd": str(cash),
             "spot_usd": str(spot),
+            "bybit_funding_wallet_usd": str(
+                funding_total
+            ),
+            "bsc_settlement_wallet_usdt": str(
+                _to_decimal(
+                    settlement_wallet_usdt
+                )
+            ),
+            "fund_cash_wallets_usd": str(
+                fund_cash_wallets_usd
+            ),
+            "settlement_wallet": (
+                settlement_wallet_meta
+                or {
+                    "included": False,
+                    "reason": (
+                        "no_active_settlement_wallet"
+                    ),
+                }
+            ),
             "cash_plus_spot_usd": str(cash_spot),
             "equity_diff_pct": str(diff_pct),
             "uta_coin_count": len(uta_coins),

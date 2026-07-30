@@ -389,26 +389,59 @@ def _validate_bybit_flow_input(
     if expected_total <= ZERO:
         raise NegativePayoutFlowError("Expected total payout must be positive")
 
-    if not _same_decimal(expected_total, withdrawal_request_amount):
+    if withdrawal_request_amount < expected_total:
         raise NegativePayoutFlowError(
-            "Expected payout total must equal settlement withdrawal_request_amount_usdt"
+            "Settlement withdrawal amount must be "
+            ">= total net user payout"
         )
 
-    if not _same_decimal(expected_total, flow_withdrawal_amount):
+    if not _same_decimal(
+        flow_withdrawal_amount,
+        withdrawal_request_amount,
+    ):
         raise NegativePayoutFlowError(
-            "Expected payout total must equal Bybit flow withdrawal_request_amount_usdt"
+            "Bybit flow withdrawal amount must "
+            "equal settlement "
+            "withdrawal_request_amount_usdt"
         )
 
-    if not _same_decimal(expected_total, received_amount):
+    if not _same_decimal(
+        received_amount,
+        withdrawal_request_amount,
+    ):
         raise NegativePayoutFlowError(
-            "Expected payout total must equal settlement wallet received amount"
+            "Settlement wallet received amount "
+            "must equal "
+            "withdrawal_request_amount_usdt"
+        )
+
+    settlement_wallet_residual_usdt = (
+        withdrawal_request_amount
+        - expected_total
+    )
+
+    if settlement_wallet_residual_usdt < ZERO:
+        raise NegativePayoutFlowError(
+            "Settlement wallet residual must be "
+            "non-negative"
         )
 
     return {
-        "expected_total_payout_usdt": expected_total,
-        "withdrawal_request_amount_usdt": withdrawal_request_amount,
-        "flow_withdrawal_amount_usdt": flow_withdrawal_amount,
-        "settlement_wallet_received_usdt": received_amount,
+        "expected_total_payout_usdt": (
+            expected_total
+        ),
+        "withdrawal_request_amount_usdt": (
+            withdrawal_request_amount
+        ),
+        "flow_withdrawal_amount_usdt": (
+            flow_withdrawal_amount
+        ),
+        "settlement_wallet_received_usdt": (
+            received_amount
+        ),
+        "settlement_wallet_residual_usdt": (
+            settlement_wallet_residual_usdt
+        ),
     }
 
 
@@ -1120,6 +1153,7 @@ def _mock_balance_refresh(
     legs: list[FundNegativePayoutLeg],
     mock_payout: NegativePayoutMock,
     expected_total_payout_usdt: Decimal,
+    expected_settlement_received_usdt: Decimal,
     now,
 ) -> None:
     batch.balance_refresh_started_at = now
@@ -1127,7 +1161,7 @@ def _mock_balance_refresh(
     settlement_before = (
         mock_payout.balance_refresh.settlement_wallet_usdt_before
         if mock_payout.balance_refresh.settlement_wallet_usdt_before is not None
-        else expected_total_payout_usdt
+        else expected_settlement_received_usdt
     )
     settlement_after = (
         mock_payout.balance_refresh.settlement_wallet_usdt_after
@@ -2013,6 +2047,78 @@ def _send_or_confirm_live_payout_leg(
     return False
 
 
+def _ensure_settlement_wallet_usdt_baseline(
+    db: Session,
+    *,
+    batch: FundNegativePayoutBatch,
+    bybit_flow: FundNegativeBybitFlow,
+    legs: list[FundNegativePayoutLeg],
+    now,
+) -> Decimal:
+    receipt_balance_after = dec(
+        bybit_flow
+        .settlement_wallet_balance_after_usdt
+    )
+
+    if receipt_balance_after < ZERO:
+        raise NegativePayoutFlowError(
+            "Settlement wallet receipt balance "
+            "must not be negative"
+        )
+
+    existing_baseline = (
+        dec(batch.settlement_wallet_usdt_before)
+        if (
+            batch.settlement_wallet_usdt_before
+            is not None
+        )
+        else None
+    )
+
+    if existing_baseline is not None:
+        if not _same_decimal(
+            existing_baseline,
+            receipt_balance_after,
+        ):
+            raise NegativePayoutFlowError(
+                "Persisted settlement wallet USDT "
+                "baseline does not match confirmed "
+                "Bybit receipt balance"
+            )
+
+        return existing_baseline
+
+    started_legs = [
+        int(leg.id)
+        for leg in legs
+        if (
+            str(leg.tx_hash or "").strip()
+            or leg.status
+            != PAYOUT_LEG_STATUS_PLANNED
+        )
+    ]
+
+    if started_legs:
+        raise NegativePayoutFlowError(
+            "Cannot create settlement wallet USDT "
+            "baseline after payout execution "
+            f"started: payout_leg_ids={started_legs}"
+        )
+
+    batch.settlement_wallet_usdt_before = (
+        receipt_balance_after
+    )
+    batch.updated_at = now
+
+    db.add(batch)
+
+    # Durable pre-payout checkpoint. No payout
+    # transaction may be prepared before this commit.
+    db.commit()
+
+    return receipt_balance_after
+
+
 def _refresh_live_balances_after_confirmed_payouts(
     db: Session,
     *,
@@ -2036,6 +2142,30 @@ def _refresh_live_balances_after_confirmed_payouts(
     ):
         raise NegativePayoutFlowError(
             "Confirmed payout total mismatch"
+        )
+
+    if (
+        batch.settlement_wallet_usdt_before
+        is None
+    ):
+        raise NegativePayoutFlowError(
+            "Settlement wallet pre-payout USDT "
+            "baseline is required"
+        )
+
+    settlement_before = dec(
+        batch.settlement_wallet_usdt_before
+    )
+
+    expected_settlement_after = (
+        settlement_before
+        - expected_total_payout_usdt
+    )
+
+    if expected_settlement_after < ZERO:
+        raise NegativePayoutFlowError(
+            "Expected settlement wallet post-payout "
+            "USDT balance is negative"
         )
 
     batch_id = int(batch.id)
@@ -2134,6 +2264,13 @@ def _refresh_live_balances_after_confirmed_payouts(
             w3,
             settlement_address,
             block_identifier=block_number,
+        )
+    )
+
+    post_payout_balance_matches = (
+        _same_decimal(
+            settlement_after,
+            expected_settlement_after,
         )
     )
 
@@ -2325,7 +2462,7 @@ def _refresh_live_balances_after_confirmed_payouts(
             }
         )
 
-    settlement_before = (
+    locked_settlement_before = (
         dec(
             locked_batch
             .settlement_wallet_usdt_before
@@ -2337,6 +2474,18 @@ def _refresh_live_balances_after_confirmed_payouts(
         )
         else None
     )
+
+    if (
+        locked_settlement_before is None
+        or not _same_decimal(
+            locked_settlement_before,
+            settlement_before,
+        )
+    ):
+        raise NegativePayoutFlowError(
+            "Settlement wallet USDT baseline "
+            "changed during balance refresh"
+        )
 
     locked_batch.settlement_wallet_usdt_after = (
         settlement_after
@@ -2368,6 +2517,16 @@ def _refresh_live_balances_after_confirmed_payouts(
                     ),
                     "confirmed_total_payout_usdt": (
                         expected_total_payout_usdt
+                    ),
+                    "expected_after_usdt": (
+                        expected_settlement_after
+                    ),
+                    "post_payout_balance_matches": (
+                        post_payout_balance_matches
+                    ),
+                    "observed_minus_expected_usdt": (
+                        settlement_after
+                        - expected_settlement_after
                     ),
                     "observed_after_usdt": (
                         settlement_after
@@ -2641,6 +2800,24 @@ def execute_negative_payout_flow_live(
                     "gas_topup_tx_hash": batch.gas_topup_tx_hash,
                     "no_duplicate_topup": True,
                 },
+            )
+
+        settlement_usdt_baseline = (
+            _ensure_settlement_wallet_usdt_baseline(
+                db,
+                batch=batch,
+                bybit_flow=bybit_flow,
+                legs=legs,
+                now=now,
+            )
+        )
+
+        if settlement_usdt_baseline < amounts[
+            "expected_total_payout_usdt"
+        ]:
+            raise NegativePayoutFlowError(
+                "Settlement wallet USDT baseline "
+                "does not cover user payout total"
             )
 
         settlement_batch.status = BATCH_STATUS_NEGATIVE_NET_PAYOUT_PROCESSING
@@ -3043,7 +3220,16 @@ def execute_negative_payout_flow_mock(
             batch=batch,
             legs=legs,
             mock_payout=mock_payout,
-            expected_total_payout_usdt=amounts["expected_total_payout_usdt"],
+            expected_total_payout_usdt=(
+                amounts[
+                    "expected_total_payout_usdt"
+                ]
+            ),
+            expected_settlement_received_usdt=(
+                amounts[
+                    "settlement_wallet_received_usdt"
+                ]
+            ),
             now=now,
         )
 

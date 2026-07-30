@@ -372,6 +372,14 @@ def test_wrong_owner_marks_current_batch_review_before_accounting(
             "balance_refresh": {
                 "validated": True,
             },
+            "settlement_wallet_residual": {
+                "expected_residual_usdt": "0",
+                "actual_attributable_residual_usdt": (
+                    "0"
+                ),
+                "residual_owner": "fund",
+                "residual_is_user_payout": False,
+            },
         },
     )
 

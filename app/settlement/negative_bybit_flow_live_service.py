@@ -3162,6 +3162,16 @@ def _build_withdrawal_intent(
     balance_baseline: dict[str, Any],
     prepared_at: datetime,
 ) -> dict[str, Any]:
+    fee_type = int(
+        settings.NEGATIVE_NET_WITHDRAWAL_FEE_TYPE
+    )
+
+    if fee_type != 0:
+        raise NegativeBybitFlowError(
+            "Negative-net withdrawal intent "
+            "requires feeType=0"
+        )
+
     payload_template = {
         "requestId": request_id,
         "coin": coin,
@@ -3169,10 +3179,7 @@ def _build_withdrawal_intent(
         "address": address,
         "amount": amount,
         "forceChain": 1,
-        "feeType": int(
-            settings
-            .NEGATIVE_NET_WITHDRAWAL_FEE_TYPE
-        ),
+        "feeType": fee_type,
         "accountType": "FUND",
     }
 
@@ -3195,10 +3202,7 @@ def _build_withdrawal_intent(
         "fee_usdt": _decimal_text(
             fee_usdt
         ),
-        "fee_type": int(
-            settings
-            .NEGATIVE_NET_WITHDRAWAL_FEE_TYPE
-        ),
+        "fee_type": fee_type,
         "account_type": "FUND",
         "force_chain": 1,
         "amount_precision": int(

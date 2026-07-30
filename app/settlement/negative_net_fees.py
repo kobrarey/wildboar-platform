@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
-from decimal import Decimal, ROUND_FLOOR
+from decimal import (
+    Decimal,
+    ROUND_CEILING,
+    ROUND_FLOOR,
+)
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -21,6 +25,12 @@ DAYS_IN_FEE_MONTH = Decimal("30")
 NEGATIVE_NET_FEE_POLICY_VERSION = (
     "monthly_open_v1"
 )
+
+NEGATIVE_NET_WITHDRAWAL_AMOUNT_POLICY_VERSION = (
+    "withdraw_min_round_up_v1"
+)
+
+BYBIT_WITHDRAWAL_FEE_TYPE = 0
 
 
 class NegativeNetFeeError(RuntimeError):
@@ -95,6 +105,9 @@ class NegativeNetBatchTargets:
     fee_calc_month_open_source: str
     fee_calc_days_in_month_period: int
     order_count: int
+    settlement_wallet_residual_usdt: (
+        Decimal
+    ) = ZERO
 
     def to_dict(self) -> dict[str, Any]:
         raw = asdict(self)
@@ -227,6 +240,286 @@ def _require_cent_aligned(
         )
 
     return result
+
+
+@dataclass(frozen=True)
+class NegativeNetWithdrawalAmountResult:
+    total_net_user_payout_usdt: Decimal
+    withdrawal_request_amount_usdt: Decimal
+    settlement_wallet_residual_usdt: Decimal
+    withdraw_min_usdt: Decimal | None
+    withdraw_max_usdt: Decimal | None
+    min_accuracy: int | None
+    fee_type: int
+    policy_version: str = (
+        NEGATIVE_NET_WITHDRAWAL_AMOUNT_POLICY_VERSION
+    )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "policy_version": self.policy_version,
+            "feeType": self.fee_type,
+            "total_net_user_payout_usdt": str(
+                self.total_net_user_payout_usdt
+            ),
+            "withdrawal_request_amount_usdt": str(
+                self.withdrawal_request_amount_usdt
+            ),
+            "settlement_wallet_residual_usdt": str(
+                self.settlement_wallet_residual_usdt
+            ),
+            "withdrawMin": (
+                str(self.withdraw_min_usdt)
+                if self.withdraw_min_usdt
+                is not None
+                else None
+            ),
+            "withdrawMax": (
+                str(self.withdraw_max_usdt)
+                if self.withdraw_max_usdt
+                is not None
+                else None
+            ),
+            "minAccuracy": self.min_accuracy,
+        }
+
+
+def _parse_min_accuracy(
+    value: int | str | Decimal | None,
+) -> int | None:
+    if value is None:
+        return None
+
+    if isinstance(value, (bool, float)):
+        raise NegativeNetFeeError(
+            "minAccuracy must be an integer"
+        )
+
+    parsed = dec(value)
+
+    if parsed != parsed.to_integral_value():
+        raise NegativeNetFeeError(
+            "minAccuracy must be an integer: "
+            f"{parsed}"
+        )
+
+    result = int(parsed)
+
+    if result < 0 or result > 18:
+        raise NegativeNetFeeError(
+            "minAccuracy is outside supported "
+            f"range 0..18: {result}"
+        )
+
+    return result
+
+
+def _parse_fee_type(
+    value: int | str | Decimal | None,
+) -> int:
+    if value is None:
+        raise NegativeNetFeeError(
+            "feeType is required and must be "
+            "integer 0"
+        )
+
+    if isinstance(value, (bool, float)):
+        raise NegativeNetFeeError(
+            "feeType must be integer 0"
+        )
+
+    parsed = dec(value)
+
+    if parsed != parsed.to_integral_value():
+        raise NegativeNetFeeError(
+            "feeType must be integer 0"
+        )
+
+    result = int(parsed)
+
+    if result != BYBIT_WITHDRAWAL_FEE_TYPE:
+        raise NegativeNetFeeError(
+            "Negative-net Bybit withdrawal "
+            "must use feeType=0"
+        )
+
+    return result
+
+
+def calculate_negative_net_withdrawal_amount(
+    *,
+    total_net_user_payout_usdt: (
+        Decimal | str
+    ),
+    withdraw_min_usdt: (
+        Decimal | str | None
+    ) = None,
+    withdraw_max_usdt: (
+        Decimal | str | None
+    ) = None,
+    min_accuracy: (
+        int | str | Decimal | None
+    ) = None,
+    fee_type: (
+        int | str | Decimal
+    ) = BYBIT_WITHDRAWAL_FEE_TYPE,
+) -> NegativeNetWithdrawalAmountResult:
+    payout = _require_positive(
+        dec(total_net_user_payout_usdt),
+        field_name=(
+            "total_net_user_payout_usdt"
+        ),
+    )
+
+    parsed_fee_type = _parse_fee_type(
+        fee_type
+    )
+
+    live_constraints_present = any(
+        value is not None
+        for value in (
+            withdraw_min_usdt,
+            withdraw_max_usdt,
+            min_accuracy,
+        )
+    )
+
+    if not live_constraints_present:
+        return NegativeNetWithdrawalAmountResult(
+            total_net_user_payout_usdt=payout,
+            withdrawal_request_amount_usdt=(
+                payout
+            ),
+            settlement_wallet_residual_usdt=(
+                ZERO
+            ),
+            withdraw_min_usdt=None,
+            withdraw_max_usdt=None,
+            min_accuracy=None,
+            fee_type=parsed_fee_type,
+        )
+
+    if withdraw_min_usdt is None:
+        raise NegativeNetFeeError(
+            "withdrawMin is required for live "
+            "withdrawal amount calculation"
+        )
+
+    if min_accuracy is None:
+        raise NegativeNetFeeError(
+            "minAccuracy is required for live "
+            "withdrawal amount calculation"
+        )
+
+    withdraw_min = _require_non_negative(
+        dec(withdraw_min_usdt),
+        field_name="withdrawMin",
+    )
+
+    withdraw_max: Decimal | None
+
+    if withdraw_max_usdt is None:
+        withdraw_max = None
+    else:
+        withdraw_max = _require_positive(
+            dec(withdraw_max_usdt),
+            field_name="withdrawMax",
+        )
+
+        if withdraw_max < withdraw_min:
+            raise NegativeNetFeeError(
+                "withdrawMax is below withdrawMin: "
+                f"withdrawMin={withdraw_min}, "
+                f"withdrawMax={withdraw_max}"
+            )
+
+    accuracy = _parse_min_accuracy(
+        min_accuracy
+    )
+
+    if accuracy is None:
+        raise NegativeNetFeeError(
+            "minAccuracy is missing"
+        )
+
+    quantum = Decimal("1").scaleb(
+        -accuracy
+    )
+
+    unrounded_amount = max(
+        payout,
+        withdraw_min,
+    )
+
+    try:
+        withdrawal_amount = (
+            unrounded_amount.quantize(
+                quantum,
+                rounding=ROUND_CEILING,
+            )
+        )
+    except Exception as exc:
+        raise NegativeNetFeeError(
+            "Withdrawal amount cannot be "
+            "represented using minAccuracy="
+            f"{accuracy}"
+        ) from exc
+
+    if withdrawal_amount < payout:
+        raise NegativeNetFeeError(
+            "Withdrawal amount is below total "
+            "net user payout"
+        )
+
+    if withdrawal_amount < withdraw_min:
+        raise NegativeNetFeeError(
+            "Withdrawal amount is below "
+            "withdrawMin"
+        )
+
+    if (
+        withdraw_max is not None
+        and withdrawal_amount > withdraw_max
+    ):
+        raise NegativeNetFeeError(
+            "Withdrawal amount is above "
+            "withdrawMax: "
+            f"amount={withdrawal_amount}, "
+            f"withdrawMax={withdraw_max}"
+        )
+
+    if withdrawal_amount.quantize(
+        quantum
+    ) != withdrawal_amount:
+        raise NegativeNetFeeError(
+            "Withdrawal amount does not match "
+            f"minAccuracy={accuracy}"
+        )
+
+    residual = (
+        withdrawal_amount
+        - payout
+    )
+
+    if residual < ZERO:
+        raise NegativeNetFeeError(
+            "Settlement wallet residual "
+            "must be non-negative"
+        )
+
+    return NegativeNetWithdrawalAmountResult(
+        total_net_user_payout_usdt=payout,
+        withdrawal_request_amount_usdt=(
+            withdrawal_amount
+        ),
+        settlement_wallet_residual_usdt=(
+            residual
+        ),
+        withdraw_min_usdt=withdraw_min,
+        withdraw_max_usdt=withdraw_max,
+        min_accuracy=accuracy,
+        fee_type=parsed_fee_type,
+    )
 
 
 def _validate_order_fee_result(
@@ -686,6 +979,18 @@ def calculate_negative_net_batch_targets(
     month_open_result: (
         MonthOpenPriceResult
     ),
+    withdraw_min_usdt: (
+        Decimal | str | None
+    ) = None,
+    withdraw_max_usdt: (
+        Decimal | str | None
+    ) = None,
+    min_accuracy: (
+        int | str | Decimal | None
+    ) = None,
+    fee_type: (
+        int | str | Decimal
+    ) = BYBIT_WITHDRAWAL_FEE_TYPE,
 ) -> NegativeNetBatchTargets:
     if not order_fee_results:
         raise NegativeNetFeeError(
@@ -806,30 +1111,41 @@ def calculate_negative_net_batch_targets(
             "Batch total fee exceeds gross redeem"
         )
 
-    required_master_usdt = (
-        total_net_user_payout_usdt
-        + bybit_fee
-        + total_partial_month_fee_usdt
-    )
-    _require_positive(
-        required_master_usdt,
-        field_name="required_master_usdt",
+    withdrawal_amount_result = (
+        calculate_negative_net_withdrawal_amount(
+            total_net_user_payout_usdt=(
+                total_net_user_payout_usdt
+            ),
+            withdraw_min_usdt=(
+                withdraw_min_usdt
+            ),
+            withdraw_max_usdt=(
+                withdraw_max_usdt
+            ),
+            min_accuracy=min_accuracy,
+            fee_type=fee_type,
+        )
     )
 
     withdrawal_request_amount_usdt = (
-        total_net_user_payout_usdt
+        withdrawal_amount_result
+        .withdrawal_request_amount_usdt
     )
+
+    settlement_wallet_residual_usdt = (
+        withdrawal_amount_result
+        .settlement_wallet_residual_usdt
+    )
+
+    required_master_usdt = (
+        withdrawal_request_amount_usdt
+        + bybit_fee
+        + total_partial_month_fee_usdt
+    )
+
     _require_positive(
-        withdrawal_request_amount_usdt,
-        field_name=(
-            "withdrawal_request_amount_usdt"
-        ),
-    )
-    _require_cent_aligned(
-        withdrawal_request_amount_usdt,
-        field_name=(
-            "withdrawal_request_amount_usdt"
-        ),
+        required_master_usdt,
+        field_name="required_master_usdt",
     )
 
     days_values = {
@@ -885,6 +1201,9 @@ def calculate_negative_net_batch_targets(
         ),
         withdrawal_request_amount_usdt=(
             withdrawal_request_amount_usdt
+        ),
+        settlement_wallet_residual_usdt=(
+            settlement_wallet_residual_usdt
         ),
         fee_calc_month_open_price_usdt=(
             month_open_price

@@ -16,12 +16,15 @@ from app.bybit.client import BybitV5Client
 from app.config import settings
 from app.models import Fund, FundOrder, FundSettlementBatch
 from app.settlement.negative_net_fees import (
+    BYBIT_WITHDRAWAL_FEE_TYPE,
     NEGATIVE_NET_FEE_POLICY_VERSION,
+    NEGATIVE_NET_WITHDRAWAL_AMOUNT_POLICY_VERSION,
     MonthOpenPriceMissingError,
     NegativeNetBatchTargets,
     NegativeNetFeeError,
     RedeemOrderFeeResult,
     calculate_negative_net_batch_targets,
+    calculate_negative_net_withdrawal_amount,
     calculate_redeem_order_fees,
     dec,
     get_month_open_price,
@@ -55,6 +58,10 @@ REDEEM_ORDER_TARGET_STATUSES = {
     ORDER_STATUS_PROCESSING,
     ORDER_STATUS_AWAITING_NEGATIVE_NET_EXECUTION,
 }
+
+WITHDRAWAL_AMOUNT_SNAPSHOT_SCHEMA = (
+    "negative_net_withdrawal_amount_snapshot_v1"
+)
 
 
 class NegativeNetTargetError(RuntimeError):
@@ -882,6 +889,368 @@ def _require_persisted_decimal(
     return result
 
 
+def _optional_snapshot_decimal(
+    snapshot: dict[str, Any],
+    *,
+    key: str,
+    field_name: str,
+) -> Decimal | None:
+    value = snapshot.get(key)
+
+    if value is None:
+        return None
+
+    return _require_persisted_decimal(
+        value,
+        field_name=field_name,
+    )
+
+
+def _validate_persisted_withdrawal_contract(
+    *,
+    batch: FundSettlementBatch,
+    stored_total_net: Decimal,
+    stored_bybit_fee: Decimal,
+    stored_partial_fee: Decimal,
+    stored_required_master: Decimal,
+    stored_withdrawal: Decimal,
+) -> tuple[
+    Decimal,
+    dict[str, Any],
+]:
+    diagnostics = dict(
+        batch.negative_net_target_diagnostics_json
+        or {}
+    )
+
+    snapshot = diagnostics.get(
+        "withdrawal_amount_policy"
+    )
+
+    if not isinstance(snapshot, dict):
+        raise NegativeNetTargetError(
+            "Persisted withdrawal amount policy "
+            "snapshot is missing"
+        )
+
+    if (
+        snapshot.get("schema")
+        != WITHDRAWAL_AMOUNT_SNAPSHOT_SCHEMA
+    ):
+        raise NegativeNetTargetError(
+            "Persisted withdrawal amount snapshot "
+            "schema mismatch"
+        )
+
+    if (
+        snapshot.get("policy_version")
+        != (
+            NEGATIVE_NET_WITHDRAWAL_AMOUNT_POLICY_VERSION
+        )
+    ):
+        raise NegativeNetTargetError(
+            "Persisted withdrawal amount policy "
+            "version mismatch"
+        )
+
+    mode = str(
+        snapshot.get("mode") or ""
+    ).strip()
+
+    if mode not in {
+        "mock",
+        "bybit_live_readonly",
+    }:
+        raise NegativeNetTargetError(
+            "Persisted withdrawal amount mode "
+            f"is invalid: {mode or 'missing'}"
+        )
+
+    coin = str(
+        snapshot.get("coin") or ""
+    ).strip().upper()
+
+    chain = str(
+        snapshot.get("chain") or ""
+    ).strip().upper()
+
+    if coin != "USDT":
+        raise NegativeNetTargetError(
+            "Persisted withdrawal coin must be USDT"
+        )
+
+    if chain != "BSC":
+        raise NegativeNetTargetError(
+            "Persisted withdrawal chain must be BSC"
+        )
+
+    snapshot_total_net = (
+        _require_persisted_decimal(
+            snapshot.get(
+                "total_net_user_payout_usdt"
+            ),
+            field_name=(
+                "withdrawal_amount_policy."
+                "total_net_user_payout_usdt"
+            ),
+        )
+    )
+
+    snapshot_withdrawal = (
+        _require_persisted_decimal(
+            snapshot.get(
+                "withdrawal_request_amount_usdt"
+            ),
+            field_name=(
+                "withdrawal_amount_policy."
+                "withdrawal_request_amount_usdt"
+            ),
+        )
+    )
+
+    snapshot_residual = (
+        _require_persisted_decimal(
+            snapshot.get(
+                "settlement_wallet_residual_usdt"
+            ),
+            field_name=(
+                "withdrawal_amount_policy."
+                "settlement_wallet_residual_usdt"
+            ),
+        )
+    )
+
+    snapshot_required_master = (
+        _require_persisted_decimal(
+            snapshot.get(
+                "required_master_usdt"
+            ),
+            field_name=(
+                "withdrawal_amount_policy."
+                "required_master_usdt"
+            ),
+        )
+    )
+
+    snapshot_partial_fee = (
+        _require_persisted_decimal(
+            snapshot.get(
+                "total_partial_month_fee_usdt"
+            ),
+            field_name=(
+                "withdrawal_amount_policy."
+                "total_partial_month_fee_usdt"
+            ),
+        )
+    )
+
+    snapshot_withdraw_fee = (
+        _require_persisted_decimal(
+            snapshot.get("withdrawFee"),
+            field_name=(
+                "withdrawal_amount_policy."
+                "withdrawFee"
+            ),
+        )
+    )
+
+    snapshot_percentage_fee = (
+        _require_persisted_decimal(
+            snapshot.get(
+                "withdrawPercentageFee"
+            ),
+            field_name=(
+                "withdrawal_amount_policy."
+                "withdrawPercentageFee"
+            ),
+        )
+    )
+
+    if snapshot_percentage_fee != Decimal("0"):
+        raise NegativeNetTargetError(
+            "Persisted withdrawPercentageFee "
+            "must be zero"
+        )
+
+    if snapshot_total_net != stored_total_net:
+        raise NegativeNetTargetError(
+            "Persisted withdrawal snapshot user "
+            "payout mismatch"
+        )
+
+    if snapshot_withdrawal != stored_withdrawal:
+        raise NegativeNetTargetError(
+            "Persisted withdrawal snapshot amount "
+            "mismatch"
+        )
+
+    if snapshot_withdraw_fee != stored_bybit_fee:
+        raise NegativeNetTargetError(
+            "Persisted withdrawal snapshot fee "
+            "mismatch"
+        )
+
+    if snapshot_partial_fee != stored_partial_fee:
+        raise NegativeNetTargetError(
+            "Persisted withdrawal snapshot partial "
+            "fee mismatch"
+        )
+
+    if (
+        snapshot_required_master
+        != stored_required_master
+    ):
+        raise NegativeNetTargetError(
+            "Persisted withdrawal snapshot required "
+            "master mismatch"
+        )
+
+    withdraw_min = _optional_snapshot_decimal(
+        snapshot,
+        key="withdrawMin",
+        field_name=(
+            "withdrawal_amount_policy.withdrawMin"
+        ),
+    )
+
+    withdraw_max = _optional_snapshot_decimal(
+        snapshot,
+        key="withdrawMax",
+        field_name=(
+            "withdrawal_amount_policy.withdrawMax"
+        ),
+    )
+
+    min_accuracy = snapshot.get(
+        "minAccuracy"
+    )
+
+    chain_withdraw = snapshot.get(
+        "chainWithdraw"
+    )
+
+    if mode == "mock":
+        if any(
+            value is not None
+            for value in (
+                withdraw_min,
+                withdraw_max,
+                min_accuracy,
+                chain_withdraw,
+            )
+        ):
+            raise NegativeNetTargetError(
+                "Mock withdrawal snapshot must not "
+                "contain live Bybit constraints"
+            )
+
+    if mode == "bybit_live_readonly":
+        if withdraw_min is None:
+            raise NegativeNetTargetError(
+                "Live withdrawal snapshot is missing "
+                "withdrawMin"
+            )
+
+        if min_accuracy is None:
+            raise NegativeNetTargetError(
+                "Live withdrawal snapshot is missing "
+                "minAccuracy"
+            )
+
+        if str(
+            chain_withdraw or ""
+        ).strip() != "1":
+            raise NegativeNetTargetError(
+                "Live withdrawal snapshot does not "
+                "prove chainWithdraw=1"
+            )
+
+    if (
+        "feeType" not in snapshot
+        or snapshot.get("feeType") is None
+    ):
+        raise NegativeNetTargetError(
+            "Persisted withdrawal snapshot is "
+            "missing feeType"
+        )
+
+    try:
+        recomputed = (
+            calculate_negative_net_withdrawal_amount(
+                total_net_user_payout_usdt=(
+                    stored_total_net
+                ),
+                withdraw_min_usdt=withdraw_min,
+                withdraw_max_usdt=withdraw_max,
+                min_accuracy=min_accuracy,
+                fee_type=snapshot.get(
+                    "feeType"
+                ),
+            )
+        )
+    except NegativeNetFeeError as exc:
+        raise NegativeNetTargetError(
+            "Persisted withdrawal policy cannot "
+            f"be recomputed: {exc}"
+        ) from exc
+
+    if (
+        recomputed.withdrawal_request_amount_usdt
+        != stored_withdrawal
+    ):
+        raise NegativeNetTargetError(
+            "Persisted withdrawal amount does not "
+            "match stored Bybit policy snapshot"
+        )
+
+    if (
+        recomputed.settlement_wallet_residual_usdt
+        != snapshot_residual
+    ):
+        raise NegativeNetTargetError(
+            "Persisted settlement wallet residual "
+            "mismatch"
+        )
+
+    if stored_withdrawal < stored_total_net:
+        raise NegativeNetTargetError(
+            "Persisted withdrawal amount is below "
+            "total net user payout"
+        )
+
+    expected_required_master = (
+        stored_withdrawal
+        + stored_bybit_fee
+        + stored_partial_fee
+    )
+
+    if (
+        stored_required_master
+        != expected_required_master
+    ):
+        raise NegativeNetTargetError(
+            "Persisted required_master_usdt "
+            "arithmetic mismatch"
+        )
+
+    if snapshot_residual < Decimal("0"):
+        raise NegativeNetTargetError(
+            "Persisted settlement wallet residual "
+            "is negative"
+        )
+
+    if snapshot_residual != (
+        stored_withdrawal
+        - stored_total_net
+    ):
+        raise NegativeNetTargetError(
+            "Persisted settlement wallet residual "
+            "arithmetic mismatch"
+        )
+
+    return snapshot_residual, snapshot
+
+
 def _build_idempotent_target_result(
     db: Session,
     *,
@@ -1184,21 +1553,19 @@ def _build_idempotent_target_result(
             "is negative"
         )
 
-    if stored_required_master != (
-        stored_total_net
-        + stored_bybit_fee
-        + stored_partial_fee
-    ):
-        raise NegativeNetTargetError(
-            "Persisted required_master_usdt "
-            "arithmetic mismatch"
-        )
-
-    if stored_withdrawal != stored_total_net:
-        raise NegativeNetTargetError(
-            "Persisted withdrawal amount does "
-            "not equal total net user payout"
-        )
+    (
+        stored_residual,
+        withdrawal_snapshot,
+    ) = _validate_persisted_withdrawal_contract(
+        batch=batch,
+        stored_total_net=stored_total_net,
+        stored_bybit_fee=stored_bybit_fee,
+        stored_partial_fee=stored_partial_fee,
+        stored_required_master=(
+            stored_required_master
+        ),
+        stored_withdrawal=stored_withdrawal,
+    )
 
     month_open_price = (
         _require_persisted_decimal(
@@ -1254,6 +1621,9 @@ def _build_idempotent_target_result(
         withdrawal_request_amount_usdt=(
             stored_withdrawal
         ),
+        settlement_wallet_residual_usdt=(
+            stored_residual
+        ),
         fee_calc_month_open_price_usdt=(
             month_open_price
         ),
@@ -1271,6 +1641,9 @@ def _build_idempotent_target_result(
         or {}
     )
     diagnostics["idempotent_replay"] = True
+    diagnostics[
+        "withdrawal_amount_policy"
+    ] = dict(withdrawal_snapshot)
 
     return NegativeNetTargetResult(
         ok=True,
@@ -1674,6 +2047,18 @@ def calculate_and_store_negative_net_targets(
                     bybit_fee
                 ),
                 month_open_result=month_open,
+                withdraw_min_usdt=(
+                    fee_policy.withdraw_min
+                ),
+                withdraw_max_usdt=(
+                    fee_policy.withdraw_max
+                ),
+                min_accuracy=(
+                    fee_policy.min_accuracy
+                ),
+                fee_type=(
+                    BYBIT_WITHDRAWAL_FEE_TYPE
+                ),
             )
         )
 
@@ -1696,6 +2081,58 @@ def calculate_and_store_negative_net_targets(
                 )
             )
 
+        withdrawal_amount_policy = {
+            "schema": (
+                WITHDRAWAL_AMOUNT_SNAPSHOT_SCHEMA
+            ),
+            "policy_version": (
+                NEGATIVE_NET_WITHDRAWAL_AMOUNT_POLICY_VERSION
+            ),
+            "mode": fee_policy.mode,
+            "coin": fee_policy.coin,
+            "chain": fee_policy.chain,
+            "feeType": (
+                BYBIT_WITHDRAWAL_FEE_TYPE
+            ),
+            "withdrawFee": (
+                fee_policy.amount_usdt
+            ),
+            "withdrawPercentageFee": (
+                fee_policy.withdraw_percentage_fee
+            ),
+            "withdrawMin": (
+                fee_policy.withdraw_min
+            ),
+            "withdrawMax": (
+                fee_policy.withdraw_max
+            ),
+            "minAccuracy": (
+                fee_policy.min_accuracy
+            ),
+            "chainWithdraw": (
+                fee_policy.chain_withdraw
+            ),
+            "total_net_user_payout_usdt": (
+                targets
+                .total_net_user_payout_usdt
+            ),
+            "withdrawal_request_amount_usdt": (
+                targets
+                .withdrawal_request_amount_usdt
+            ),
+            "settlement_wallet_residual_usdt": (
+                targets
+                .settlement_wallet_residual_usdt
+            ),
+            "required_master_usdt": (
+                targets.required_master_usdt
+            ),
+            "total_partial_month_fee_usdt": (
+                targets
+                .total_partial_month_fee_usdt
+            ),
+        }
+
         diagnostics = {
             "mode": fee_policy.mode,
             "calculated_at": now.isoformat(),
@@ -1709,6 +2146,9 @@ def calculate_and_store_negative_net_targets(
                 fee_policy.diagnostics
             ),
             "targets": targets.to_dict(),
+            "withdrawal_amount_policy": (
+                withdrawal_amount_policy
+            ),
             "invariants": {
                 "net_cash_negative": True,
                 "pricing_lock_active": True,
@@ -1721,6 +2161,32 @@ def calculate_and_store_negative_net_targets(
                 "target_arithmetic_valid": True,
                 "decimal_only": True,
                 "all_values_finite": True,
+                "withdrawal_gte_user_payout": (
+                    targets
+                    .withdrawal_request_amount_usdt
+                    >= targets
+                    .total_net_user_payout_usdt
+                ),
+                "settlement_wallet_residual_non_negative": (
+                    targets
+                    .settlement_wallet_residual_usdt
+                    >= Decimal("0")
+                ),
+                "required_master_uses_withdrawal_request": (
+                    targets.required_master_usdt
+                    == (
+                        targets
+                        .withdrawal_request_amount_usdt
+                        + targets
+                        .bybit_withdrawal_fee_usdt
+                        + targets
+                        .total_partial_month_fee_usdt
+                    )
+                ),
+                "bybit_fee_type_zero": (
+                    BYBIT_WITHDRAWAL_FEE_TYPE
+                    == 0
+                ),
             },
             "redeem_order_count": len(
                 redeem_orders
